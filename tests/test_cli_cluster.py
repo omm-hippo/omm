@@ -551,15 +551,93 @@ def test_interrupted_first_init_keeps_the_namespace(cluster_fakes, monkeypatch):
     assert cluster_fakes.exo_service_installs == [first, first]
 
 
-def test_leave_stops_when_firewall_removal_fails(cluster_fakes, monkeypatch):
-    from omm.cluster import firewall
+def test_leave_runs_every_step_when_some_fail_and_keeps_the_role_for_a_rerun(cluster_fakes, monkeypatch):
+    from omm.cluster import appfw, firewall, preflight
     from omm.cluster.errors import ClusterError
 
+    def failing(message):
+        def step(**k):
+            raise ClusterError(message)
+        return step
+
     runner.invoke(cli.app, ["cluster", "init"])
-    monkeypatch.setattr(firewall, "remove", lambda **k: (_ for _ in ()).throw(ClusterError("could not remove the cluster firewall rules")))
+    preflight.runtime_dir().mkdir(parents=True)
+    monkeypatch.setattr(firewall, "remove", failing("could not remove the cluster firewall rules (sudo failed)"))
+    monkeypatch.setattr(appfw, "remove", failing("could not remove /x/exo from the macOS firewall (sudo failed)"))
     result = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
     assert result.exit_code == 1
-    assert settings.load() is not None and "left the cluster" not in result.output
+    assert "left the cluster" not in result.output
+    assert "could not remove the cluster firewall rules (sudo failed)" in result.output
+    assert "could not remove /x/exo from the macOS firewall (sudo failed)" in result.output
+    assert "omm cluster leave again" in result.output
+    # Every other step still ran, so the Mac is not left half dismantled.
+    assert cluster_fakes.netconfig_calls[-1] == "restore" and cluster_fakes.power_restores == 1
+    assert cluster_fakes.service_uninstall_calls == 1 and cluster_fakes.exo_service_uninstalls == 1
+    assert not preflight.runtime_dir().exists()
+    # Kept so the re-run still knows this Mac is the head.
+    assert settings.load().role == "head"
+
+    monkeypatch.setattr(firewall, "remove", lambda **k: None)
+    monkeypatch.setattr(appfw, "remove", lambda **k: None)
+    again = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
+    assert again.exit_code == 0, again.output
+    assert settings.load() is None and "left the cluster" in again.output
+    assert cluster_fakes.service_uninstall_calls == 2
+
+
+def test_model_on_a_member_points_at_the_head_instead_of_its_own_address(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 0, result.output
+    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit" in result.output
+    assert "http://" not in result.output and "head Mac" in result.output
+
+
+def test_model_outside_a_cluster_prints_no_address(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 0, result.output
+    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit" in result.output
+    assert "http://" not in result.output
+
+
+def test_model_list_fetches_previews_concurrently(cluster_fakes, monkeypatch):
+    import threading
+
+    from omm.cluster import recommend
+
+    state = exo_client.parse_state(copy.deepcopy(cluster_fakes.state))
+    count = len(recommend.prefilter(exo_client.parse_models(cluster_fakes.models), state))
+    assert count > 1
+    # Sequential calls would wait here until the timeout breaks the barrier.
+    barrier = threading.Barrier(count, timeout=5)
+    original = _FakeExoClient.previews
+
+    def previews(self, model_id):
+        barrier.wait()
+        return original(self, model_id)
+
+    monkeypatch.setattr(_FakeExoClient, "previews", previews)
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model"])
+    assert result.exit_code == 0, result.output
+    assert "mlx-community/" in result.output
+
+
+def test_model_list_fails_when_one_preview_fails(cluster_fakes, monkeypatch):
+    from omm.cluster.errors import ClusterError
+
+    original = _FakeExoClient.previews
+
+    def previews(self, model_id):
+        if "Llama-3.2-1B" in model_id:
+            raise ClusterError("exo request GET /instance/previews failed: HTTP 500")
+        return original(self, model_id)
+
+    monkeypatch.setattr(_FakeExoClient, "previews", previews)
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model"])
+    assert result.exit_code == 1
+    assert "exo request GET /instance/previews failed: HTTP 500" in result.output
 
 
 def test_status_reports_other_exo_errors_as_problems(cluster_fakes, monkeypatch):
