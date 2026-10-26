@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.55",
+  "omm_version": "0.4.56",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -329,7 +329,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Measure first-token time and tokens/sec of one answer on the cluster (head Mac only, never uploaded).",
+      "summary": "Measure first-token time and tokens/sec of one answer on the cluster (never uploaded).",
       "description": "",
       "usage": "omm cluster benchmark [OPTIONS] {model}",
       "arguments": [

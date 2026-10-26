@@ -224,3 +224,20 @@ list is out of scope (Claude's call).
   model, confirm `run` reuses it without re-downloading, uninstall it and confirm the files
   are gone on each Mac, trigger each memory-guard policy with two models that do not both
   fit, and record exo's actual refusal text into a fixture.
+
+## Addendum 2026-10-27: read-only commands on employee PCs (user decision)
+
+Checked on the rig, the first version left `info`, `recommend`, `search`, `benchmark` and
+`status` unusable from an employee PC. The user asked that every non-admin command work there.
+
+- Gateway answers four token-checked, read-only `GET` routes itself: `/omm/status`,
+  `/omm/recommend`, `/omm/search?q=`, `/omm/info?model=`. They never download, load or unload.
+- `status` on an employee PC is a server-health view, not the head's report (user: "not
+  exactly the same"): head address, Macs connected, memory free/total, loaded models. No Mac
+  names, RDMA, firewall or gateway internals. `info` gives `nodes_installed/nodes_total`
+  instead of per-Mac names.
+- `benchmark` on an employee PC measures a model that is already loaded, through the existing
+  `/v1/chat/completions` route; it never loads one.
+- `install`/`uninstall`/`load`/`unload` on an employee PC: exit 2, "runs on the cluster's head
+  Mac; ask its admin".
+- An older head answers 404 on these routes; the client says to update the head.

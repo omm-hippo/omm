@@ -157,8 +157,9 @@ def uninstall(model_id: str, out: Out, client: ExoClient | None = None) -> int:
 
 
 def info(model_id: str, client: ExoClient | None = None) -> dict:
-    commands.require_macos()
-    client = client or ExoClient()
+    if client is None:
+        commands.require_macos()
+        client = ExoClient()
     catalog = {model.model_id: model for model in client.models()}
     raw = client.raw_state()
     state = exo_client.parse_state(raw)
@@ -192,8 +193,9 @@ def info(model_id: str, client: ExoClient | None = None) -> dict:
 
 
 def search(query: str, client: ExoClient | None = None) -> list[dict]:
-    commands.require_macos()
-    client = client or ExoClient()
+    if client is None:
+        commands.require_macos()
+        client = ExoClient()
     hits = client.search(query)
     catalog = {model.model_id: model for model in client.models()}
     state = client.state()
@@ -209,6 +211,37 @@ def search(query: str, client: ExoClient | None = None) -> list[dict]:
 
 def _gib(size: int | None) -> str:
     return f"{size / _GIB:.1f} GiB" if size else "size unknown"
+
+
+def employee_info(model_id: str, client: ExoClient) -> dict:
+    """`info` for an employee PC: how many Macs have it, not which ones."""
+    data = info(model_id, client)
+    nodes = data.pop("nodes")
+    data["nodes_installed"] = sum(1 for node in nodes if node["state"] == "installed")
+    data["nodes_total"] = len(nodes)
+    return data
+
+
+def employee_status(client: ExoClient) -> dict:
+    """What an employee sees as `omm cluster status`: Macs, memory, loaded models."""
+    raw = client.raw_state()
+    state = exo_client.parse_state(raw)
+    return {
+        "macs": len(state.nodes),
+        "memory_free_bytes": sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes),
+        "memory_total_bytes": sum(max(node.memory_total_bytes or 0, 0) for node in state.nodes),
+        "models": [row.as_dict() for row in inventory_from(raw) if row.state in ("loaded", "loading")],
+    }
+
+
+def recommend_rows(client: ExoClient | None = None) -> list[dict]:
+    """`omm cluster recommend` rows, each marked with its state on the cluster."""
+    if client is None:
+        commands.require_macos()
+        client = ExoClient()
+    rows = {row.model: row.state for row in inventory_from(client.raw_state())}
+    return [{"model": item.model_id, "size_bytes": item.size_bytes, "memory_used_fraction": item.memory_used_fraction,
+             "state": rows.get(item.model_id, "not installed")} for item in commands.candidates(client)]
 
 
 def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], bool] | None,

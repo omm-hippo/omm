@@ -2493,8 +2493,11 @@ def cluster_join_cmd(
 @global_flags
 def cluster_status_cmd() -> None:
     """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
-    from omm.cluster import commands as cluster_commands
+    from omm.cluster import chat, commands as cluster_commands, settings as cluster_settings
 
+    if cluster_settings.load() is None and chat.cluster_configured():
+        _cluster_employee_status(_cluster_call(chat.endpoint))
+        return
     report = _cluster_call(cluster_commands.status)
     if _global_opts().json:
         _print_json(data=report)
@@ -2539,6 +2542,27 @@ def cluster_status_cmd() -> None:
         console.print("No problems found.", markup=False)
 
 
+def _cluster_employee_status(point) -> None:
+    """A server-health view for an employee PC: Macs, memory, loaded models."""
+    from omm.cluster import chat
+
+    data = _cluster_call(lambda: chat.view(point, "/omm/status", timeout=chat.LIST_TIMEOUT))
+    if _global_opts().json:
+        _print_json(data={"role": "employee", "head": point.url, **data})
+        return
+    console.print(f"Cluster head: {point.url}", markup=False)
+    console.print(f"Macs connected: {data['macs']}", markup=False)
+    if data["memory_total_bytes"]:
+        console.print(f"Memory free: {data['memory_free_bytes'] / 1024 ** 3:.0f}/"
+                      f"{data['memory_total_bytes'] / 1024 ** 3:.0f} GiB", markup=False)
+    if not data["models"]:
+        console.print("Loaded models: none (ask the cluster admin to load one)", markup=False)
+        return
+    console.print("Loaded models:", markup=False)
+    for row in data["models"]:
+        console.print(f"  {row['model']}  {_cluster_gib(row['size_bytes'])}  {row['state']}", markup=False)
+
+
 @cluster_app.command(name="restart")
 @global_flags
 def cluster_restart_cmd() -> None:
@@ -2546,6 +2570,15 @@ def cluster_restart_cmd() -> None:
     from omm.cluster import commands as cluster_commands
 
     _cluster_call(cluster_commands.restart, _cluster_out)
+
+
+def _cluster_employee_point():
+    """The head's gateway when this PC is an employee's (no cluster.json), else None."""
+    from omm.cluster import chat, settings as cluster_settings
+
+    if cluster_settings.load() is not None:
+        return None
+    return _cluster_call(chat.endpoint)
 
 
 def _cluster_gib(size: int | None) -> str:
@@ -2562,32 +2595,37 @@ def _cluster_guard() -> dict:
 @global_flags
 def cluster_recommend_cmd() -> None:
     """Show the biggest exo models that fit the cluster's free memory."""
-    from omm.cluster import commands as cluster_commands, models as cluster_models
+    from omm.cluster import chat, models as cluster_models
 
-    ranked = _cluster_call(cluster_commands.candidates)
-    states = {row.model: row.state for row in _cluster_call(cluster_models.inventory)}
+    point = _cluster_employee_point()
+    if point is not None:
+        rows = _cluster_call(lambda: chat.view(point, "/omm/recommend"))
+    else:
+        rows = _cluster_call(cluster_models.recommend_rows)
     if _global_opts().json:
-        _print_json(data=[{"model": item.model_id, "size_bytes": item.size_bytes,
-                           "memory_used_fraction": item.memory_used_fraction,
-                           "state": states.get(item.model_id, "not installed")} for item in ranked])
+        _print_json(data=rows)
         return
-    if not ranked:
+    if not rows:
         console.print("No exo model fits this cluster's free memory right now.", markup=False)
         return
-    for index, item in enumerate(ranked, 1):
-        console.print(f"{index}. {item.model_id}  {_cluster_gib(item.size_bytes)}  "
-                      f"uses {item.memory_used_fraction:.0%} of free memory  "
-                      f"[{states.get(item.model_id, 'not installed')}]", markup=False)
-    console.print("Install one with: omm cluster install <model>", markup=False)
+    for index, row in enumerate(rows, 1):
+        console.print(f"{index}. {row['model']}  {_cluster_gib(row['size_bytes'])}  "
+                      f"uses {row['memory_used_fraction']:.0%} of free memory  [{row['state']}]", markup=False)
+    console.print("To use one, ask the cluster admin to install and load it." if point is not None
+                  else "Install one with: omm cluster install <model>", markup=False)
 
 
 @cluster_app.command(name="search")
 @global_flags
 def cluster_search_cmd(text: str = typer.Argument(..., help="Words to look for in MLX model names")) -> None:
     """Search Hugging Face for MLX models exo can run."""
-    from omm.cluster import models as cluster_models
+    from omm.cluster import chat, models as cluster_models
 
-    rows = _cluster_call(cluster_models.search, text)
+    point = _cluster_employee_point()
+    if point is not None:
+        rows = _cluster_call(lambda: chat.view(point, "/omm/search", q=text))
+    else:
+        rows = _cluster_call(cluster_models.search, text)
     if _global_opts().json:
         _print_json(data=rows)
         return
@@ -2669,9 +2707,13 @@ def _cluster_rows_text(rows) -> list[str]:
 @global_flags
 def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
     """Show a model's details, which Macs have it, and whether it fits now."""
-    from omm.cluster import models as cluster_models
+    from omm.cluster import chat, models as cluster_models
 
-    data = _cluster_call(cluster_models.info, model)
+    point = _cluster_employee_point()
+    if point is not None:
+        data = _cluster_call(lambda: chat.view(point, "/omm/info", model=model))
+    else:
+        data = _cluster_call(cluster_models.info, model)
     if _global_opts().json:
         _print_json(data=data)
         return
@@ -2684,7 +2726,11 @@ def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> N
     if card.get("capabilities"):
         console.print(f"  Capabilities: {', '.join(map(str, card['capabilities']))}", markup=False)
     console.print(f"  Size: {_cluster_gib(data['size_bytes'])}", markup=False)
-    console.print("  Macs: " + ", ".join(f"{node['name']} {node['state']}" for node in data["nodes"]), markup=False)
+    if "nodes" in data:
+        console.print("  Macs: " + ", ".join(f"{node['name']} {node['state']}" for node in data["nodes"]), markup=False)
+    else:
+        # An employee PC is told how many Macs have it, not which ones.
+        console.print(f"  Macs: {data['nodes_installed']}/{data['nodes_total']} installed", markup=False)
     if data["loaded"]:
         console.print(f"  Loaded ({data['sharding']})", markup=False)
     elif data["fits"]:
@@ -2748,23 +2794,37 @@ def _cluster_load_installed(model: str) -> None:
 @cluster_app.command(name="benchmark")
 @global_flags
 def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
-    """Measure first-token time and tokens/sec of one answer on the cluster (head Mac only, never uploaded)."""
+    """Measure first-token time and tokens/sec of one answer on the cluster (never uploaded)."""
     from omm.cluster import bench, chat, commands as cluster_commands, exo_client
 
-    _cluster_call(cluster_commands.require_head_for, "omm cluster benchmark")
-    _cluster_load_installed(model)
-    point = chat.Endpoint(chat.LOCAL_EXO, None)
-    result = _cluster_call(bench.measure, point, model)
-    instance = next((i for i in _cluster_call(exo_client.ExoClient().state).instances if i.model_id == model), None)
-    result["sharding"] = instance.sharding if instance else None
-    result["node_count"] = len(instance.node_ids) if instance else None
+    point = _cluster_employee_point()
+    if point is not None:
+        # An employee measures what is loaded; loading stays the admin's call.
+        rows = {row.model: row for row in _cluster_call(chat.loaded_rows, point)}
+        if model not in rows:
+            err_console.print(f"{model} is not loaded on the cluster; ask the cluster admin to run: "
+                              f"omm cluster load {model}", markup=False)
+            raise typer.Exit(1)
+        result = _cluster_call(bench.measure, point, model)
+        result["sharding"], result["node_count"] = None, None
+    else:
+        _cluster_call(cluster_commands.require_head_for, "omm cluster benchmark")
+        _cluster_load_installed(model)
+        point = chat.Endpoint(chat.LOCAL_EXO, None)
+        result = _cluster_call(bench.measure, point, model)
+        instance = next((i for i in _cluster_call(exo_client.ExoClient().state).instances if i.model_id == model),
+                        None)
+        result["sharding"] = instance.sharding if instance else None
+        result["node_count"] = len(instance.node_ids) if instance else None
     if _global_opts().json:
         _print_json(data=result)
         return
     speed = result["decode_tokens_per_second"]
     console.print(f"{model}: first token {result['ttft_seconds']:.2f} s, "
                   + (f"{speed:.1f} tok/s" if speed else "speed not measurable")
-                  + f" ({result['output_tokens']} tokens, {result['sharding']} on {result['node_count']} Mac(s))",
+                  + f" ({result['output_tokens']} tokens"
+                  + (f", {result['sharding']}" if result["sharding"] else "")
+                  + (f" on {result['node_count']} Mac(s)" if result["node_count"] else "") + ")",
                   markup=False)
 
 

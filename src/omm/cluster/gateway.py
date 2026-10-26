@@ -44,6 +44,10 @@ ALLOWED_ROUTES = frozenset({
 # (120 on exo 1.0.71), so `omm cluster run` on an employee PC asks here which
 # ones are actually loaded. Only model ids, sizes, Mac counts and load state leave /state.
 LOADED_MODELS_ROUTE = ("GET", "/omm/loaded-models")
+# Read-only views an employee PC asks for (`omm cluster status/recommend/
+# search/info`). None of them downloads, loads or unloads anything, and none
+# names a Mac: status and info give counts only.
+VIEW_ROUTES = frozenset({"/omm/status", "/omm/recommend", "/omm/search", "/omm/info"})
 _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade", "host", "authorization", "x-api-key", "content-length",
@@ -216,6 +220,8 @@ class _Handler(BaseHTTPRequestHandler):
             return 401, None
         if (self.command, path) == LOADED_MODELS_ROUTE:
             return self._reply_loaded_models(), name
+        if self.command == "GET" and path in VIEW_ROUTES:
+            return self._reply_view(path), name
         # Shared document search (#504) is answered here, not by exo.
         documents = path == "/mcp" or path.startswith("/rag/")
         if not documents and (self.command, path) not in ALLOWED_ROUTES:
@@ -305,12 +311,46 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             upstream.close()
 
-    def _reply_loaded_models(self) -> int:
-        from omm.cluster.errors import ClusterError
+    def _exo(self):
         from omm.cluster.exo_client import ExoClient
 
+        return ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}")
+
+    def _reply_view(self, path: str) -> int:
+        from urllib.parse import parse_qs
+
+        from omm.cluster import models
+        from omm.cluster.errors import ClusterError
+        from omm.cluster.exo_client import ExoUnavailable
+
+        query = parse_qs(urlsplit(self.path).query)
+        argument = (query.get("q") or query.get("model") or [""])[0]
+        if path in ("/omm/search", "/omm/info") and not argument:
+            self._reply_error(400, "invalid_request_error", "omm cluster: name what to look for")
+            return 400
+        client = self._exo()
         try:
-            raw = ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}").raw_state()
+            if path == "/omm/status":
+                data = models.employee_status(client)
+            elif path == "/omm/recommend":
+                data = models.recommend_rows(client)
+            elif path == "/omm/search":
+                data = models.search(argument, client)
+            else:
+                data = models.employee_info(argument, client)
+        except ExoUnavailable:
+            self._reply_error(502, "api_error", "omm cluster: exo is not running on the head Mac")
+            return 502
+        except ClusterError as error:
+            self._reply_error(400, "invalid_request_error", f"omm cluster: {error}")
+            return 400
+        return self._reply_json(data)
+
+    def _reply_loaded_models(self) -> int:
+        from omm.cluster.errors import ClusterError
+
+        try:
+            raw = self._exo().raw_state()
         except ClusterError:
             self._reply_error(502, "api_error", "omm cluster: exo is not running on this Mac")
             return 502
@@ -319,7 +359,10 @@ class _Handler(BaseHTTPRequestHandler):
         rows = [row.as_dict() for row in inventory_from(raw) if row.state in ("loaded", "loading")]
         # "models" stays bare ids for employees on an older omm; "rows" carry the
         # size and Mac count `omm cluster list` shows.
-        body = json.dumps({"models": [row["model"] for row in rows], "rows": rows}).encode()
+        return self._reply_json({"models": [row["model"] for row in rows], "rows": rows})
+
+    def _reply_json(self, data) -> int:
+        body = json.dumps(data).encode()
         self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

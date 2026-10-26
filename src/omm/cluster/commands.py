@@ -292,16 +292,20 @@ def restart(out: Out) -> None:
 
 
 def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
-    require_macos()
-    client = client or ExoClient()
+    # The gateway passes the client for its own exo; only a direct call needs this Mac to be one.
+    if client is None:
+        require_macos()
+        client = ExoClient()
     state = client.state()
     models = recommend.prefilter(client.models(), state)
     ids = [m.model_id for m in models]
+    base_url = getattr(client, "base_url", None)
     # A client per call: requests.Session (inside every ExoClient) is not
     # documented as thread-safe.
     pool = ThreadPoolExecutor(max_workers=PREVIEW_WORKERS)
     try:
-        previews = dict(zip(ids, pool.map(lambda model_id: ExoClient().previews(model_id), ids)))
+        previews = dict(zip(ids, pool.map(
+            lambda model_id: (ExoClient(base_url) if base_url else ExoClient()).previews(model_id), ids)))
     finally:
         # After a failed preview, do not wait for the ones still queued.
         pool.shutdown(cancel_futures=True)
@@ -381,11 +385,23 @@ def require_head() -> None:
         raise UsageProblem("tokens are managed on the head Mac")
 
 
+def _has_remote() -> bool:
+    """An employee PC: `omm rag remote set` saved the head's address and token."""
+    from omm import rag_remote
+
+    try:
+        return rag_remote.load() is not None
+    except rag_remote.RemoteError:
+        return False
+
+
 def require_head_for(action: str) -> None:
     # The head keeps the model it reloads after a restart (cluster.json
     # `model`); a change made on a member would be undone by that reload.
-    require_macos()
     current = settings.load()
+    if current is None and _has_remote():
+        raise UsageProblem(f"{action} runs on the cluster's head Mac; ask its admin")
+    require_macos()
     if current is None:
         raise UsageProblem("this Mac is not in a cluster; run omm cluster init or join first")
     if current.role != "head":
