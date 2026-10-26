@@ -381,6 +381,17 @@ def require_head() -> None:
         raise UsageProblem("tokens are managed on the head Mac")
 
 
+def require_head_for(action: str) -> None:
+    # The head keeps the model it reloads after a restart (cluster.json
+    # `model`); a change made on a member would be undone by that reload.
+    require_macos()
+    current = settings.load()
+    if current is None:
+        raise UsageProblem("this Mac is not in a cluster; run omm cluster init or join first")
+    if current.role != "head":
+        raise UsageProblem(f"{action} runs on the head Mac; this Mac is a member of the cluster")
+
+
 def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
