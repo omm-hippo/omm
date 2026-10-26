@@ -163,7 +163,7 @@ def apply(*, gateway_port: int | None, run=subprocess.run) -> None:
 def remove(*, run=subprocess.run) -> None:
     result = run(["sudo", "/bin/sh", "-c", REMOVE_SCRIPT], check=False)
     if result.returncode != 0:
-        raise ClusterError("could not remove the cluster firewall rules (sudo failed); nothing else was changed")
+        raise ClusterError("could not remove the cluster firewall rules (sudo failed)")
 
 
 def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "unchecked", "missing", "drift"]:

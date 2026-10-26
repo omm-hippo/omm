@@ -2506,8 +2506,19 @@ def cluster_status_cmd() -> None:
             console.print(f"  {node['name']}: {memory}, RDMA {node['rdma']}, "
                           f"macOS {node['os_version'] or '?'}", markup=False)
         for instance in exo["instances"]:
-            console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
-                          f"{instance['node_count']} Mac(s))", markup=False)
+            model, done, total = instance["model_id"], instance["downloaded_bytes"], instance["total_bytes"]
+            if instance["state"] == "ready":
+                line = f"Serving {model} ({instance['sharding']}, {instance['node_count']} Mac(s))"
+            elif instance["state"] == "failed":
+                line = f"{instance['failed_on']} could not download {model}: {instance['error']}"
+            elif instance["state"] == "loading":
+                line = f"Loading {model} into memory"
+            elif total:
+                line = (f"Downloading {model}: {done * 100 // total}% ({done / 1024 ** 3:.1f} of "
+                        f"{total / 1024 ** 3:.1f} GiB on the slowest Mac)")
+            else:
+                line = f"Waiting for exo to start downloading {model}"
+            console.print(f"  {line}", markup=False)
     if report["kept_model"]:
         console.print(f"Kept loaded: {report['kept_model']} (this Mac loads it again after exo restarts)", markup=False)
     firewall_text = report["firewall"]
