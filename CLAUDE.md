@@ -297,7 +297,9 @@ adds exo (and the gateway's real Python binary on the head) to the macOS Applica
 with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The
 head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
 `_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
-tokens from `tokens.py` (fail closed) and forwards four inference routes. It also folds
+tokens from `tokens.py` (fail closed) and forwards four inference routes; it answers
+`GET /omm/loaded-models` itself (exo's `/v1/models` lists every known model, not the loaded
+ones), which `omm cluster run` (`chat.py`) uses on an employee PC. It also folds
 Claude Code's `role: "system"` messages into the top-level `system` field, because exo
 answers those with 422. exo keeps instances only in memory, so the gateway process also runs
 `autoload.py`: every 30 s it reloads the model `omm cluster model` last loaded on the head

@@ -121,6 +121,7 @@ omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
 omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
 omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
 omm cluster model [MODEL] [--unload]  # Recommend exo models that fit, or load/unload one
+omm cluster run [MODEL]  # Chat in the terminal with the model the cluster serves (any PC with omm rag remote set)
 omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
 omm cluster token list  # List employee tokens by name (head Mac)
 omm cluster token revoke <name>  # Revoke an employee token (head Mac)

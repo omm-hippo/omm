@@ -538,6 +538,48 @@
     {
       "path": [
         "cluster",
+        "run"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Chat in the terminal with the model the cluster serves (any PC with omm rag remote set).",
+      "description": "",
+      "usage": "omm cluster run [OPTIONS] [model]",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "Loaded exo model id; omit when the cluster serves one",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#run"
+    },
+    {
+      "path": [
+        "cluster",
         "status"
       ],
       "kind": "command",
