@@ -2806,7 +2806,7 @@ def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (s
                               f"omm cluster load {model}", markup=False)
             raise typer.Exit(1)
         result = _cluster_call(bench.measure, point, model)
-        result["sharding"], result["node_count"] = None, rows[model].nodes_installed or None
+        result["sharding"], result["node_count"] = None, None
     else:
         _cluster_call(cluster_commands.require_head_for, "omm cluster benchmark")
         _cluster_load_installed(model)

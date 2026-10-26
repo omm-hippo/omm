@@ -137,7 +137,9 @@ def test_search_runs_on_the_head(employee):
 def test_benchmark_measures_a_loaded_model_through_the_gateway(employee):
     result, text = _run("cluster", "benchmark", LOADED)
     assert result.exit_code == 0, result.output
-    assert "tok/s" in text and "1 Mac(s)" in text
+    assert "tok/s" in text
+    # Installed copies are not the Macs serving it (Tensor can use 2 of 3), so no count is claimed.
+    assert "Mac(s)" not in text
 
 
 def test_benchmark_refuses_a_model_that_is_not_loaded(employee):
