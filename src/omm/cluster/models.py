@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from typing import Callable
+
 from omm.cluster import commands, exo_client, recommend
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
@@ -200,3 +202,59 @@ def search(query: str, client: ExoClient | None = None) -> list[dict]:
         rows.append({"model": hit.model_id, "downloads": hit.downloads, "in_catalog": model is not None,
                      "size_bytes": size, "fits": None if size is None else size <= budget})
     return rows
+
+
+def _gib(size: int | None) -> str:
+    return f"{size / _GIB:.1f} GiB" if size else "size unknown"
+
+
+def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], bool] | None,
+                  client: ExoClient | None = None) -> str:
+    """Load `model_id` unless it is loaded, applying `omm setting memory-guard`.
+
+    exo builds its placements from each Mac's free memory, which already
+    leaves out loaded models, and marks every row of a model that does not
+    fit with NO_MEMORY. `confirm` is None without a terminal to ask on.
+    """
+    from omm.memory_guard import GuardPolicy
+
+    commands.require_head_for("Loading a model")
+    client = client or ExoClient()
+    state = client.state()
+    if any(instance.model_id == model_id for instance in state.instances):
+        return commands.load_model(model_id, out, client)
+    previews = client.previews(model_id)
+    placement = recommend.choose_placement(previews)
+    if placement is not None:
+        return commands.load_model(model_id, out, client, placement)
+    loaded = list(dict.fromkeys(instance.model_id for instance in state.instances))
+    if not loaded or not any(exo_client.NO_MEMORY in (row.error or "") for row in previews):
+        raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
+    sizes = {model.model_id: model.size_bytes for model in client.models()}
+    listed = ", ".join(f"{name} ({_gib(sizes.get(name))})" for name in loaded)
+    if policy is GuardPolicy.OBSERVE:
+        out(f"Memory Guard warning: {model_id} does not fit next to {listed}; trying anyway (observe mode).")
+        raise ClusterError(f"exo refused to load {model_id}: {exo_client.NO_MEMORY}")
+    if policy is GuardPolicy.BLOCK or confirm is None:
+        raise ClusterError(f"Memory Guard blocked the load: {model_id} ({_gib(sizes.get(model_id))}) does not fit "
+                           f"next to {listed}. Free memory with: omm cluster unload <model>")
+    free = sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
+    need = sizes.get(model_id) or 0
+    victims: list[str] = []
+    for name in sorted(loaded, key=lambda name: sizes.get(name) or 0, reverse=True):
+        if free >= need:
+            break
+        victims.append(name)
+        free += sizes.get(name) or 0
+    if free < need:
+        raise ClusterError(f"{model_id} ({_gib(need)}) does not fit even with every loaded model unloaded")
+    names = ", ".join(victims)
+    if not confirm(f"Unload {names} to make room for {model_id}? They may be in use by other people."):
+        raise ClusterError(f"Kept {names} loaded; {model_id} was not loaded.")
+    for name in victims:
+        commands.unload_model(name, client)
+        out(f"Unloaded {name}.")
+    placement = recommend.choose_placement(client.previews(model_id))
+    if placement is None:
+        raise ClusterError(f"{model_id} still does not fit after unloading {names}")
+    return commands.load_model(model_id, out, client, placement)

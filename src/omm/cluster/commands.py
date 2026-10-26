@@ -308,14 +308,14 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
     return recommend.rank(models, previews, state)
 
 
-def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
+def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None) -> str:
     require_macos()
     client = client or ExoClient()
     if any(i.model_id == model_id for i in client.state().instances):
         # exo would place a second full copy next to the first one.
         out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
     else:
-        placement = recommend.choose_placement(client.previews(model_id))
+        placement = placement or recommend.choose_placement(client.previews(model_id))
         if placement is None:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
         client.create_instance(placement)

@@ -45,6 +45,8 @@ class FakeExo:
         self.instances = {}  # instance id -> (model, ready)
         self.catalog = {SMALL: 327, OTHER: 696, "big/Huge-8bit": 200_000}
         self.fits = {SMALL: True, OTHER: True}
+        self.fit_alone = set()  # fits only once none of `blockers` is loaded
+        self.blockers = {SMALL, OTHER}
         self.started, self.deleted_downloads, self.deleted_instances, self.added, self.created = [], [], [], [], []
         self.complete_on_poll = True
         self.fail_on = None
@@ -89,7 +91,8 @@ class FakeExo:
                 for m, mb in self.catalog.items()]
 
     def previews(self, model_id):
-        if self.fits.get(model_id):
+        loaded = {model for model, _ in self.instances.values()}
+        if self.fits.get(model_id) or (model_id in self.fit_alone and not loaded & self.blockers):
             return [exo_client.Placement(model_id, "Pipeline", {"MlxRingInstance": {}},
                                          {n: GIB for n in self.nodes})]
         return [exo_client.Placement(model_id, "Pipeline", {}, {}, exo_client.NO_MEMORY)]
@@ -138,7 +141,10 @@ class FakeExo:
 
 @pytest.fixture
 def exo(monkeypatch, isolated_omm_home):
+    from omm.cluster import commands
+
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(commands, "lan_ipv4", lambda: "192.0.2.10")
     settings.save(settings.ClusterSettings(role="head", namespace="omm-" + "0" * 32, gateway_port=52440))
     return FakeExo()
 
@@ -249,3 +255,101 @@ def test_search_marks_catalog_and_fit(exo):
     assert rows[0] == {"model": SMALL, "downloads": 40482, "in_catalog": True,
                        "size_bytes": 327 * 1024 * 1024, "fits": True}
     assert rows[1]["in_catalog"] is False and rows[1]["size_bytes"] is None and rows[1]["fits"] is None
+
+
+BIG = "big/Huge-8bit"
+
+
+def _guarded(exo, policy, answer=None):
+    asked = []
+
+    def confirm(question):
+        asked.append(question)
+        return answer
+
+    seen, out = _lines()
+    result = models.ensure_loaded(BIG, out, policy=policy, confirm=None if answer is None else confirm, client=exo)
+    return result, asked, seen
+
+
+def _two_loaded(exo):
+    exo.fits[BIG] = False
+    exo.fit_alone = {BIG}
+    exo.have(SMALL, "n1", "n2", "n3")
+    exo.have(OTHER, "n1", "n2", "n3")
+    exo.load(SMALL)
+    exo.load(OTHER)
+    # Sizes in MiB: SMALL 39 GiB, OTHER 48.8 GiB, BIG 156.25 GiB.
+    exo.catalog[SMALL] = 40_000
+    exo.catalog[OTHER] = 50_000
+    exo.catalog[BIG] = 160_000
+
+
+def test_ensure_loaded_loads_when_it_fits(exo):
+    exo.fits[BIG] = True
+    seen, out = _lines()
+    assert models.ensure_loaded(BIG, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo).startswith("Serving")
+    assert exo.created == [BIG]
+
+
+def test_guard_block_refuses(exo):
+    _two_loaded(exo)
+    with pytest.raises(ClusterError, match="Memory Guard blocked the load") as caught:
+        _guarded(exo, GuardPolicy.BLOCK)
+    assert SMALL in str(caught.value) and "omm cluster unload" in str(caught.value)
+    assert exo.deleted_instances == [] and exo.created == []
+
+
+def test_guard_ask_without_tty_refuses(exo):
+    _two_loaded(exo)
+    with pytest.raises(ClusterError, match="Memory Guard blocked the load"):
+        _guarded(exo, GuardPolicy.ASK)
+    assert exo.deleted_instances == []
+
+
+def test_guard_ask_unloads_largest_first_then_loads(exo):
+    _two_loaded(exo)
+    # 75 GiB free + OTHER 48.8 is short of 156.25; + SMALL 39 is enough.
+    exo.free = {n: 25 * GIB for n in exo.nodes}
+    result, asked, seen = _guarded(exo, GuardPolicy.ASK, answer=True)
+    assert len(asked) == 1 and OTHER in asked[0] and SMALL in asked[0] and "in use by other people" in asked[0]
+    assert exo.deleted_instances == [f"i-{OTHER}", f"i-{SMALL}"]
+    assert exo.created == [BIG] and result.startswith("Serving")
+
+
+def test_guard_ask_offers_only_what_is_needed(exo):
+    _two_loaded(exo)
+    exo.free = {n: 40 * GIB for n in exo.nodes}  # 120 GiB free + OTHER 48.8 >= 156.25
+    exo.blockers = {OTHER}
+    result, asked, seen = _guarded(exo, GuardPolicy.ASK, answer=True)
+    assert OTHER in asked[0] and SMALL not in asked[0]
+    assert exo.deleted_instances == [f"i-{OTHER}"]
+
+
+def test_guard_ask_declined_keeps_models(exo):
+    _two_loaded(exo)
+    with pytest.raises(ClusterError, match="was not loaded"):
+        _guarded(exo, GuardPolicy.ASK, answer=False)
+    assert exo.deleted_instances == [] and exo.created == []
+
+
+def test_guard_observe_shows_exo_error(exo):
+    _two_loaded(exo)
+    with pytest.raises(ClusterError, match="exo refused to load .*No cycles found with sufficient memory"):
+        _guarded(exo, GuardPolicy.OBSERVE)
+    assert exo.deleted_instances == []
+
+
+def test_not_memory_related_misfit_keeps_old_error(exo):
+    exo.fits[BIG] = False
+    exo.previews = lambda model_id: [exo_client.Placement(model_id, "Tensor", {}, {}, "No tensor sharding found")]
+    with pytest.raises(ClusterError, match="does not fit in this cluster's free memory"):
+        _guarded(exo, GuardPolicy.ASK, answer=True)
+
+
+def test_guard_ask_refuses_when_unloading_everything_is_not_enough(exo):
+    _two_loaded(exo)
+    exo.free = {n: 1 * GIB for n in exo.nodes}
+    with pytest.raises(ClusterError, match="even with every loaded model unloaded"):
+        _guarded(exo, GuardPolicy.ASK, answer=True)
+    assert exo.deleted_instances == []
