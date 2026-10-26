@@ -1,0 +1,61 @@
+[
+ {
+  "id": "mlx-community/Qwen3-ASR-0.6B-8bit",
+  "author": "",
+  "downloads": 209164,
+  "likes": 6,
+  "last_modified": "",
+  "tags": [
+   "mlx-audio",
+   "safetensors",
+   "qwen3_asr",
+   "mlx",
+   "speech-to-text",
+   "speech",
+   "transcription",
+   "asr",
+   "stt",
+   "license:apache-2.0",
+   "8-bit",
+   "region:us"
+  ]
+ },
+ {
+  "id": "mlx-community/Qwen3-0.6B-8bit",
+  "author": "",
+  "downloads": 52776,
+  "likes": 10,
+  "last_modified": "",
+  "tags": [
+   "mlx",
+   "safetensors",
+   "qwen3",
+   "text-generation",
+   "conversational",
+   "base_model:Qwen/Qwen3-0.6B",
+   "base_model:quantized:Qwen/Qwen3-0.6B",
+   "license:apache-2.0",
+   "8-bit",
+   "region:us"
+  ]
+ },
+ {
+  "id": "mlx-community/Qwen3-0.6B-4bit",
+  "author": "",
+  "downloads": 40482,
+  "likes": 18,
+  "last_modified": "",
+  "tags": [
+   "mlx",
+   "safetensors",
+   "qwen3",
+   "text-generation",
+   "conversational",
+   "base_model:Qwen/Qwen3-0.6B",
+   "base_model:quantized:Qwen/Qwen3-0.6B",
+   "license:apache-2.0",
+   "4-bit",
+   "region:us"
+  ]
+ }
+]
