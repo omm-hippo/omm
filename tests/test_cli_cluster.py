@@ -1283,3 +1283,26 @@ def test_run_without_a_name_and_no_local_model_uses_the_cluster(cluster_fakes, m
     result = runner.invoke(cli.app, ["run"], input="hello\n/bye\n")
     assert result.exit_code == 0, result.output
     assert seen == [LIVE_MODEL]
+
+
+def test_benchmark_prints_speed_and_layout(cluster_fakes, monkeypatch):
+    from omm.cluster import bench
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady")
+    _on_every_mac(cluster_fakes)
+    monkeypatch.setattr(bench, "measure", lambda point, model: {
+        "model": model, "ttft_seconds": 0.42, "decode_tokens_per_second": 38.1,
+        "prompt_tokens_per_second": 70.0, "output_tokens": 256, "source": "exo"})
+    result = runner.invoke(cli.app, ["cluster", "benchmark", LIVE_MODEL])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    assert "first token 0.42 s, 38.1 tok/s (256 tokens, Pipeline on 1 Mac(s))" in text
+    data = json.loads(runner.invoke(cli.app, ["--json", "cluster", "benchmark", LIVE_MODEL]).output)
+    assert data["decode_tokens_per_second"] == 38.1 and data["sharding"] == "Pipeline" and data["node_count"] == 1
+
+
+def test_benchmark_refused_on_member(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-" + "a" * 32])
+    result = runner.invoke(cli.app, ["cluster", "benchmark", LIVE_MODEL])
+    assert result.exit_code == 2 and "runs on the head Mac" in " ".join(result.output.split())

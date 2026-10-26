@@ -2731,6 +2731,43 @@ def cluster_run_cmd(
     _cluster_chat(model)
 
 
+def _cluster_load_installed(model: str) -> None:
+    """Load an installed model that is not loaded yet; never start a download from here."""
+    from omm.cluster import models as cluster_models
+
+    rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
+    if model in rows and rows[model].state == "loaded":
+        return
+    if model not in rows or not rows[model].nodes_installed:
+        err_console.print(f"{model} is not installed; run: omm cluster install {model}", markup=False)
+        raise typer.Exit(1)
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+                  markup=False)
+
+
+@cluster_app.command(name="benchmark")
+@global_flags
+def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+    """Measure first-token time and tokens/sec of one answer on the cluster (head Mac only, never uploaded)."""
+    from omm.cluster import bench, chat, commands as cluster_commands, exo_client
+
+    _cluster_call(cluster_commands.require_head_for, "omm cluster benchmark")
+    _cluster_load_installed(model)
+    point = chat.Endpoint(chat.LOCAL_EXO, None)
+    result = _cluster_call(bench.measure, point, model)
+    instance = next((i for i in _cluster_call(exo_client.ExoClient().state).instances if i.model_id == model), None)
+    result["sharding"] = instance.sharding if instance else None
+    result["node_count"] = len(instance.node_ids) if instance else None
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    speed = result["decode_tokens_per_second"]
+    console.print(f"{model}: first token {result['ttft_seconds']:.2f} s, "
+                  + (f"{speed:.1f} tok/s" if speed else "speed not measurable")
+                  + f" ({result['output_tokens']} tokens, {result['sharding']} on {result['node_count']} Mac(s))",
+                  markup=False)
+
+
 def _cluster_configured() -> bool:
     from omm.cluster import chat
 
@@ -2747,12 +2784,7 @@ def _cluster_chat(model: str | None) -> None:
     point = _cluster_call(chat.endpoint)
     loaded = _cluster_call(chat.loaded_models, point)
     if model is not None and model not in loaded and cluster_settings.load() is not None:
-        rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
-        if model not in rows or not rows[model].nodes_installed:
-            err_console.print(f"{model} is not installed; run: omm cluster install {model}", markup=False)
-            raise typer.Exit(1)
-        console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
-                      markup=False)
+        _cluster_load_installed(model)
         loaded = _cluster_call(chat.loaded_models, point)
     chosen = _cluster_call(chat.pick_model, model, loaded)
     console.print(f"{chosen} on {point.where}", markup=False)
