@@ -26,7 +26,11 @@ UPLOAD_TIMEOUT = 900  # The head embeds every chunk before it answers.
 
 
 class RemoteError(ValueError):
-    """A user-facing problem; never contains the token."""
+    """A user-facing problem; never contains the token. ``status`` is the head's HTTP status, if any."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -106,7 +110,7 @@ class Client:
             with self._opener.open(req, timeout=timeout) as response:
                 payload = response.read()
         except urlerror.HTTPError as error:
-            raise RemoteError(_message(error.code, error.read())) from None
+            raise RemoteError(_message(error.code, error.read()), error.code) from None
         except (urlerror.URLError, OSError):
             raise RemoteError(f"헤드({self.remote.url})에 연결하지 못했어요. 같은 사내망인지, 헤드 Mac이 켜져 있는지 확인해 주세요.") from None
         try:

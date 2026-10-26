@@ -189,6 +189,7 @@ def status() -> dict:
                 settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port, merged))
     fw = "missing"
     gateway = "not_head"
+    semantic = None
     if current is not None and settings.is_legacy(current.namespace):
         problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
                         "on the head Mac and omm cluster join <new name> on every other Mac")
@@ -206,8 +207,11 @@ def status() -> dict:
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
+            # Shared document search embeds with the head's own Ollama (#534).
+            from omm import rag_readiness
+            semantic = rag_readiness.check()
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
-            "exo": exo, "firewall": fw, "gateway": gateway, "problems": problems}
+            "exo": exo, "firewall": fw, "gateway": gateway, "semantic_search": semantic, "problems": problems}
 
 
 def restart(out: Out) -> None:

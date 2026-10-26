@@ -31,6 +31,8 @@ class _Fakes:
         self.keep_awake_calls = 0
         self.netconfig_calls = []
         self.power_restores = 0
+        self.semantic = {"state": "ready", "ready": True, "model": "bge-m3", "base_url": "http://127.0.0.1:11434",
+                         "message": "Ollama · bge-m3", "command": None, "persistence": None}
         self.idle_sleep = 0
         self.appfw_allowed = []
         self.appfw_removes = 0
@@ -137,6 +139,8 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(service, "is_running", lambda **k: fakes.gateway_running)
     monkeypatch.setattr(commands, "ExoClient", _FakeExoClient)
     monkeypatch.setattr(commands, "lan_ipv4", lambda: "192.0.2.10")
+    from omm import rag_readiness
+    monkeypatch.setattr(rag_readiness, "check", lambda *a, **k: fakes.semantic)
     return fakes
 
 
@@ -232,7 +236,8 @@ def test_init_on_member_is_refused(cluster_fakes):
 def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
-    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "problems"}
+    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "semantic_search", "problems"}
+    assert data["semantic_search"]["state"] == "ready"
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
     assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
@@ -297,7 +302,20 @@ def test_status_when_exo_is_down_has_same_shape(cluster_fakes):
 
 def test_status_without_cluster(cluster_fakes):
     data = _status()
-    assert data["role"] is None and data["gateway"] == "not_head"
+    assert data["role"] is None and data["gateway"] == "not_head" and data["semantic_search"] is None
+
+
+def test_status_shows_document_semantic_search_on_the_head(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "status"])
+    assert "문서 의미 검색: 준비됨 (Ollama · bge-m3)" in result.output
+    cluster_fakes.semantic = {**cluster_fakes.semantic, "state": "not_running", "ready": False,
+                              "message": "Ollama가 설치돼 있지만 켜져 있지 않아요. `ollama serve`로 켜 주세요.",
+                              "command": "ollama serve",
+                              "persistence": "재부팅 뒤에도 켜지게 하려면 `brew services start ollama`를 실행해 주세요."}
+    output = " ".join(runner.invoke(cli.app, ["cluster", "status"]).output.split())
+    assert "문서 의미 검색: 꺼짐 (Ollama가 꺼져 있음) - Ollama가 설치돼 있지만 켜져 있지 않아요." in output
+    assert "`ollama serve`" in output and "brew services start ollama" in output
 
 
 def test_status_plain_output_mentions_nodes(cluster_fakes):

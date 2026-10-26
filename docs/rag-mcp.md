@@ -217,6 +217,53 @@ omm rag connect pi --remote
 - 문서 개수(100개)와 검색 텍스트(200만 자) 제한은 헤드 전체에 걸린 한도라서, 여러 직원이
   함께 씁니다.
 
+## 의미 검색 준비
+
+뜻이 비슷한 문장까지 찾는 의미 검색은 **문서를 저장한 컴퓨터**의 Ollama와 임베딩 모델
+(기본 `bge-m3`)이 있어야 합니다. 혼자 쓸 때는 이 PC, 사내 공유에서는 회사 head Mac입니다.
+없으면 검색은 멈추지 않고 단어 검색만 합니다. 그래서 지금 상태를 먼저 알려 줍니다.
+
+- `omm rag status` (또는 `--json`의 `semantic_search`)가 한 줄로 알려 줍니다.
+
+  ```text
+  의미 검색: 준비됨 (Ollama · bge-m3)
+  의미 검색: 꺼짐 (임베딩 모델 없음) - Ollama에 임베딩 모델 bge-m3이(가) 없어요. `ollama pull bge-m3`로 임베딩 모델을 받아 주세요. 지금은 단어 검색만 해요.
+  의미 검색: 꺼짐 (Ollama가 꺼져 있음) - Ollama가 설치돼 있지만 켜져 있지 않아요. `open -a Ollama`로 Ollama 앱을 켜 주세요. 지금은 단어 검색만 해요.
+  의미 검색: 꺼짐 (Ollama 설치 안 됨) - Ollama를 찾지 못했어요. `brew install ollama`로 설치하고 ... 그다음 `ollama pull bge-m3`. 지금은 단어 검색만 해요.
+  ```
+
+  켜는 방법은 운영체제와 설치 방식에 맞춰 바뀝니다. macOS는 Ollama 앱이면 `open -a Ollama`,
+  Homebrew로 설치했으면 `brew services start ollama`, Windows는 시작 메뉴의 Ollama 앱,
+  Linux는 `sudo systemctl start ollama`(설치 스크립트의 서비스가 있을 때) 또는 `ollama serve`.
+  설치가 안 돼 있으면 macOS는 `brew install ollama`(또는 ollama.com 앱), Windows·Linux는
+  https://ollama.com/download 의 공식 설치 방법을 알려 줍니다.
+- 회사 head에서는 `omm cluster status`에도 `문서 의미 검색: …` 한 줄이 나옵니다.
+- 직원 PC에서는 `omm rag remote`와 `omm rag status`가 head의 상태를 보여 줍니다. 꺼져 있으면
+  "회사 head의 의미 검색이 꺼져 있어요(…) - 관리자에게 알려 주세요."가 나옵니다. head가
+  알려 주는 것은 상태와 모델 이름뿐입니다(경로·명령은 보내지 않아요). head의 omm이 이
+  확인보다 오래됐으면 "상태를 알 수 없어요"가 나옵니다.
+- `omm web` 내 문서 탭의 "지금 보는 곳" 아래에도 같은 경고가 나옵니다. 이 PC면 고치는
+  방법을, 회사 head면 관리자에게 알리라는 말을 보여 줍니다.
+
+OMM은 이 확인 때 아무것도 설치하거나 켜거나 등록하지 않습니다. 이 컴퓨터의 Ollama 주소에
+목록 요청 하나를 보내고(2초 제한) 파일 몇 개가 있는지만 봅니다.
+
+### 재부팅 뒤에도 켜져 있게 하려면
+
+손으로 `ollama serve`를 켰다면 재부팅이나 로그아웃 뒤에는 꺼지고, 검색은 조용히 단어 검색으로
+떨어집니다. 자동으로 켜 둘지는 직접 고릅니다. OMM은 보이는 경우에만 한 줄로 권합니다.
+
+- **macOS, Ollama 앱**: 앱이 로그인할 때 스스로 켜집니다. 시스템 설정 > 일반 > 로그인 항목에서
+  Ollama가 켜져 있는지 보세요.
+- **macOS, Homebrew(`brew install ollama`)**: `brew services start ollama`를 한 번 실행하면
+  로그인할 때마다 켜집니다. 이미 손으로 켠 `ollama serve`가 있으면 먼저 끄세요(같은 포트를 씁니다).
+  `omm rag status`는 `brew services`에 등록돼 있지 않으면 이 명령을 권합니다.
+- **Windows**: 설치 프로그램이 시작 프로그램에 Ollama를 넣습니다. 빠져 있으면 설정 > 앱 >
+  시작 프로그램에서 켜세요.
+- **Linux**: 공식 설치 스크립트가 만든 서비스를 `sudo systemctl enable ollama`로 켜 둡니다.
+- 켜 두지 않기로 했다면, 재부팅 뒤 `omm rag status`(head면 `omm cluster status`)로 확인하고
+  필요할 때 켜면 됩니다.
+
 ## 데이터는 어디에 머무나요?
 
 - 문서 원문, 색인, 검색은 모두 이 PC의 `OMM_HOME/documents` 안에서 끝납니다.
@@ -278,6 +325,6 @@ omm rag connect pi --remote
   상태를 봅니다.
 - "근거 없음"만 나오거나 검색 방식이 "단어만"이면: `omm rag status` 로 의미 검색 상태를
   확인하세요. Ollama가 켜져 있고 임베딩 모델(기본 `bge-m3`, `ollama pull bge-m3`)이 있어야
-  뜻이 비슷한 문장도 찾습니다.
+  뜻이 비슷한 문장도 찾습니다. 고치는 명령은 그 줄에 나옵니다([의미 검색 준비](#의미-검색-준비)).
 - "재색인 필요"가 보이면: `omm rag reindex` 를 실행합니다. "원본 다시 등록 필요"면
   원본을 같은 이름으로 다시 등록합니다.

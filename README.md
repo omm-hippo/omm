@@ -270,7 +270,7 @@ import is off by default and needs the optional `watch` dependencies; see
 ### Local document search (RAG)
 
 ```sh
-omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
+omm rag status [--json]  # Collections, embedding model, whether semantic search is ready (with the fix), and documents that need reindexing
 omm rag collection create <name>  # Create a named collection, e.g. 인사규정
 omm rag collection list [--json]  # List collections with document counts, owner and shares
 omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)

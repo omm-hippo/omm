@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.31",
+  "omm_version": "0.4.47",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -2569,7 +2569,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Show collections, the embedding model, and which documents need reindexing.",
+      "summary": "Show collections, the embedding model, whether semantic search is ready, and which documents need reindexing.",
       "description": "",
       "usage": "omm rag status [OPTIONS]",
       "arguments": [],

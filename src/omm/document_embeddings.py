@@ -56,11 +56,11 @@ class OllamaEmbedder:
         self.base_url = base_url
         self._client = LoopbackJsonClient(base_url)
 
-    def available(self) -> bool:
+    def available(self, *, timeout: float = 5) -> bool:
         """True when the model is pulled; raises when the server is unreachable."""
         from omm.engines.base import RuntimeAdapterError
         try:
-            rows = self._client.request("GET", "/api/tags", timeout=5, default_failure="server_unavailable").data.get("models")
+            rows = self._client.request("GET", "/api/tags", timeout=timeout, default_failure="server_unavailable").data.get("models")
         except RuntimeAdapterError:
             raise EmbeddingUnavailable("server_unavailable", self._server_message()) from None
         if not isinstance(rows, list):
