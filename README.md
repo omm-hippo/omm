@@ -113,17 +113,27 @@ omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnab
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
 omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
-omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio accept connections from other devices
+omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio (and this Mac's omm cluster) accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
 omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
-omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
+omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, document search (head), and any problems (employee PCs: Macs connected, memory, loaded models)
 omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
-omm cluster model [MODEL] [--unload]  # Recommend exo models that fit, or load/unload one
+omm cluster recommend [--json]  # Show the biggest exo models that fit the cluster's free memory
+omm cluster search TEXT [--json]  # Search Hugging Face for MLX models exo can run
+omm cluster install MODEL  # Download a model to every Mac without loading it (head Mac)
+omm cluster uninstall MODEL [--yes]  # Delete a model from every Mac, unloading it first (head Mac)
+omm cluster list [--json]  # Models on the cluster and whether each is loaded (employee PCs: loaded ones)
+omm cluster info MODEL [--json]  # A model's details, which Macs have it, and every way it can be placed now (also from employee PCs)
+omm cluster load MODEL [--sharding tensor|pipeline] [--macs N]  # Load a model into memory for employees, optionally placed your way; obeys omm setting memory-guard (head Mac)
+omm cluster unload MODEL  # Free a loaded model's memory; its files stay (head Mac)
+omm cluster run [MODEL]  # Chat in the terminal, loading an installed model first (any PC with omm rag remote set)
+omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer on the cluster (employee PCs: loaded models; never uploaded)
 omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
 omm cluster token list  # List employee tokens by name (head Mac)
 omm cluster token revoke <name>  # Revoke an employee token (head Mac)
+omm cluster handover MAC [--yes]  # Move the cluster head to another Mac in the cluster (head Mac; employees re-run omm rag remote set)
 omm cluster leave [--yes]  # Remove this Mac's cluster firewall, services, and settings
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
@@ -198,6 +208,7 @@ network. See [command notes](docs/command-notes.md#omm-verify) for what each che
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
 omm setting agent local <claude|codex|pi> --model <tag> [--base-url <origin>]  # Back up harness settings and route to local Ollama
+omm setting agent cluster <claude|codex|pi> --model <exo-model-id>  # Back up harness settings and route to the company cluster gateway
 omm setting agent cloud <claude|codex|pi>  # Restore original routing and preserve unrelated settings edits
 omm setting agent status <claude|codex|pi>  # Inspect saved routing state without loading a model
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
@@ -234,7 +245,7 @@ server; documents and questions never leave this computer. See
 ### Shared company documents (cluster head)
 
 ```sh
-omm rag remote set <head address> [--token TOKEN]  # On an employee PC: use the cluster head's shared collections (token typed hidden when omitted)
+omm rag remote set <head address> [--token TOKEN] [--yes]  # On an employee PC: check the head's certificate fingerprint, then use its shared collections (token typed hidden when omitted)
 omm rag remote  # Show which head `omm rag` uses (the token is never printed)
 omm rag remote clear  # Forget the head and its token; `omm rag` uses this PC again
 omm rag share <collection> <person> | --team <team>  # Let an employee (token name) or a team search a collection (owner or head administrator)
@@ -244,12 +255,13 @@ omm rag team add <team> <person>  # On the head: add an employee (token name) to
 omm rag team remove <team> <person>  # On the head: remove an employee from a team
 omm rag team list  # On the head: list teams and members
 omm rag team delete <team>  # On the head: delete a team and every share made to it
-omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTP, employee token in the harness config)
+omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTPS, employee token in the harness config)
 ```
 
 With a head set, `omm rag collection create|list|delete`, `add`, `remove`, `search`,
 `share` and `unshare` work on the head through the token-checked cluster gateway
-(port 52440). A collection is searchable only by its creator and the head administrator
+(HTTPS, port 52440). The first `omm rag remote set` shows the head certificate's
+fingerprint; accept it only if it matches `omm cluster status` on the head. A collection is searchable only by its creator and the head administrator
 until it is shared. See [document search for coding agents](docs/rag-mcp.md#사내-공유).
 
 ### Local logs and automatic import

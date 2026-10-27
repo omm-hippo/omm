@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import errno
 import functools
 import inspect
@@ -311,6 +312,11 @@ class GlobalOptions:
 # before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
     "cluster status",
+    "cluster recommend",
+    "cluster search",
+    "cluster list",
+    "cluster info",
+    "cluster benchmark",
     "search",
     "list",
     "info",
@@ -341,7 +347,9 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "cluster handover",
     "cluster leave",
+    "cluster uninstall",
     "arena",
     "install",
     "import",
@@ -754,7 +762,7 @@ web_autostart_app = typer.Typer(
 setting_app.add_typer(web_autostart_app)
 agent_app = typer.Typer(
     name="agent",
-    help="Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+    help="Connect Claude Code, Codex or pi to local Ollama or the company cluster, and restore original settings.",
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
 )
@@ -780,12 +788,39 @@ def agent_local(
     console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
 
 
+@agent_app.command(name="cluster")
+def agent_cluster_cmd(
+    harness: str = typer.Argument(..., help="claude, codex or pi."),
+    model: str = typer.Option(..., "--model", help="exo model id the cluster serves (omm cluster status on the head)."),
+) -> None:
+    """Back up settings and connect a harness to the company cluster gateway."""
+    from omm import agent_cluster
+    try:
+        metadata = agent_cluster.connect(harness, model)
+    except (agent_cluster.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_cluster.ConnectionError) else "Could not access configuration files. Check permissions."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"Saved cluster routing settings for {escape(harness)} ({escape(metadata['base_url'])}). Start a new harness session.")
+    console.print("The settings file now holds your employee token and is readable only by you.")
+    if metadata.get("launch"):
+        # Codex and pi read the CA variable only from the environment they start in.
+        console.print(f"{escape(harness)} trusts the cluster's certificate only when started like this:")
+        # Unwrapped: a command split over two lines does not paste.
+        console.print(f"  {metadata['launch']}", markup=False, soft_wrap=True)
+    elif metadata.get("ca_conflict"):
+        console.print(f"Your Claude Code settings already set NODE_EXTRA_CA_CERTS ({escape(metadata['ca_conflict'])}); "
+                      "omm left it. Append the cluster certificate to that file:")
+        console.print(f"  cat {metadata['ca_file']} >> {metadata['ca_conflict']}", markup=False, soft_wrap=True)
+    console.print("The model must be loaded on the cluster (omm cluster load on the head); tool calling is not verified.")
+
+
 @agent_app.command(name="cloud")
 def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
     """Restore original routing while preserving unrelated settings edits."""
-    from omm import agent_connection
+    from omm import agent_cluster, agent_connection
     try:
-        restored = agent_connection.restore(harness)
+        restored = agent_cluster.restore(harness)
     except (agent_connection.ConnectionError, OSError) as error:
         message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Backup retained."
         err_console.print(f"[error]{escape(message)}[/error]")
@@ -2073,7 +2108,7 @@ def engine_doctor_cmd(
 @global_flags
 def engine_security_cmd(
     engine: str | None = typer.Argument(
-        None, autocompletion=complete_engine_key, help="ollama or lmstudio; omit for both"
+        None, autocompletion=complete_engine_key, help="ollama, lmstudio or cluster; omit for all that apply"
     ),
     fix_local_only: bool = typer.Option(
         False,
@@ -2084,22 +2119,35 @@ def engine_security_cmd(
     """Show whether local runtime servers accept connections from other devices."""
     from omm import engine_security
 
+    from omm.cluster import commands as cluster_commands
+
     if engine is not None:
         key = engine.strip().casefold()
-        if key not in {"ollama", "lmstudio"}:
-            err_console.print("engine must be ollama or lmstudio", markup=False)
+        if key not in {"ollama", "lmstudio", "cluster"}:
+            err_console.print("engine must be ollama, lmstudio or cluster", markup=False)
             raise typer.Exit(2)
         targets = [key]
     else:
-        targets = ["ollama", "lmstudio"]
+        targets = ["ollama", "lmstudio", "cluster"]
     if fix_local_only and len(targets) != 1:
         err_console.print("Name one engine when using --fix-local-only.")
         raise typer.Exit(2)
+    if fix_local_only and targets == ["cluster"]:
+        err_console.print("The cluster's exposure is set by its firewall; run omm cluster init (head) or join again.",
+                          markup=False)
+        raise typer.Exit(2)
     try:
-        items = [engine_security.inspect(key) for key in targets]
+        items = [engine_security.inspect(key) for key in targets if key != "cluster"]
     except engine_security.EngineSecurityError as error:
         err_console.print(str(error), markup=False)
         raise typer.Exit(1) from error
+    if "cluster" in targets:
+        cluster_item = _cluster_call(cluster_commands.exposure)
+        if cluster_item is not None:
+            items.append(cluster_item)
+        elif engine is not None:
+            err_console.print("This Mac is not in an omm cluster.", markup=False)
+            raise typer.Exit(1)
 
     if fix_local_only:
         item = items[0]
@@ -2130,6 +2178,7 @@ def engine_security_cmd(
         "external_allowed": "External connections allowed",
         "not_running": "Not running (no connections possible)",
         "unknown": "Could not determine",
+        "gateway_only": "Gateway only (token required)",
     }
     table = _table(title="Engine server security")
     table.add_column("Engine")
@@ -2384,6 +2433,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 
@@ -2428,7 +2478,9 @@ def _cluster_call(func, *args):
 
 
 def _cluster_out(line: str) -> None:
-    console.print(line, markup=False)
+    # The terminal wraps long lines itself: rich's hard line breaks split the
+    # commands and the certificate fingerprint these lines carry.
+    console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_app.command(name="init")
@@ -2454,9 +2506,12 @@ def cluster_join_cmd(
 @cluster_app.command(name="status")
 @global_flags
 def cluster_status_cmd() -> None:
-    """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
-    from omm.cluster import commands as cluster_commands
+    """Show nodes, memory, RDMA, firewall, gateway and document search, and list any problems."""
+    from omm.cluster import chat, commands as cluster_commands, settings as cluster_settings
 
+    if cluster_settings.load() is None and chat.cluster_configured():
+        _cluster_employee_status(_cluster_call(chat.endpoint))
+        return
     report = _cluster_call(cluster_commands.status)
     if _global_opts().json:
         _print_json(data=report)
@@ -2474,18 +2529,72 @@ def cluster_status_cmd() -> None:
             console.print(f"  {node['name']}: {memory}, RDMA {node['rdma']}, "
                           f"macOS {node['os_version'] or '?'}", markup=False)
         for instance in exo["instances"]:
-            console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
-                          f"{instance['node_count']} Mac(s))", markup=False)
+            model, done, total = instance["model_id"], instance["downloaded_bytes"], instance["total_bytes"]
+            if instance["state"] == "ready":
+                line = f"Serving {model} ({instance['sharding']}, {instance['node_count']} Mac(s))"
+            elif instance["state"] == "failed":
+                line = f"{instance['failed_on']} could not download {model}: {instance['error']}"
+            elif instance["state"] == "loading":
+                line = f"Loading {model} into memory"
+            elif total:
+                line = (f"Downloading {model}: {done * 100 // total}% ({done / 1024 ** 3:.1f} of "
+                        f"{total / 1024 ** 3:.1f} GiB on the slowest Mac)")
+            else:
+                line = f"Waiting for exo to start downloading {model}"
+            console.print(f"  {line}", markup=False)
+    if report["kept_models"]:
+        from omm.cluster import recommend
+
+        kept = ", ".join(entry["model"] + ("" if not (entry["sharding"] or entry["macs"]) else
+                                           f" ({recommend.describe(entry['sharding'], entry['macs'])})")
+                         for entry in report["kept_models"])
+        console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
+    if report.get("members"):
+        console.print("Macs following this head:", markup=False)
+        for row in report["members"]:
+            backup = {"current": "documents backed up", "behind": "documents backup behind",
+                      "none": "no documents backup"}[row["backup"]]
+            console.print(f"  {row['name']}: omm {row['version'] or '?'} ({row['version_state'] or 'not checked yet'}), "
+                          f"{backup}", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
     console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
+    if report["document_search"] is not None:
+        from omm.cluster import document_search
+
+        console.print(f"Document search: {document_search.summary(report['document_search'])}", markup=False)
+    if report.get("gateway_ca_sha256"):
+        # What an employee's `omm rag remote set` must show before they accept it.
+        console.print(f"Gateway address: {report['gateway_url']}", markup=False)
+        console.print(f"Gateway certificate (SHA-256): {report['gateway_ca_sha256']}", markup=False, soft_wrap=True, emoji=False)
     if report["problems"]:
         console.print("Problems:", markup=False)
         for problem in report["problems"]:
             console.print(f"  - {problem}", markup=False)
     else:
         console.print("No problems found.", markup=False)
+
+
+def _cluster_employee_status(point) -> None:
+    """A server-health view for an employee PC: Macs, memory, loaded models."""
+    from omm.cluster import chat
+
+    data = _cluster_call(lambda: chat.view(point, "/omm/status", timeout=chat.LIST_TIMEOUT))
+    if _global_opts().json:
+        _print_json(data={"role": "employee", "head": point.url, **data})
+        return
+    console.print(f"Cluster head: {point.url}", markup=False)
+    console.print(f"Macs connected: {data['macs']}", markup=False)
+    if data["memory_total_bytes"]:
+        console.print(f"Memory free: {data['memory_free_bytes'] / 1024 ** 3:.0f}/"
+                      f"{data['memory_total_bytes'] / 1024 ** 3:.0f} GiB", markup=False)
+    if not data["models"]:
+        console.print("Loaded models: none (ask the cluster admin to load one)", markup=False)
+        return
+    console.print("Loaded models:", markup=False)
+    for row in data["models"]:
+        console.print(f"  {row['model']}  {_cluster_gib(row['size_bytes'])}  {row['state']}", markup=False)
 
 
 @cluster_app.command(name="restart")
@@ -2497,33 +2606,375 @@ def cluster_restart_cmd() -> None:
     _cluster_call(cluster_commands.restart, _cluster_out)
 
 
-@cluster_app.command(name="model")
+def _cluster_employee_point():
+    """The head's gateway when this PC is an employee's (no cluster.json), else None."""
+    from omm.cluster import chat, settings as cluster_settings
+
+    if cluster_settings.load() is not None:
+        return None
+    return _cluster_call(chat.endpoint)
+
+
+def _cluster_gib(size: int | None) -> str:
+    return f"{size / 1024 ** 3:.1f} GiB" if size else "size unknown"
+
+
+def _cluster_guard() -> dict:
+    """The memory-guard policy and a confirm callback (None without a terminal)."""
+    policy = memory_guard_mod.normalize_policy(load_config().get("memory_guard_policy", "ask"))
+    return {"policy": policy, "confirm": _ask_confirm if _stdin_is_tty() else None}
+
+
+@cluster_app.command(name="recommend")
 @global_flags
-def cluster_model_cmd(
-    model: str | None = typer.Argument(None, help="exo model id to load; omit to see what fits"),
-    unload: bool = typer.Option(False, "--unload", help="Stop serving this model instead of loading it."),
+def cluster_recommend_cmd() -> None:
+    """Show the biggest exo models that fit the cluster's free memory."""
+    from omm.cluster import chat, models as cluster_models
+
+    point = _cluster_employee_point()
+    if point is not None:
+        rows = _cluster_call(lambda: chat.view(point, "/omm/recommend"))
+    else:
+        rows = _cluster_call(cluster_models.recommend_rows)
+    if _global_opts().json:
+        _print_json(data=rows)
+        return
+    if not rows:
+        console.print("No exo model fits this cluster's free memory right now.", markup=False)
+        return
+    for index, row in enumerate(rows, 1):
+        console.print(f"{index}. {row['model']}  {_cluster_gib(row['size_bytes'])}  "
+                      f"uses {row['memory_used_fraction']:.0%} of free memory  [{row['state']}]", markup=False)
+    console.print("To use one, ask the cluster admin to install and load it." if point is not None
+                  else "Install one with: omm cluster install <model>", markup=False)
+
+
+@cluster_app.command(name="search")
+@global_flags
+def cluster_search_cmd(text: str = typer.Argument(..., help="Words to look for in MLX model names")) -> None:
+    """Search Hugging Face for MLX models exo can run."""
+    from omm.cluster import chat, models as cluster_models
+
+    point = _cluster_employee_point()
+    if point is not None:
+        rows = _cluster_call(lambda: chat.view(point, "/omm/search", q=text))
+    else:
+        rows = _cluster_call(cluster_models.search, text)
+    if _global_opts().json:
+        _print_json(data=rows)
+        return
+    if not rows:
+        console.print(f"No MLX model matches {text}.", markup=False)
+        return
+    for row in rows:
+        fit = {True: "fits", False: "does not fit", None: "fit unknown"}[row["fits"]]
+        where = "" if row["in_catalog"] else "  (not in exo's list; install adds it)"
+        console.print(f"{row['model']}  {_cluster_gib(row['size_bytes'])}  {fit}  "
+                      f"{row['downloads']} downloads{where}", markup=False)
+    console.print("Install one with: omm cluster install <model>", markup=False)
+
+
+@cluster_app.command(name="install")
+@global_flags
+def cluster_install_cmd(model: str = typer.Argument(..., help="exo model id, from omm cluster recommend or search")) -> None:
+    """Download a model to every Mac in the cluster without loading it (head Mac only)."""
+    from omm.cluster import models as cluster_models
+
+    started = _cluster_call(cluster_models.install, model, _cluster_out)
+    if started:
+        console.print(f"Installed {model} on {started} more Mac(s).", markup=False)
+    console.print(f"Chat with it: omm cluster run {model}", markup=False)
+
+
+@cluster_app.command(name="uninstall")
+@global_flags
+def cluster_uninstall_cmd(
+    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
 ) -> None:
-    """Recommend models that fit the cluster, or load or unload one."""
+    """Delete a model's files from every Mac, unloading it first (head Mac only)."""
+    from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    _cluster_call(cluster_commands.require_head_for, "omm cluster uninstall")
+    rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
+    if model in rows and rows[model].state in ("loaded", "loading") and not _global_opts().yes:
+        question = f"{model} is loaded and may be in use by other people. Unload and delete it?"
+        if not _stdin_is_tty():
+            err_console.print(f"{model} is loaded and may be in use; run again with --yes to unload and delete it.",
+                              markup=False)
+            raise typer.Exit(2)
+        if not _ask_confirm(question):
+            raise typer.Exit(1)
+    removed = _cluster_call(cluster_models.uninstall, model, _cluster_out)
+    console.print(f"Removed {model} from {removed} Mac(s).", markup=False)
+
+
+@cluster_app.command(name="list")
+@global_flags
+def cluster_list_cmd() -> None:
+    """List the models on the cluster and whether each one is loaded."""
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+
+    if cluster_settings.load() is None:
+        # An employee PC: the loaded models, through the head's gateway.
+        rows = _cluster_call(chat.loaded_rows, _cluster_call(chat.endpoint))
+    else:
+        rows = _cluster_call(cluster_models.inventory)
+    if _global_opts().json:
+        _print_json(data=[row.as_dict() for row in rows])
+        return
+    if not rows:
+        console.print("No model is loaded on the cluster right now." if cluster_settings.load() is None
+                      else "No models on this cluster yet. Find one with: omm cluster recommend", markup=False)
+        return
+    for line in _cluster_rows_text(rows):
+        console.print(line, markup=False)
+
+
+def _cluster_rows_text(rows) -> list[str]:
+    # An older head sends bare ids: no size or Mac count to show.
+    return [f"{row.model}  {_cluster_gib(row.size_bytes)}  "
+            + (f"{row.nodes_installed}/{row.nodes_total} Macs  " if row.nodes_total else "") + row.state
+            for row in rows]
+
+
+@cluster_app.command(name="info")
+@global_flags
+def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
+    """Show a model's details, which Macs have it, and the ways it can be placed now."""
+    from omm.cluster import chat, models as cluster_models
+
+    point = _cluster_employee_point()
+    if point is not None:
+        data = _cluster_call(lambda: chat.view(point, "/omm/info", model=model))
+    else:
+        data = _cluster_call(cluster_models.info, model)
+    if _global_opts().json:
+        _print_json(data=data)
+        return
+    card = data["card"]
+    console.print(data["model"], markup=False)
+    for label, key in (("Family", "family"), ("Base model", "base_model"), ("Quantization", "quantization"),
+                       ("Context", "context_length")):
+        if card.get(key):
+            console.print(f"  {label}: {card[key]}", markup=False)
+    if card.get("capabilities"):
+        console.print(f"  Capabilities: {', '.join(map(str, card['capabilities']))}", markup=False)
+    console.print(f"  Size: {_cluster_gib(data['size_bytes'])}", markup=False)
+    if "nodes" in data:
+        console.print("  Macs: " + ", ".join(f"{node['name']} {node['state']}" for node in data["nodes"]), markup=False)
+    else:
+        # An employee PC is told how many Macs have it, not which ones.
+        console.print(f"  Macs: {data['nodes_installed']}/{data['nodes_total']} installed", markup=False)
+    if data["loaded"]:
+        macs = data.get("loaded_macs")
+        console.print(f"  Loaded ({data['sharding']}" + (f", {macs} Mac(s))" if macs else ")"), markup=False)
+    elif data["fits"]:
+        console.print(f"  Not loaded; fits now ({_cluster_gib(data['peak_node_bytes'])} on the busiest Mac)", markup=False)
+    else:
+        console.print("  Not loaded; does not fit the cluster's free memory now", markup=False)
+    # An older head sends no placements.
+    for line in _cluster_placement_lines(data["model"], data.get("placements") or [], admin=point is None):
+        console.print(line, markup=False)
+
+
+def _cluster_placement_lines(model: str, rows: list[dict], *, admin: bool = True) -> list[str]:
+    """`omm cluster info`'s table of the ways exo can place a model right now."""
+    if not rows:
+        return []
+    lines = ["  Placements now (sharding, link, Macs, memory per Mac):"]
+    for row in rows:
+        if not row["fits"]:
+            lines.append(f"    {row['sharding']:<9} not possible: {row['error']}")
+            continue
+        macs = row["macs"] or 0
+        count = f"{macs} Mac{'' if macs == 1 else 's'}"
+        text = f"    {row['sharding']:<9} {row['link']:<5} {count:<7} {_cluster_gib(row['memory_per_mac_bytes'])} each"
+        if row.get("nodes"):
+            text += f"  ({', '.join(row['nodes'])})"
+        if row["automatic"]:
+            text += "  <- omm's pick"
+        lines.append(text)
+    if admin and any(row["fits"] for row in rows):
+        # Loading is the head admin's call; an employee only sees what is possible.
+        lines.append(f"  Choose one: omm cluster load {model} --sharding tensor|pipeline --macs N")
+    return lines
+
+
+class _ClusterSharding(str, enum.Enum):
+    tensor = "tensor"
+    pipeline = "pipeline"
+
+
+@cluster_app.command(name="load")
+@global_flags
+def cluster_load_cmd(
+    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
+    sharding: _ClusterSharding | None = typer.Option(
+        None, "--sharding", case_sensitive=False,
+        help="Split the model by tensor or by layers (pipeline); omit to let omm pick"),
+    macs: int | None = typer.Option(None, "--macs", min=1, help="How many Macs to spread it over; omit to let omm pick"),
+) -> None:
+    """Load a model into the cluster's memory so employees can use it (head Mac only)."""
+    from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    _cluster_call(cluster_commands.require_head_for, "omm cluster load")
+    rows = {row.model for row in _cluster_call(cluster_models.inventory)}
+    if model not in rows:
+        console.print(f"{model} is not installed yet; exo downloads it first "
+                      f"(omm cluster install {model} downloads without loading).", markup=False)
+    # exo spells them "Tensor" and "Pipeline".
+    choice = {"sharding": sharding.value.capitalize() if sharding else None, "macs": macs}
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard(), **choice)),
+                  markup=False)
+
+
+@cluster_app.command(name="unload")
+@global_flags
+def cluster_unload_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+    """Free a loaded model's memory; its files stay installed (head Mac only)."""
     from omm.cluster import commands as cluster_commands
 
-    if model is None:
-        if unload:
-            err_console.print("Name the model to unload.", markup=False)
-            raise typer.Exit(2)
-        ranked = _cluster_call(cluster_commands.candidates)
-        if not ranked:
-            console.print("No exo model fits this cluster's free memory right now.", markup=False)
+    _cluster_call(cluster_commands.require_head_for, "omm cluster unload")
+    count = _cluster_call(cluster_commands.unload_model, model)
+    if not count:
+        err_console.print(f"{model} is not loaded (see omm cluster list).", markup=False)
+        raise typer.Exit(1)
+    console.print(f"Unloaded {model}.", markup=False)
+
+
+@cluster_app.command(name="run")
+@global_flags
+def cluster_run_cmd(
+    model: str | None = typer.Argument(None, help="exo model id; omit when the cluster serves one"),
+) -> None:
+    """Chat in the terminal with a cluster model, loading it first when it is installed."""
+    _cluster_chat(model)
+
+
+def _cluster_load_installed(model: str) -> None:
+    """Load an installed model that is not loaded yet; never start a download from here."""
+    from omm.cluster import models as cluster_models
+
+    rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
+    if model in rows and rows[model].state == "loaded":
+        return
+    if model not in rows or not rows[model].nodes_installed:
+        err_console.print(f"{model} is not installed; run: omm cluster install {model}", markup=False)
+        raise typer.Exit(1)
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+                  markup=False)
+
+
+@cluster_app.command(name="benchmark")
+@global_flags
+def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+    """Measure first-token time and tokens/sec of one answer on the cluster (never uploaded)."""
+    from omm.cluster import bench, chat, commands as cluster_commands, exo_client
+
+    point = _cluster_employee_point()
+    if point is not None:
+        # An employee measures what is loaded; loading stays the admin's call.
+        rows = {row.model: row for row in _cluster_call(chat.loaded_rows, point)}
+        if model not in rows:
+            err_console.print(f"{model} is not loaded on the cluster; ask the cluster admin to run: "
+                              f"omm cluster load {model}", markup=False)
+            raise typer.Exit(1)
+        result = _cluster_call(bench.measure, point, model)
+        result["sharding"], result["node_count"] = None, None
+    else:
+        _cluster_call(cluster_commands.require_head_for, "omm cluster benchmark")
+        _cluster_load_installed(model)
+        point = chat.Endpoint(chat.LOCAL_EXO, None)
+        result = _cluster_call(bench.measure, point, model)
+        instance = next((i for i in _cluster_call(exo_client.ExoClient().state).instances if i.model_id == model),
+                        None)
+        result["sharding"] = instance.sharding if instance else None
+        result["node_count"] = len(instance.node_ids) if instance else None
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    speed = result["decode_tokens_per_second"]
+    console.print(f"{model}: first token {result['ttft_seconds']:.2f} s, "
+                  + (f"{speed:.1f} tok/s" if speed else "speed not measurable")
+                  + f" ({result['output_tokens']} tokens"
+                  + (f", {result['sharding']}" if result["sharding"] else "")
+                  + (f" on {result['node_count']} Mac(s)" if result["node_count"] else "") + ")",
+                  markup=False)
+
+
+def _cluster_lacks(model: str) -> str | None:
+    """Why the cluster cannot serve `model` to `omm run`, or None when it can."""
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+    from omm.cluster.errors import ClusterError
+
+    try:
+        if cluster_settings.load() is not None:
+            rows = cluster_models.inventory()
+        else:
+            rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
+    except ClusterError as error:
+        return str(error)
+    if any(row.model == model and (row.state == "loaded" or row.nodes_installed) for row in rows):
+        return None
+    return f"{model} is not on the cluster either (see omm cluster list)"
+
+
+def _cluster_configured() -> bool:
+    from omm.cluster import chat
+
+    return chat.cluster_configured()
+
+
+def _cluster_chat(model: str | None) -> None:
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+
+    try:
+        import readline  # noqa: F401  (line editing and history for input())
+    except ImportError:
+        pass
+    point = _cluster_call(chat.endpoint)
+    loaded, loading = _cluster_call(chat.loaded_models, point)
+    if model is not None and model not in loaded and cluster_settings.load() is not None:
+        _cluster_load_installed(model)
+        loaded, loading = _cluster_call(chat.loaded_models, point)
+    chosen = _cluster_call(chat.pick_model, model, loaded, loading)
+    console.print(f"{chosen} on {point.where}", markup=False)
+    console.print("[muted]Type /bye to leave the chat.[/muted]")
+    messages: list[dict] = []
+    while True:
+        try:
+            text = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
             return
-        for index, item in enumerate(ranked, 1):
-            console.print(f"{index}. {item.model_id}  {item.size_bytes / 1024 ** 3:.1f} GiB  "
-                          f"uses {item.memory_used_fraction:.0%} of free memory", markup=False)
-        console.print("Load one with: omm cluster model <model>", markup=False)
-        return
-    if unload:
-        count = _cluster_call(cluster_commands.unload_model, model)
-        console.print(f"Stopped {count} running copy(ies) of {model}.", markup=False)
-        return
-    console.print(_cluster_call(cluster_commands.load_model, model, _cluster_out), markup=False)
+        if not text:
+            continue
+        if text == "/bye":
+            return
+        messages.append({"role": "user", "content": text})
+        shown = {"kind": None}
+
+        def show(kind: str, piece: str) -> None:
+            if shown["kind"] == "reasoning" and kind == "content":
+                console.print("\n")
+            shown["kind"] = kind
+            # soft_wrap: rich would otherwise wrap every streamed piece on its own.
+            console.print(piece, style="muted" if kind == "reasoning" else None, end="",
+                          markup=False, highlight=False, soft_wrap=True)
+
+        try:
+            answer = chat.reply(point, chosen, messages, show)
+        except KeyboardInterrupt:
+            console.print("\n[muted](stopped)[/muted]")
+            messages.pop()
+            continue
+        except chat.ClusterError as error:
+            console.print()
+            err_console.print(str(error), markup=False)
+            messages.pop()
+            continue
+        console.print()
+        messages.append({"role": "assistant", "content": answer})
 
 
 @cluster_token_app.command(name="add")
@@ -2536,6 +2987,8 @@ def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is
     token = _cluster_call(cluster_commands.tokens.add_token, name)
     console.print(f"Token for {name}: {token}", markup=False)
     console.print("Store it now - omm cannot show it again.", markup=False)
+    for line in cluster_commands.employee_setup_lines():
+        console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_token_app.command(name="list")
@@ -2565,6 +3018,63 @@ def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to
     console.print(f"Revoked the token for {name}.", markup=False)
 
 
+@cluster_app.command(name="handover")
+@global_flags
+def cluster_handover_cmd(
+    mac: str = typer.Argument(..., help="The Mac to become head, as omm cluster status names it"),
+) -> None:
+    """Move the cluster head to another Mac in the cluster."""
+    from datetime import datetime, timezone
+
+    from omm.cluster import commands as cluster_commands, handover, members, tokens
+
+    _cluster_call(cluster_commands.require_head_for, "handover")
+    node, problems = _cluster_call(lambda: handover.preflight(mac, now=datetime.now(timezone.utc)))
+    if problems:
+        err_console.print(f"Cannot hand over to {mac}:", markup=False)
+        for problem in problems:
+            err_console.print(f"  - {problem}", markup=False)
+        raise typer.Exit(1)
+    if not _global_opts().yes:
+        if not _stdin_is_tty():
+            err_console.print("Pass --yes to move the cluster head.", markup=False)
+            raise typer.Exit(1)
+        if not _ask_confirm(f"Move the cluster head to {mac}? Employee tokens are not moved: you will issue new "
+                            f"ones on {mac}, and every employee runs omm rag remote set again. Cluster models "
+                            "may stop answering for a minute."):
+            err_console.print("Cancelled.", markup=False)
+            raise typer.Exit(0)
+    # Before anything changes: the names are what the admin issues again on the new head.
+    names = [record.name for record in tokens.list_tokens()]
+    epoch = _cluster_call(lambda: handover.start(node, now=datetime.now(timezone.utc)))
+    try:
+        with console.status(f"Waiting for {mac} to take over...", spinner="dots"):
+            took_over = _cluster_call(lambda: handover.wait_for_new_head(
+                node, epoch, deadline=time.monotonic() + handover.WAIT_SECONDS))
+    except KeyboardInterrupt:
+        took_over = False
+    if not took_over:
+        # Called off; the target checks this just before it takes over. One that
+        # had already checked finishes within moments, so look once more.
+        members.clear_handover()
+        time.sleep(handover.SETTLE_SECONDS)
+        took_over = _cluster_call(lambda: handover.wait_for_new_head(node, epoch, deadline=time.monotonic()))
+    if not took_over:
+        err_console.print(f"{mac} did not take over within 3 minutes; this Mac is still the head. Check omm "
+                          f"cluster status, then run omm cluster handover {mac} again.", markup=False)
+        raise typer.Exit(1)
+    _cluster_call(handover.step_down, epoch)
+    address = _cluster_call(handover.lan_address, node) or f"<{mac}'s address>"
+    for line in (f"{mac} is now the cluster head. This Mac is a member.",
+                 f"Next, on {mac}:",
+                 f"  omm cluster token add <name>      for each employee: {', '.join(names) or '(none yet)'}",
+                 "  (use the same names: document ownership and shares follow the name)",
+                 "Then each employee runs:",
+                 f"  omm rag remote set https://{address}:52440",
+                 "  omm setting agent cluster          (only if they used it before)"):
+        _cluster_out(line)
+
+
 @cluster_app.command(name="leave")
 @global_flags
 def cluster_leave_cmd() -> None:
@@ -2590,6 +3100,16 @@ def _cluster_gateway_run_cmd() -> None:
     from omm.cluster import gateway
 
     raise typer.Exit(gateway.run_gateway())
+
+
+@app.command(name="_cluster-member-run", hidden=True)
+def _cluster_member_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster join` registers
+    (cluster/member_service.py); polls the head, follows its omm version,
+    keeps a backup of its documents and takes over on a handover."""
+    from omm.cluster import member_link
+
+    raise typer.Exit(member_link.run_member_link())
 
 
 @app.command(name="_auto-import-run", hidden=True)
@@ -2662,6 +3182,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
     # Cluster Macs are set up over SSH; the wizard's single-key prompt there
     # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
     "cluster",
@@ -2792,6 +3313,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_auto-import-run",
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
@@ -2799,6 +3321,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -2807,7 +3330,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
     {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
-     "_cluster-gateway-run"}
+     "_cluster-gateway-run", "_cluster-member-run"}
 )
 
 
@@ -3889,7 +4412,9 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _git_update_src(
+    branch: str = "main", *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
@@ -3913,7 +4438,11 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     Self-heals origin's URL to the current REPO_URL first: a clone made
     before a repo rename/transfer still has the old URL in its git config,
     and while GitHub redirects git operations for renamed/transferred repos,
-    that redirect isn't guaranteed to last forever."""
+    that redirect isn't guaranteed to last forever.
+
+    `target_commit` (a cluster member following its head, cluster/version_follow.py)
+    installs that exact commit instead of the branch tip. It must be on
+    `origin/<branch>` and passes the same signature and rollback checks."""
     remote_url = _run_git(["git", "-C", str(SRC_DIR), "remote", "get-url", "origin"], timeout=10)
     if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
         _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
@@ -3930,7 +4459,17 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", f"origin/{branch}"], timeout=10)
     if rev_parse.returncode != 0:
         return rev_parse
-    target_commit = rev_parse.stdout.strip()
+    checkout_ref = f"origin/{branch}"
+    if target_commit is None:
+        target_commit = rev_parse.stdout.strip()
+    else:
+        on_branch = _run_git(
+            ["git", "-C", str(SRC_DIR), "merge-base", "--is-ancestor", target_commit, f"origin/{branch}"],
+            timeout=10,
+        )
+        if on_branch.returncode != 0:
+            return subprocess.CompletedProcess([], 1, stdout="", stderr=f"commit {target_commit[:7]} is not on {branch}")
+        checkout_ref = target_commit
 
     ok, message = trust.verify_update(
         SRC_DIR, current_commit, target_commit, trust.current_trust_anchor(),
@@ -3940,17 +4479,19 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
     return _run_git(
-        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, f"origin/{branch}", "--force", "--quiet"]
+        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, checkout_ref, "--force", "--quiet"]
     )
 
 
-def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Serialize `_perform_update_unlocked` behind a self-update lock so two
     concurrent `omm update` (or channel switch) invocations can't race each
     other over SRC_DIR."""
     try:
         with locked(config_mod.OMM_HOME / "locks" / "self-update", timeout=0):
-            return _perform_update_unlocked(branch, same_branch=same_branch)
+            return _perform_update_unlocked(branch, same_branch=same_branch, target_commit=target_commit)
     except FileLockTimeout:
         return subprocess.CompletedProcess(
             [],
@@ -3960,7 +4501,9 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
         )
 
 
-def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update_unlocked(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
@@ -3969,7 +4512,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     `same_branch` must be False for an explicit channel switch - see
     `trust.verify_update`'s docstring for why a deliberate switch may accept
     a target that is an ancestor of the installed commit, while `omm update`
-    on the currently tracked branch never should."""
+    on the currently tracked branch never should.
+
+    `target_commit` installs that exact commit (see `_git_update_src`); it
+    needs an already-migrated editable install."""
     source = package_metadata.install_source()
     if source is not package_metadata.InstallSource.GIT:
         return subprocess.CompletedProcess(
@@ -3995,6 +4541,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     migrated = _src_head_commit() is not None
     editable_install = _editable_install_uses_src()
     try:
+        if not migrated and target_commit is not None:
+            return subprocess.CompletedProcess(
+                [], 1, stdout="", stderr="this omm is not the git-clone install `omm update` uses; update it by hand"
+            )
         if not migrated:
             result = _migrate_to_editable_install(branch)
             return (
@@ -4003,7 +4553,7 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
                 else result
             )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
-        result = _git_update_src(branch, same_branch=same_branch)
+        result = _git_update_src(branch, same_branch=same_branch, target_commit=target_commit)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
             if legacy_distribution or not editable_install:
@@ -4322,8 +4872,31 @@ def update() -> None:
 
     after = _version_line(_installed_commit())
     console.print(f"[success]Ω Updated: {before} -> {after}[/success]")
+    _after_update_on_cluster_head()
     _refresh_data()
     _maybe_prompt_data_sharing_after_update()
+
+
+def _after_update_on_cluster_head() -> None:
+    """On a cluster head: run the gateway on the new code, and say that the members follow it."""
+    from omm.cluster import settings as cluster_settings
+
+    current = cluster_settings.load()
+    if current is None or current.role != "head":
+        return
+    from omm.cluster import launchd, service
+    from omm.cluster.errors import ClusterError
+
+    try:
+        launchd.restart_agent(service.LAUNCHD_LABEL)
+    except ClusterError as error:
+        console.print(f"[muted]Could not restart the cluster gateway ({escape(str(error))}); "
+                      "run omm cluster restart.[/muted]")
+    others = max(len(current.known_nodes) - 1, 0)
+    if others:
+        console.print(f"{others} other Mac(s) in the cluster will update to this version within a few minutes. "
+                      "Cluster models may stop answering briefly while they do; this Mac loads them again "
+                      "automatically.", markup=False)
 
 
 def _maybe_prompt_data_sharing_after_update() -> None:
@@ -9020,10 +9593,22 @@ def run(
     KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened."""
     reg = registry.load_registry()
     if model_name is None:
+        if not reg and engine is None and _cluster_configured():
+            _cluster_chat(None)
+            return
         model_name = _pick_run_model(reg)
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
+        if engine is None and _cluster_configured():
+            # Not a local GGUF: hand it to the cluster only when the cluster has it.
+            reason = _cluster_lacks(model_name)
+            if reason is None:
+                _cluster_chat(model_name)
+                return
+            _print_not_installed_error(model_name)
+            err_console.print(f"Cluster: {reason}", markup=False)
+            raise typer.Exit(1)
         _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
@@ -9585,6 +10170,8 @@ def list_models(
             )
         else:
             console.print("No models installed via omm yet. Try `omm recommend` or `omm install`.")
+        if not json_output and engine is None:
+            _print_cluster_section()
         raise typer.Exit(0)
 
     if json_output:
@@ -9621,6 +10208,39 @@ def list_models(
         table.add_row(str(idx), label, size_label, ", ".join(programs) or "none")
     console.print(table)
     session_cache.record_results(list(reg.keys()))
+    if engine is None:
+        _print_cluster_section()
+
+
+# `omm list` must stay quick on an employee PC whose head is off or away.
+CLUSTER_LIST_TIMEOUT = 2
+
+
+def _print_cluster_section() -> None:
+    """`omm list`'s cluster models, only on a cluster Mac or a PC with `omm rag remote set`."""
+    from omm.cluster import chat, settings as cluster_settings
+    from omm.cluster.errors import ClusterError
+
+    if not chat.cluster_configured():
+        return
+    # Only now: the model helpers pull in every cluster module (~15 ms).
+    from omm.cluster import models as cluster_models
+
+    try:
+        if cluster_settings.load() is not None:
+            rows = cluster_models.inventory(timeout=CLUSTER_LIST_TIMEOUT)
+        else:
+            rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
+    except ClusterError as error:
+        # The message already says what went wrong (token, older head, offline).
+        console.print(f"[muted]Cluster: {escape(str(error))}[/muted]")
+        return
+    console.print()
+    console.print("Cluster", style="bold")
+    if not rows:
+        console.print("[muted]  No models on the cluster.[/muted]")
+    for line in _cluster_rows_text(rows):
+        console.print(f"  {line}", markup=False)
 
 
 @app.command(name="log")
@@ -11326,6 +11946,13 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
+    # exo ids are always "org/name"; a cluster model is measured over the cluster's own API.
+    if _cluster_configured():
+        on_cluster = [m for m in models if "/" in m and _cluster_lacks(m) is None]
+        if on_cluster:
+            err_console.print("\n".join(f"{m} is a cluster model; measure it with: omm cluster benchmark {m}"
+                                        for m in on_cluster), markup=False)
+            raise typer.Exit(2)
     engine = _select_benchmark_engine_for_models(models)
     if engine is not None:
         if not json_output:
