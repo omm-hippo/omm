@@ -171,6 +171,26 @@ def backup_saved_at() -> str | None:
     return _meta().get("saved_at") if backup_path().is_file() else None
 
 
+def backup_embedding_settings() -> dict | None:
+    """The backup's embedding model and Ollama URL (what a new head must serve); None without a backup."""
+    path = backup_path()
+    if not path.is_file():
+        return None
+    from omm import document_embeddings
+
+    values = {}
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            values = {key: value for key, value in db.execute("SELECT key, value FROM meta")}
+        finally:
+            db.close()
+    except sqlite3.Error:
+        pass
+    return {"model": values.get("embedding_model", document_embeddings.DEFAULT_MODEL),
+            "base_url": values.get("embedding_url", document_embeddings.DEFAULT_URL)}
+
+
 def _move_with_sidecars(source: Path, target: Path) -> None:
     os.replace(source, target)
     for suffix in _SIDECARS:

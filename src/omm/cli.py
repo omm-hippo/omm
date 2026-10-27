@@ -2432,6 +2432,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 
@@ -3036,6 +3037,16 @@ def _cluster_gateway_run_cmd() -> None:
     raise typer.Exit(gateway.run_gateway())
 
 
+@app.command(name="_cluster-member-run", hidden=True)
+def _cluster_member_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster join` registers
+    (cluster/member_service.py); polls the head, follows its omm version,
+    keeps a backup of its documents and takes over on a handover."""
+    from omm.cluster import member_link
+
+    raise typer.Exit(member_link.run_member_link())
+
+
 @app.command(name="_auto-import-run", hidden=True)
 def _auto_import_run_cmd() -> None:
     """Internal. Started by the OS service registered via
@@ -3106,6 +3117,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
     # Cluster Macs are set up over SSH; the wizard's single-key prompt there
     # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
     "cluster",
@@ -3236,6 +3248,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_auto-import-run",
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
@@ -3243,6 +3256,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -3251,7 +3265,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
     {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
-     "_cluster-gateway-run"}
+     "_cluster-gateway-run", "_cluster-member-run"}
 )
 
 
