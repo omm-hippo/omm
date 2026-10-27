@@ -381,3 +381,36 @@ def test_connect_and_disconnect_local_then_remote(employee, browser, agents_home
     assert claude.read_text(encoding="utf-8") == '{"projects": {}}\n'
     assert browser.post("/api/rag/disconnect", {"harness": "claude-code", "confirmed": True})[1]["state"] == "not_connected"
     assert not any(people["kim"] in text for text in browser.seen)
+
+
+# ------------------------------------------------- semantic search readiness --
+
+
+@pytest.fixture
+def ollama_installed_linux(monkeypatch):
+    from omm import rag_readiness
+    monkeypatch.setattr(rag_readiness, "_system", lambda: "Linux")
+    monkeypatch.setattr(rag_readiness, "install_info", lambda: {"installed": True, "app": False, "homebrew": False})
+    monkeypatch.setattr(rag_readiness, "_linux_units", lambda: (True, True, False))
+
+
+def test_local_state_tells_the_admin_how_to_fix_semantic_search(browser, ollama_installed_linux):
+    status, state = browser.get("/api/rag/state")
+    assert status == 200
+    semantic = state["semantic_search"]
+    assert semantic["state"] == "not_running" and semantic["ready"] is False and semantic["model"] == "bge-m3"
+    assert semantic["command"] == "sudo systemctl start ollama"
+    assert semantic["text"] == ("의미 검색이 꺼져 있어요. Ollama가 설치돼 있지만 켜져 있지 않아요. "
+                                "sudo systemctl start ollama로 켜 주세요. 지금은 단어 검색만 해요.")
+    assert semantic["persistence"] is None
+
+
+def test_remote_state_tells_the_employee_to_ask_the_admin(employee, web, ollama_installed_linux):
+    url, people, _ = employee
+    kim = Browser(web)
+    assert kim.post("/api/rag/remote/set", {"url": url, "token": people["kim"]})[0] == 200
+    semantic = kim.get("/api/rag/state")[1]["semantic_search"]
+    assert semantic == {"state": "not_running", "ready": False, "model": "bge-m3",
+                        "text": "회사 head의 의미 검색이 꺼져 있어요(Ollama가 꺼져 있음) - 관리자에게 알려 주세요. 지금은 단어 검색만 해요.",
+                        "command": None, "persistence": None}
+    assert people["kim"] not in json.dumps(semantic)

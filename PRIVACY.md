@@ -305,6 +305,11 @@ share those files. The gateway's request log records the path (for example
 `/rag/v1/search`) but never collection or document names, questions, quotations or
 document text, which travel only in the query string, headers or body. Who may see
 which collection (owner, shares, teams) is stored next to the documents on the head.
+Any valid employee token can also ask the head `GET /rag/v1/readiness`, which answers
+only whether semantic search is ready there (`ready`, `model_missing`, `not_running`,
+`not_installed` or `error`) and the embedding model name; no paths, addresses or commands.
+To find that out, the head (and `omm rag status` on any PC) sends one model-list request to
+its own loopback Ollama and checks whether a few local files exist; nothing leaves the machine.
 
 The **내 문서** tab of `omm web` does the same through the loopback web server: the
 browser sends the head address and the token once to `127.0.0.1` when you press

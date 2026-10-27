@@ -13,6 +13,8 @@ export function LocationBar({rag,onConnect,onLocal,busy}){
       <strong>{!rag?'확인 중…':remote?`회사 head${rag.remote?.url?` (${rag.remote.url})`:''}`:'이 PC'}</strong>
       {remote && rag.remote?.name && <small>나: {rag.remote.name}</small>}
       {!remote && rag && <small>이 PC의 문서 저장소 · 관리자</small>}
+      {rag?.semantic_search && !rag.semantic_search.ready && <small className="warning" role="status">{rag.semantic_search.text}</small>}
+      {rag?.semantic_search?.persistence && <small>{rag.semantic_search.persistence}</small>}
     </div>
     {rag && <div className="row-actions"><button disabled={busy} onClick={onConnect}>{remote?'다른 출입증으로 연결':'회사에 연결'}</button>{remote && <button disabled={busy} onClick={onLocal}>이 PC로 돌아가기</button>}</div>}
   </section>;
