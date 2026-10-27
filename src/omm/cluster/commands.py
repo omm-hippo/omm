@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import platform
 import socket
+import time
 from typing import Callable
 
 from datetime import datetime, timezone
@@ -63,7 +64,10 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
     netconfig.apply()
     netconfig.wait_for_addresses(out)
     exo_service.install(namespace)
-    out(f"exo is running on this Mac (cluster {namespace}).")
+    if _exo_answers(out):
+        out(f"exo is running on this Mac (cluster {namespace}).")
+    else:
+        out(f"exo has not answered for {EXO_START_SECONDS} seconds. {EXO_HELD_FIX}")
     rdma = preflight.rdma_status()
     if rdma == "enabled":
         out("RDMA over Thunderbolt: enabled.")
@@ -75,10 +79,46 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
 
 # exo's binary is fresh from the internet; macOS can hold its first start on a
 # prompt that only shows on the Mac's own screen (real Mac mini, 2026-10-23).
+# The Local Network prompt does not stop exo; it only keeps it from finding the
+# other Macs (node4 saw nobody for 30+ minutes, 2026-10-27).
 SCREEN_APPROVAL_HINT = (
-    "The first time exo starts, macOS may show an Allow prompt on this Mac's screen. "
-    "If omm cluster status says exo is not running, click Allow there."
+    "The first time exo starts, macOS may show two prompts on this Mac's screen: one to open exo "
+    "and one to let it find devices on the local network. Click Allow (or Open) on both; "
+    "omm cluster status tells you if one is still waiting."
 )
+# Gatekeeper holds a quarantined exo before its first instruction: launchd
+# shows it running, but its API never answers (node1, 2026-10-27).
+EXO_HELD_FIX = (
+    "macOS may be holding exo until someone approves it on this Mac's screen: click Allow or Open there "
+    "(or System Settings > Privacy & Security > Open Anyway), then run omm cluster restart."
+)
+LOCAL_NETWORK_FIX = "allow exo under System Settings > Privacy & Security > Local Network"
+# How long init/join wait for exo's API after starting it. A normal start
+# answers within seconds; only a Mac held on a screen prompt takes longer.
+EXO_START_SECONDS = 60
+EXO_START_POLL = 2
+
+
+def _exo_answers(out: Out, *, timeout: float = EXO_START_SECONDS, sleep=time.sleep, clock=time.monotonic) -> bool:
+    deadline = clock() + timeout
+    told = False
+    while True:
+        try:
+            ExoClient().raw_state(timeout=EXO_START_POLL)
+            return True
+        except exo_client.ExoUnavailable:
+            pass
+        except ClusterError:
+            # It answered, only with an error: it is not held.
+            return True
+        if clock() >= deadline:
+            return False
+        if not told:
+            out("Waiting for exo to start...")
+            told = True
+        sleep(EXO_START_POLL)
+
+
 # The MLX ring listens on a random port in this range, so pf closes all of it
 # to the office network, which also closes it for any other server on the Mac.
 HIGH_PORTS_HINT = (
@@ -182,6 +222,14 @@ def status() -> dict:
     exo = {"reachable": False, "nodes": [], "instances": [], "links": []}
     try:
         raw = ExoClient().raw_state()
+    except exo_client.ExoUnavailable as error:
+        # launchd has it running but nothing listens: held before its first
+        # instruction, or (for a few seconds) still starting.
+        if current is not None and exo_service.is_running():
+            problems.append(f"exo is running but does not answer. If that lasts more than a minute, {EXO_HELD_FIX}")
+        else:
+            problems.append(str(error))
+        raw = None
     except ClusterError as error:
         problems.append(str(error))
         raw = None
@@ -227,6 +275,16 @@ def status() -> dict:
                 members = ", ".join(sorted(names.get(node_id, node_id) for node_id in cycle))
                 problems.append(f"Thunderbolt Bridge loop between {members} (packet storm); unplug one of "
                                 "those cables or run omm cluster init/join again on each of them")
+        if current is not None and len(state.nodes) == 1:
+            # A pending Local Network prompt leaves exo up but alone: no peer
+            # is ever dialed and nothing else looks wrong (node4, 2026-10-27).
+            if current.role == "member":
+                problems.append(f"exo on this Mac sees no other Mac. On this Mac's screen, {LOCAL_NETWORK_FIX}, "
+                                "then run omm cluster restart.")
+            else:
+                problems.append("exo on this Mac sees no other Mac. If other Macs already ran omm cluster join: "
+                                f"on each Mac's screen, this one included, {LOCAL_NETWORK_FIX}, then run "
+                                "omm cluster restart on that Mac.")
         seen = [n.name for n in state.nodes]
         if current is not None:
             missing = [name for name in current.known_nodes if name not in seen]
@@ -285,6 +343,10 @@ def status() -> dict:
 
 # A member polls every minute; this long without a poll means its link is not running.
 MEMBER_SILENT_SECONDS = 10 * 60
+# A Mac exo only just found has not had its first poll yet (its link may have
+# just failed to see the head), so re-join advice waits this long after status
+# first sees it silent (real case: 3 Mac minis, 2026-10-27).
+MEMBER_CHECKIN_GRACE_SECONDS = 3 * 60
 
 
 def _own_node(raw: dict) -> str | None:
@@ -305,18 +367,27 @@ def _member_rows(raw: dict, state) -> tuple[list[dict], list[str]]:
     marker = rag_backup.store_marker()
     records = members.load()
     now = datetime.now(timezone.utc)
-    rows, problems = [], []
-    for node in state.nodes:
-        if node.node_id == own:
-            continue
+    others = [node for node in state.nodes if node.node_id != own]
+    ages = {}
+    for node in others:
         record = records.get(node.node_id)
         try:
-            ago = (now - datetime.fromisoformat(record["seen_at"])).total_seconds() if record else None
+            ages[node.node_id] = (now - datetime.fromisoformat(record["seen_at"])).total_seconds() if record else None
         except (KeyError, TypeError, ValueError):
-            ago = None
-        if ago is None or ago > MEMBER_SILENT_SECONDS:
-            namespace = settings.load().namespace
-            problems.append(f"{node.name} has not checked in; run omm cluster join {namespace} again on it")
+            ages[node.node_id] = None
+    silent = members.silent_since([node_id for node_id, ago in ages.items()
+                                   if ago is None or ago > MEMBER_SILENT_SECONDS], now=now)
+    rows, problems = [], []
+    for node in others:
+        record = records.get(node.node_id)
+        ago = ages[node.node_id]
+        if node.node_id in silent:
+            if (now - silent[node.node_id]).total_seconds() < MEMBER_CHECKIN_GRACE_SECONDS:
+                which = "first" if record is None else "next"
+                problems.append(f"waiting for {node.name}'s {which} check-in (members check in every 60 s)")
+            else:
+                namespace = settings.load().namespace
+                problems.append(f"{node.name} has not checked in; run omm cluster join {namespace} again on it")
             if record is None:
                 continue
         version = record.get("version") if isinstance(record.get("version"), dict) else {}
