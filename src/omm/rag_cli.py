@@ -236,8 +236,12 @@ def _read_token(token: str | None) -> str:
     return (token or "").strip()
 
 
-def _trust_head_certificate(offered, yes: bool) -> None:
-    """Pin the head's certificate on first use; refuse one that differs from the pinned one."""
+def _trust_head_certificate(offered, url: str, yes: bool) -> None:
+    """Pin the head's certificate on first use; refuse one that differs from the pinned one.
+
+    A different certificate at another address than the saved one is a new
+    head (after `omm cluster handover` it has its own CA), so it is shown and
+    asked about like a first use instead of refused."""
     from omm import rag_remote
     from omm.cluster import tls
     console, escape = _printers()
@@ -249,7 +253,10 @@ def _trust_head_certificate(offered, yes: bool) -> None:
             same = False
         if same:
             return
-        raise rag_remote.RemoteError(rag_remote.WRONG_CERTIFICATE)
+        saved = rag_remote.load()
+        if saved is None or saved.url == url:
+            raise rag_remote.RemoteError(rag_remote.WRONG_CERTIFICATE)
+        console.print(f"새 헤드 주소예요 (이전: {escape(saved.url)}). 새 헤드의 인증서를 다시 확인해요.")
     console.print("헤드 인증서 지문 (SHA-256):")
     console.print(f"  {offered.fingerprint}", markup=False, soft_wrap=True, emoji=False)
     console.print("헤드 Mac에서 `omm cluster status` 가 보여 주는 지문(토큰을 받을 때 함께 받은 지문)과 똑같은지 확인해 주세요.")
@@ -278,7 +285,7 @@ def remote_set(
             raise rag_remote.RemoteError("토큰이 비어 있어요. 관리자에게 받은 omm_... 토큰을 넣어 주세요.")
         # The certificate is settled before the token is sent anywhere.
         offered = tls.fetch_ca(remote.url)
-        _trust_head_certificate(offered, yes)
+        _trust_head_certificate(offered, remote.url, yes)
         name = rag_remote.Client(remote, ca_pem=offered.pem).whoami()
         rag_remote.save_ca(offered.pem)
         path = rag_remote.save(remote)
