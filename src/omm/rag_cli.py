@@ -135,7 +135,7 @@ def unshare(
 
 
 team_app = typer.Typer(name="team", help="Manage employee teams for sharing collections (on the cluster head).",
-                       rich_markup_mode=None, no_args_is_help=True)
+                       rich_markup_mode=None)
 
 
 def _team_call(function, *args):
@@ -303,6 +303,10 @@ def remote_clear() -> None:
 
 
 def register(group: typer.Typer) -> None:
+    # Imported here, not at module top: omm.cli imports this module.
+    from omm.cli import _DocsEpilogGroup
+
+    team_app.info.cls = _DocsEpilogGroup
     group.command(name="mcp")(mcp)
     group.command(name="connect")(connect)
     group.command(name="disconnect")(disconnect)

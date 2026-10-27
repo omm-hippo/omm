@@ -7,10 +7,17 @@ from typer.testing import CliRunner
 from omm import cli, cli_help
 
 
-def test_missing_engine_subcommand_is_short_and_points_to_help():
+def test_bare_engine_group_shows_help_instead_of_an_error():
     result = CliRunner().invoke(cli.app, ["engine"])
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert "omm engine [OPTIONS] COMMAND" in result.stdout
+
+
+def test_unknown_engine_subcommand_is_short_and_points_to_help():
+    result = CliRunner().invoke(cli.app, ["engine", "no-such-subcommand"])
     assert result.exit_code == 2
-    assert "Missing command" in result.stderr
+    assert "No such command" in result.stderr
     assert "engine --help" in result.stderr
     assert len(result.stderr.splitlines()) <= 3
 
