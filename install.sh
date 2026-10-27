@@ -9,6 +9,29 @@ set -eu
 # without ever installing omm. A brace group is parsed in full before any of
 # it runs, which closes that off for every command below.
 {
+# Every way this script can stop - an explicit `exit 1`, a `set -e` abort
+# on a failing command that printed nothing of its own, or sh running out of
+# script early - goes through this EXIT trap. Before omm is installed it
+# always names the step that failed and never lets the shell report success:
+# a silent exit 0 over `curl | sh` looks exactly like a finished install.
+INSTALL_STEP="starting"
+OMM_INSTALL_FINISHED=0
+installer_exit_guard() {
+    installer_status=$?
+    trap - EXIT
+    if [ "$OMM_INSTALL_FINISHED" = "1" ]; then
+        exit "$installer_status"
+    fi
+    if [ "$installer_status" -eq 0 ]; then
+        echo "omm installer stopped unexpectedly while $INSTALL_STEP, before omm was installed." >&2
+        echo "Rerun it; if this happens again, report it at https://github.com/omm-hippo/omm/issues" >&2
+        exit 1
+    fi
+    echo "omm installer failed while $INSTALL_STEP (exit status $installer_status); see the messages above." >&2
+    exit "$installer_status"
+}
+trap installer_exit_guard EXIT
+
 REPO_URL="https://github.com/omm-hippo/omm.git"
 OMM_HOME="${OMM_HOME:-$HOME/.omm}"
 case "$OMM_HOME" in
@@ -174,15 +197,87 @@ find_real_command() {
     printf '%s\n' "$command_path"
 }
 
-find_supported_python() {
+# Homebrew's bin directories, searched for a Python even when they are not
+# on PATH (a non-login ssh shell) or come after /usr/bin (whose python3 is
+# 3.9 on macOS).
+BREW_BIN_DIRS="/opt/homebrew/bin /usr/local/bin"
+
+# Prints the python3.N interpreters (N >= 10) in the directories given as
+# arguments, newest first; equal versions keep the order of the arguments.
+list_versioned_pythons() {
+    for dir in "$@"; do
+        [ -n "$dir" ] && [ -d "$dir" ] || continue
+        for versioned_path in "$dir"/python3.[0-9]*; do
+            minor=${versioned_path##*/python3.}
+            case "$minor" in
+                ""|*[!0-9]*) continue ;;
+            esac
+            [ "$minor" -ge 10 ] && [ -x "$versioned_path" ] || continue
+            printf '%s %s\n' "$minor" "$versioned_path"
+        done
+    done | sort -s -t ' ' -k1,1nr | cut -d ' ' -f 2-
+}
+
+# Prints every interpreter worth probing, in order of preference: python3
+# and python on PATH (what the user gets by typing them), then python3.N on
+# PATH, then Homebrew's python3 and python3.N even if PATH misses them.
+python_candidates() {
     for candidate in python3 python; do
-        if candidate_path=$(find_real_command "$candidate") && \
-           "$candidate_path" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        command -v "$candidate" 2>/dev/null || true
+    done
+    saved_ifs=$IFS
+    IFS=:
+    set -f
+    # shellcheck disable=SC2086 # split PATH on ":" without globbing
+    set -- $PATH
+    set +f
+    IFS=$saved_ifs
+    if [ "$#" -gt 0 ]; then
+        list_versioned_pythons "$@"
+    fi
+    for dir in $BREW_BIN_DIRS; do
+        printf '%s\n' "$dir/python3"
+    done
+    # shellcheck disable=SC2086 # BREW_BIN_DIRS is a space-separated list
+    list_versioned_pythons $BREW_BIN_DIRS
+}
+
+python_is_supported() {
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+        </dev/null >/dev/null 2>&1
+}
+
+# Reads candidate paths on stdin and prints the first runnable, non-stub
+# Python 3.10+ among them.
+first_supported_python() {
+    while IFS= read -r candidate_path; do
+        [ -n "$candidate_path" ] && [ -x "$candidate_path" ] || continue
+        is_macos_clt_stub "$candidate_path" && continue
+        if python_is_supported "$candidate_path"; then
             printf '%s\n' "$candidate_path"
             return 0
         fi
     done
     return 1
+}
+
+find_supported_python() {
+    python_candidates | first_supported_python
+}
+
+# Lists what find_supported_python looked at and why each one was not used,
+# so "Python 3.10+ not found" never hides a Python the user can see.
+describe_python_candidates() {
+    python_candidates | awk '!seen[$0]++' | while IFS= read -r candidate_path; do
+        [ -n "$candidate_path" ] && [ -x "$candidate_path" ] || continue
+        if is_macos_clt_stub "$candidate_path"; then
+            echo "  $candidate_path: Xcode Command Line Tools placeholder (not run)"
+        elif version=$("$candidate_path" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' </dev/null 2>/dev/null); then
+            echo "  $candidate_path: Python $version"
+        else
+            echo "  $candidate_path: could not be run"
+        fi
+    done
 }
 
 detect_package_manager() {
@@ -281,8 +376,25 @@ prepare_macos_brew() {
     BREW=$(find_brew)
 }
 
+# Explains a failed `brew install $1`. Homebrew's own errors are above it;
+# the common case on a shared Mac is a Homebrew prefix that another macOS
+# account owns, where `brew install` can neither write nor fix anything.
+report_brew_install_failure() {
+    echo "Homebrew could not install $1 (see Homebrew's errors above)." >&2
+    if [ -n "${BREW_PREFIX:-}" ] && [ ! -w "$BREW_PREFIX" ]; then
+        echo "$BREW_PREFIX is not writable by $(id -un): this Homebrew belongs to another macOS account." >&2
+        echo "Ask that account to run 'brew install $1', or install $1 another way, then rerun this installer." >&2
+    else
+        echo "Fix the Homebrew error above (or install $1 another way), then rerun this installer." >&2
+    fi
+    if [ "$1" = "python" ]; then
+        echo "Python 3.10+ is also available from https://www.python.org/downloads/macos/" >&2
+    fi
+}
+
 OS_NAME=$(uname -s 2>/dev/null || true)
 PACKAGE_MANAGER=""
+INSTALL_STEP="looking for Python 3.10+ and git"
 PY=$(find_supported_python || true)
 
 if [ "$OS_NAME" = "Darwin" ]; then
@@ -290,15 +402,29 @@ if [ "$OS_NAME" = "Darwin" ]; then
     # is the supported bootstrap for both; the official installer also checks
     # the macOS/Command Line Tools requirements before changing the machine.
     if [ -z "$PY" ] || ! find_real_command git >/dev/null; then
+        INSTALL_STEP="preparing Homebrew"
         prepare_macos_brew
     fi
+    # brew gets /dev/null as stdin: under `curl | sh` stdin is this script.
+    # A failed `brew install` still counts as success when what it was meant
+    # to provide is usable afterwards (brew can fail on an unrelated step,
+    # e.g. a lock file in a Homebrew prefix another account owns, after
+    # finding the formula already installed).
     if [ -z "$PY" ]; then
+        INSTALL_STEP="installing Python with Homebrew"
         echo "Python 3.10+ not found, installing it via Homebrew..."
-        "$BREW" install python
+        if ! "$BREW" install python </dev/null && [ -z "$(find_supported_python || true)" ]; then
+            report_brew_install_failure python
+            exit 1
+        fi
     fi
     if ! find_real_command git >/dev/null; then
+        INSTALL_STEP="installing git with Homebrew"
         echo "git not found, installing it via Homebrew..."
-        "$BREW" install git
+        if ! "$BREW" install git </dev/null && ! find_real_command git >/dev/null; then
+            report_brew_install_failure git
+            exit 1
+        fi
     fi
 else
     PACKAGE_MANAGER=$(detect_package_manager || true)
@@ -309,6 +435,7 @@ else
             echo "Install Python 3.10+ and python-pip/venv first: https://www.python.org/downloads/" >&2
             exit 1
         fi
+        INSTALL_STEP="installing Python with $PACKAGE_MANAGER"
         echo "Python 3.10+ not found, installing it via $PACKAGE_MANAGER..."
         case "$PACKAGE_MANAGER" in
             apt-get) install_system_packages "$PACKAGE_MANAGER" python3 python3-venv python3-pip ca-certificates ;;
@@ -324,6 +451,7 @@ else
             echo "Install git 2.34+ first: https://git-scm.com/downloads" >&2
             exit 1
         fi
+        INSTALL_STEP="installing git with $PACKAGE_MANAGER"
         echo "git not found, installing it via $PACKAGE_MANAGER..."
         install_system_packages "$PACKAGE_MANAGER" git ca-certificates
     fi
@@ -337,6 +465,7 @@ else
             echo "ssh-keygen (OpenSSH client) not found and no supported package manager was found; it is required to verify omm's commit signatures." >&2
             exit 1
         fi
+        INSTALL_STEP="installing ssh-keygen with $PACKAGE_MANAGER"
         echo "ssh-keygen not found (needed to verify commit signatures), installing it via $PACKAGE_MANAGER..."
         case "$PACKAGE_MANAGER" in
             apt-get) install_system_packages "$PACKAGE_MANAGER" openssh-client ;;
@@ -347,9 +476,15 @@ else
     fi
 fi
 
+INSTALL_STEP="checking Python, git and ssh-keygen"
 PY=$(find_supported_python || true)
 if [ -z "$PY" ]; then
     echo "Python 3.10+ not found after dependency bootstrap: https://www.python.org/downloads/" >&2
+    candidate_report=$(describe_python_candidates || true)
+    if [ -n "$candidate_report" ]; then
+        echo "Interpreters checked:" >&2
+        printf '%s\n' "$candidate_report" >&2
+    fi
     exit 1
 fi
 
@@ -369,7 +504,10 @@ if ! "$PY" -c "import ensurepip" >/dev/null 2>&1; then
             prepare_macos_brew
         fi
         echo "Python venv support is missing, reinstalling Homebrew Python..."
-        "$BREW" install python
+        if ! "$BREW" install python </dev/null; then
+            report_brew_install_failure python
+            exit 1
+        fi
     elif [ -n "$PACKAGE_MANAGER" ]; then
         echo "Python venv support is missing, installing pip/venv support..."
         case "$PACKAGE_MANAGER" in
@@ -648,6 +786,7 @@ ensure_pipx_bin_path() {
     esac
 }
 
+INSTALL_STEP="setting up pipx"
 if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     echo "pipx not found, installing it..."
     if "$PY" -m pip install --user --quiet pipx 2>/dev/null; then
@@ -718,6 +857,7 @@ mkdir -p "$SOURCES_DIR"
 # requires this marker before removing anything from a non-default home.
 printf '%s\n' 'omm installer managed home v1' > "$OMM_HOME/.omm-managed"
 
+INSTALL_STEP="downloading and verifying omm"
 STAGING_DIR="$SOURCES_DIR/checkout.$$"
 rm -rf "$STAGING_DIR"
 echo "Cloning omm source to a versioned staging directory ..."
@@ -791,13 +931,19 @@ fi
 # only pull that extra in on other platforms.
 # [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
 # a `pip install` typed later lands in whatever Python is on PATH, not in
-# this pipx venv, so it goes in at install time.
+# this pipx venv, so it goes in at install time. watchdog is the one
+# dependency that may have to be compiled (no wheel yet for a brand-new
+# Python), so NO_WATCH_INSTALL_SPEC is the fallback when that build fails.
 if command -v nvidia-smi >/dev/null 2>&1; then
     INSTALL_SPEC="${SRC_DIR}[nvidia,watch]"
+    NO_WATCH_INSTALL_SPEC="${SRC_DIR}[nvidia]"
 else
     INSTALL_SPEC="${SRC_DIR}[watch]"
+    NO_WATCH_INSTALL_SPEC="$SRC_DIR"
 fi
+WATCH_EXTRA_SKIPPED=0
 
+INSTALL_STEP="installing omm with pipx"
 echo "Installing omm (editable) from $SRC_DIR ..."
 # pipx names the new environment after the distribution (`omm-model`)
 # while old Git installs used `omm`. Install and verify the new environment
@@ -872,7 +1018,32 @@ pipx_install_with_repair() {
     rm -rf "$shared"
     run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"
 }
-if ! pipx_install_with_repair; then
+# The [watch] extra only powers `omm setting auto-import`. When installing
+# with it fails even after the repair above - typically watchdog compiling
+# from source against a broken compiler toolchain - install the same verified
+# checkout once without it, and every later repair below uses that spec too.
+pipx_install_without_watch() {
+    echo "Installing omm with auto-import support (the [watch] extra) failed; retrying once without it..." >&2
+    if ! run_pipx install --force --editable --python "$PY" "$NO_WATCH_INSTALL_SPEC"; then
+        return 1
+    fi
+    INSTALL_SPEC="$NO_WATCH_INSTALL_SPEC"
+    WATCH_EXTRA_SKIPPED=1
+}
+report_skipped_watch_extra() {
+    [ "$WATCH_EXTRA_SKIPPED" = "1" ] || return 0
+    echo >&2
+    echo "Warning: omm was installed WITHOUT auto-import support; 'omm setting auto-import' will not work yet." >&2
+    echo "Installing its watchdog package failed for $PY - usually because no prebuilt watchdog exists for this Python version and building it from source failed." >&2
+    if [ "$OS_NAME" = "Darwin" ]; then
+        echo "To fix it later: update or reinstall the Xcode Command Line Tools (Software Update, or 'xcode-select --install'), then run:" >&2
+    else
+        echo "To fix it later: install a C compiler and the Python headers (e.g. build-essential and python3-dev), then run:" >&2
+    fi
+    echo "  \"$PY\" -m pipx inject $PIPX_ENV watchdog plyer" >&2
+    echo "or rerun this installer." >&2
+}
+if ! pipx_install_with_repair && ! pipx_install_without_watch; then
     rollback_failed_new_install
     discard_unreferenced_new_source
     report_failed_install "pipx install failed; the legacy environment was not removed."
@@ -885,6 +1056,7 @@ if ! verify_installed_omm_model; then
     exit 1
 fi
 if [ "$LEGACY_PIPX_PRESENT" = "1" ]; then
+    INSTALL_STEP="removing the legacy omm pipx environment"
     echo "Removing verified legacy pipx environment: $LEGACY_PIPX_ENV"
     if ! run_pipx uninstall "$LEGACY_PIPX_ENV"; then
         echo "Could not remove the verified legacy pipx environment." >&2
@@ -923,6 +1095,10 @@ echo "Try:  omm scan"
 echo "Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)"
 echo "Click launchers:     omm web --create-launchers \"$HOME/Desktop\"   (then double-click Open-OMM.command)"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."
+report_skipped_watch_extra
+# omm is installed and verified: from here on the exit guard keeps the real
+# exit status (e.g. Ctrl+C on the web manager below) without a failure note.
+OMM_INSTALL_FINISHED=1
 
 # Opt-in only: the double-click entry (packaging/web-launchers/Install-OMM.command)
 # sets OMM_INSTALL_OPEN_WEB=1 so a beginner lands in the browser manager right
