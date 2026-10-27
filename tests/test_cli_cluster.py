@@ -4,9 +4,11 @@ pfctl, launchctl, exo) is faked; the fixtures are real exo 1.0.71 shapes."""
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from pathlib import Path
 import platform
+import re
 
 import pytest
 from typer.testing import CliRunner
@@ -96,7 +98,7 @@ class _FakeExoClient:
     def previews(self, model_id):
         self._guard()
         rows = exo_client.parse_previews(self.fakes.previews)
-        return [exo_client.Placement(model_id, r.sharding, r.instance, r.memory_delta_by_node, r.error) for r in rows]
+        return [dataclasses.replace(r, model_id=model_id) for r in rows]
 
     def create_instance(self, placement):
         self._guard()
@@ -273,7 +275,7 @@ def test_init_on_member_is_refused(cluster_fakes):
 def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
-    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_model", "problems"}
+    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_models", "problems"}
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
     assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
@@ -627,7 +629,7 @@ def test_load_on_a_member_is_refused_and_remembers_nothing(cluster_fakes):
     result = runner.invoke(cli.app, ["cluster", "load", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
     assert result.exit_code == 2
     assert "omm cluster load runs on the head Mac" in " ".join(result.output.split())
-    assert cluster_fakes.created == [] and settings.load().model is None
+    assert cluster_fakes.created == [] and settings.load().models == ()
 
 
 def test_load_outside_a_cluster_is_refused(cluster_fakes):
@@ -908,22 +910,22 @@ def test_head_remembers_the_loaded_model_and_unload_forgets_it(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     result = runner.invoke(cli.app, ["cluster", "load", MODEL])
     assert result.exit_code == 0, result.output
-    assert settings.load().model == MODEL
+    assert settings.load().models == (settings.KeptModel(MODEL),)
     status = runner.invoke(cli.app, ["cluster", "status"])
-    assert f"Kept loaded: {MODEL}" in status.output
-    assert _status()["kept_model"] == MODEL
+    assert f"Kept loaded: {MODEL} (this Mac" in status.output
+    assert _status()["kept_models"] == [{"model": MODEL, "sharding": None, "macs": None}]
     # Re-running init restarts exo; the model must still come back afterwards.
     runner.invoke(cli.app, ["cluster", "init"])
-    assert settings.load().model == MODEL
+    assert settings.load().models == (settings.KeptModel(MODEL),)
     runner.invoke(cli.app, ["cluster", "unload", MODEL])
-    assert settings.load().model is None
+    assert settings.load().models == ()
 
 
 def test_status_keeps_the_remembered_model_when_it_records_nodes(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     runner.invoke(cli.app, ["cluster", "load", MODEL])
     _status()
-    assert settings.load().known_nodes and settings.load().model == MODEL
+    assert settings.load().known_nodes and settings.load().models == (settings.KeptModel(MODEL),)
 
 
 @pytest.fixture
@@ -931,14 +933,15 @@ def autoload_head(cluster_fakes, monkeypatch):
     from omm.cluster import autoload
 
     monkeypatch.setattr(autoload, "ExoClient", _FakeExoClient)
-    settings.save(settings.ClusterSettings("head", "omm-" + "b" * 32, 52440, _node_names(cluster_fakes), MODEL))
+    settings.save(settings.ClusterSettings("head", "omm-" + "b" * 32, 52440, _node_names(cluster_fakes),
+                                           (settings.KeptModel(MODEL),)))
     cluster_fakes.state["instances"] = {}
     return autoload
 
 
 def test_autoload_reloads_the_model_once_every_mac_is_back(cluster_fakes, autoload_head):
     tracker = autoload_head.Tracker()
-    assert autoload_head.check_once(tracker, now=0) == "requested"
+    assert autoload_head.check_once(tracker, now=0) == f"{MODEL}: requested"
     assert [p.model_id for p in cluster_fakes.created] == [MODEL]
     # A request is in flight; exo has not listed the instance yet.
     assert autoload_head.check_once(tracker, now=30) == "requested recently"
@@ -952,7 +955,7 @@ def test_autoload_waits_for_a_rebooting_mac_but_not_forever(cluster_fakes, autol
     assert autoload_head.check_once(tracker, now=0) == f"waiting for {name}"
     assert autoload_head.check_once(tracker, now=599) == f"waiting for {name}"
     assert not cluster_fakes.created
-    assert autoload_head.check_once(tracker, now=600) == "requested"
+    assert autoload_head.check_once(tracker, now=600) == f"{MODEL}: requested"
 
 
 def test_autoload_leaves_a_served_model_alone(cluster_fakes, autoload_head):
@@ -966,7 +969,8 @@ def test_autoload_does_nothing_without_a_kept_model_or_off_the_head(cluster_fake
     current = settings.load()
     settings.save(settings.ClusterSettings("head", current.namespace, 52440, current.known_nodes))
     assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "nothing to keep"
-    settings.save(settings.ClusterSettings("member", current.namespace, 52440, current.known_nodes, MODEL))
+    settings.save(settings.ClusterSettings("member", current.namespace, 52440, current.known_nodes,
+                                           (settings.KeptModel(MODEL),)))
     assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "nothing to keep"
     assert not cluster_fakes.created
 
@@ -976,11 +980,11 @@ def test_autoload_retries_when_the_model_does_not_fit_yet(cluster_fakes, autoloa
     cluster_fakes.previews_all_error()
     tracker = autoload_head.Tracker()
     with caplog.at_level("WARNING", logger="omm.cluster.autoload"):
-        assert autoload_head.check_once(tracker, now=0) == "does not fit"
-        assert autoload_head.check_once(tracker, now=30) == "does not fit"
+        assert autoload_head.check_once(tracker, now=0) == f"{MODEL}: does not fit"
+        assert autoload_head.check_once(tracker, now=30) == f"{MODEL}: does not fit"
     assert len([r for r in caplog.records if r.name == "omm.cluster.autoload"]) == 1
     cluster_fakes.previews = rows
-    assert autoload_head.check_once(tracker, now=60) == "requested"
+    assert autoload_head.check_once(tracker, now=60) == f"{MODEL}: requested"
 
 
 def test_autoload_survives_exo_being_down(cluster_fakes, autoload_head):
@@ -1380,3 +1384,102 @@ def test_top_level_benchmark_points_a_cluster_model_to_cluster_benchmark(cluster
     result = runner.invoke(cli.app, ["benchmark", LIVE_MODEL])
     assert result.exit_code == 2
     assert f"omm cluster benchmark {LIVE_MODEL}" in " ".join(result.output.split())
+
+
+# --- placement choice and several kept models (#532) -------------------------
+
+def _three_mac_previews(fakes):
+    fakes.previews = json.loads((FIX / "previews-3node.json").read_text(encoding="utf-8"))
+
+
+def _created_shape(fakes):
+    from omm.cluster import recommend
+
+    placement = fakes.created[-1]
+    return placement.sharding, recommend.link(placement), len(placement.memory_delta_by_node)
+
+
+def test_load_with_sharding_and_macs_places_it_that_way_and_remembers(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _three_mac_previews(cluster_fakes)
+    result = runner.invoke(cli.app, ["cluster", "load", MODEL, "--sharding", "pipeline", "--macs", "2"])
+    assert result.exit_code == 0, result.output
+    assert _created_shape(cluster_fakes) == ("Pipeline", "RDMA", 2)
+    assert settings.load().models == (settings.KeptModel(MODEL, "Pipeline", 2),)
+    status = runner.invoke(cli.app, ["cluster", "status"])
+    assert f"Kept loaded: {MODEL} (Pipeline on 2 Macs)" in " ".join(status.output.split())
+
+
+def test_load_with_a_choice_exo_does_not_offer_lists_the_possible_ones(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _three_mac_previews(cluster_fakes)
+    result = runner.invoke(cli.app, ["cluster", "load", MODEL, "--sharding", "TENSOR", "--macs", "3"])
+    assert result.exit_code == 1
+    text = " ".join(result.output.split())
+    assert "exo offers no Tensor on 3 Macs placement" in text
+    assert "Possible: Pipeline on 1, 2 or 3 Macs; Tensor on 1 or 2 Macs" in text
+    assert cluster_fakes.created == [] and settings.load().models == ()
+
+
+def test_load_rejects_an_unknown_sharding_and_zero_macs(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    for flags in (["--sharding", "diagonal"], ["--macs", "0"]):
+        result = runner.invoke(cli.app, ["cluster", "load", MODEL, *flags])
+        assert result.exit_code == 2 and f"Invalid value for '{flags[0]}'" in result.output
+    assert cluster_fakes.created == []
+
+
+def test_load_without_flags_keeps_the_automatic_pick(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _three_mac_previews(cluster_fakes)
+    assert runner.invoke(cli.app, ["cluster", "load", MODEL]).exit_code == 0
+    assert _created_shape(cluster_fakes) == ("Tensor", "RDMA", 2)
+    assert settings.load().models == (settings.KeptModel(MODEL),)
+
+
+def test_info_shows_the_placement_table(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _three_mac_previews(cluster_fakes)
+    result = runner.invoke(cli.app, ["cluster", "info", MODEL])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    # The fixture's Macs are not in this state, so their node ids stand in for names.
+    assert re.search(r"Tensor RDMA 2 Macs 2\.8 GiB each \([^)]+\) <- omm's pick", text)
+    assert text.count("omm's pick") == 1
+    assert "Tensor not possible: No tensor sharding found" in text
+    assert f"omm cluster load {MODEL} --sharding tensor|pipeline --macs N" in text
+    data = json.loads(runner.invoke(cli.app, ["cluster", "info", MODEL, "--json"]).output)
+    assert len(data["placements"]) == 9
+    assert {"sharding", "link", "macs", "memory_per_mac_bytes", "fits", "error", "automatic", "nodes"} == set(
+        data["placements"][0])
+
+
+def test_autoload_reloads_every_kept_model_one_at_a_time_with_its_choice(cluster_fakes, autoload_head):
+    other = "mlx-community/Qwen3-0.6B-4bit"
+    _three_mac_previews(cluster_fakes)
+    settings.save(dataclasses.replace(settings.load(), models=(
+        settings.KeptModel(MODEL, "Pipeline", 3), settings.KeptModel(other))))
+    tracker = autoload_head.Tracker()
+    assert autoload_head.check_once(tracker, now=0) == f"{MODEL}: requested"
+    assert _created_shape(cluster_fakes) == ("Pipeline", "RDMA", 3)
+    # The first one is still loading; a second placement now could take the same memory.
+    assert autoload_head.check_once(tracker, now=30) == "requested recently"
+    one = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+    cluster_fakes.state["instances"], cluster_fakes.state["runners"] = one["instances"], one["runners"]
+    assert autoload_head.check_once(tracker, now=60) == f"{other}: requested"
+    assert [p.model_id for p in cluster_fakes.created] == [MODEL, other]
+    assert _created_shape(cluster_fakes) == ("Tensor", "RDMA", 2)
+
+
+def test_autoload_skips_a_kept_model_whose_choice_is_not_offered_and_unloads_nothing(cluster_fakes, autoload_head,
+                                                                                       caplog):
+    other = "mlx-community/Qwen3-0.6B-4bit"
+    _three_mac_previews(cluster_fakes)
+    settings.save(dataclasses.replace(settings.load(), models=(
+        settings.KeptModel(MODEL, "Tensor", 3), settings.KeptModel(other))))
+    tracker = autoload_head.Tracker()
+    with caplog.at_level("WARNING", logger="omm.cluster.autoload"):
+        assert autoload_head.check_once(tracker, now=0) == f"{MODEL}: does not fit; {other}: requested"
+    assert [p.model_id for p in cluster_fakes.created] == [other]
+    assert "Tensor on 3 Macs" in caplog.text
+    assert cluster_fakes.deleted == [] and settings.load().models[0] == settings.KeptModel(MODEL, "Tensor", 3)

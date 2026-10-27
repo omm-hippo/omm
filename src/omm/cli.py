@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import errno
 import functools
 import inspect
@@ -2528,8 +2529,13 @@ def cluster_status_cmd() -> None:
             else:
                 line = f"Waiting for exo to start downloading {model}"
             console.print(f"  {line}", markup=False)
-    if report["kept_model"]:
-        console.print(f"Kept loaded: {report['kept_model']} (this Mac loads it again after exo restarts)", markup=False)
+    if report["kept_models"]:
+        from omm.cluster import recommend
+
+        kept = ", ".join(entry["model"] + ("" if not (entry["sharding"] or entry["macs"]) else
+                                           f" ({recommend.describe(entry['sharding'], entry['macs'])})")
+                         for entry in report["kept_models"])
+        console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
@@ -2706,7 +2712,7 @@ def _cluster_rows_text(rows) -> list[str]:
 @cluster_app.command(name="info")
 @global_flags
 def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
-    """Show a model's details, which Macs have it, and whether it fits now."""
+    """Show a model's details, which Macs have it, and the ways it can be placed now."""
     from omm.cluster import chat, models as cluster_models
 
     point = _cluster_employee_point()
@@ -2732,16 +2738,53 @@ def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> N
         # An employee PC is told how many Macs have it, not which ones.
         console.print(f"  Macs: {data['nodes_installed']}/{data['nodes_total']} installed", markup=False)
     if data["loaded"]:
-        console.print(f"  Loaded ({data['sharding']})", markup=False)
+        macs = data.get("loaded_macs")
+        console.print(f"  Loaded ({data['sharding']}" + (f", {macs} Mac(s))" if macs else ")"), markup=False)
     elif data["fits"]:
         console.print(f"  Not loaded; fits now ({_cluster_gib(data['peak_node_bytes'])} on the busiest Mac)", markup=False)
     else:
         console.print("  Not loaded; does not fit the cluster's free memory now", markup=False)
+    # An older head sends no placements.
+    for line in _cluster_placement_lines(data["model"], data.get("placements") or []):
+        console.print(line, markup=False)
+
+
+def _cluster_placement_lines(model: str, rows: list[dict]) -> list[str]:
+    """`omm cluster info`'s table of the ways exo can place a model right now."""
+    if not rows:
+        return []
+    lines = ["  Placements now (sharding, link, Macs, memory per Mac):"]
+    for row in rows:
+        if not row["fits"]:
+            lines.append(f"    {row['sharding']:<9} not possible: {row['error']}")
+            continue
+        macs = row["macs"] or 0
+        count = f"{macs} Mac{'' if macs == 1 else 's'}"
+        text = f"    {row['sharding']:<9} {row['link']:<5} {count:<7} {_cluster_gib(row['memory_per_mac_bytes'])} each"
+        if row.get("nodes"):
+            text += f"  ({', '.join(row['nodes'])})"
+        if row["automatic"]:
+            text += "  <- omm's pick"
+        lines.append(text)
+    if any(row["fits"] for row in rows):
+        lines.append(f"  Choose one: omm cluster load {model} --sharding tensor|pipeline --macs N")
+    return lines
+
+
+class _ClusterSharding(str, enum.Enum):
+    tensor = "tensor"
+    pipeline = "pipeline"
 
 
 @cluster_app.command(name="load")
 @global_flags
-def cluster_load_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+def cluster_load_cmd(
+    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
+    sharding: _ClusterSharding | None = typer.Option(
+        None, "--sharding", case_sensitive=False,
+        help="Split the model by tensor or by layers (pipeline); omit to let omm pick"),
+    macs: int | None = typer.Option(None, "--macs", min=1, help="How many Macs to spread it over; omit to let omm pick"),
+) -> None:
     """Load a model into the cluster's memory so employees can use it (head Mac only)."""
     from omm.cluster import commands as cluster_commands, models as cluster_models
 
@@ -2750,7 +2793,9 @@ def cluster_load_cmd(model: str = typer.Argument(..., help="exo model id (see om
     if model not in rows:
         console.print(f"{model} is not installed yet; exo downloads it first "
                       f"(omm cluster install {model} downloads without loading).", markup=False)
-    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+    # exo spells them "Tensor" and "Pipeline".
+    choice = {"sharding": sharding.value.capitalize() if sharding else None, "macs": macs}
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard(), **choice)),
                   markup=False)
 
 

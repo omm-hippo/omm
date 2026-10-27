@@ -95,8 +95,8 @@ def init(out: Out) -> settings.ClusterSettings:
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
     # The remembered Macs start over: running init again is how a Mac that
     # left for good stops being reported missing (status says so).
-    # The model to serve survives a re-run, which restarts exo and so drops it.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, model=current.model if current else None)
+    # The models to serve survive a re-run, which restarts exo and so drops them.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -239,7 +239,8 @@ def status() -> dict:
                 problems.append("gateway is not running")
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway,
-            "kept_model": current.model if current is not None and current.role == "head" else None,
+            "kept_models": [dataclasses.asdict(entry) for entry in current.models]
+            if current is not None and current.role == "head" else [],
             "problems": problems}
 
 
@@ -308,19 +309,24 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
     return recommend.rank(models, previews, state)
 
 
-def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None) -> str:
+def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None, *,
+               sharding: str | None = None, macs: int | None = None) -> str:
+    """Load `model_id` (on `placement`, else omm's pick) and remember it with the admin's choice."""
     require_macos()
     client = client or ExoClient()
     raw = client.raw_state()
     state = exo_client.parse_state(raw)
+    created = False
     if any(i.model_id == model_id for i in state.instances):
         # exo would place a second full copy next to the first one.
         out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
     else:
-        placement = placement or recommend.choose_placement(client.previews(model_id))
+        placement = placement or recommend.choose_placement(client.previews(model_id),
+                                                            sharding=sharding, macs=macs)
         if placement is None:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
         client.create_instance(placement)
+        created = True
         installed = {row.node_id for row in exo_client.parse_downloads(raw)
                      if row.model_id == model_id and row.kind == "Completed"}
         # Only the Macs exo placed it on fetch anything (Tensor on 2 of 3 Macs, 2026-10-27).
@@ -365,8 +371,10 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
     if current.role != "head":
         # Only the head runs the gateway; this Mac's own address serves nothing.
         return f"Serving {model_id}; employees reach it through the head Mac's gateway"
-    if current.model != model_id:
-        settings.save(dataclasses.replace(current, model=model_id))
+    entry = settings.KeptModel(model_id, sharding, macs)
+    # A plain load of a model already serving keeps the choice it was loaded with.
+    if current.kept(model_id) != entry and (created or sharding or macs or not current.kept(model_id)):
+        settings.save(current.keeping(entry))
     return f"Serving {model_id} at http://{lan_ipv4()}:{current.gateway_port}"
 
 
@@ -377,9 +385,9 @@ def unload_model(model_id: str, client: ExoClient | None = None) -> int:
     for instance_id in matching:
         client.delete_instance(instance_id)
     current = settings.load()
-    if current is not None and current.model == model_id:
+    if current is not None and current.kept(model_id) is not None:
         # Otherwise the head would load it again within a minute.
-        settings.save(dataclasses.replace(current, model=None))
+        settings.save(current.forgetting(model_id))
     return len(matching)
 
 

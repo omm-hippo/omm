@@ -32,6 +32,8 @@ def _json(name):
 
 
 class _Exo(ThreadingHTTPServer):
+    previews = _json("previews.json")
+
     def __init__(self):
         super().__init__(("127.0.0.1", 0), _ExoHandler)
         self.state = _json("state-1node.json")
@@ -58,7 +60,7 @@ class _ExoHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         replies = {"/state": self.server.state, "/models": _json("models.json"),
-                   "/instance/previews": _json("previews.json"), "/models/search": _json("search.json")}
+                   "/instance/previews": self.server.previews, "/models/search": _json("search.json")}
         self._send(json.dumps(replies.get(path, {})).encode())
 
     def do_POST(self):
@@ -113,6 +115,17 @@ def test_info_counts_macs_without_naming_them(employee):
     assert result.exit_code == 0, result.output
     assert "Macs: 1/1 installed" in text and "mac-a" not in text
     assert "Loaded" in text
+
+
+def test_info_lists_placements_by_mac_count_only(employee, monkeypatch):
+    server_previews = _json("previews-3node.json")
+    monkeypatch.setattr(_Exo, "previews", server_previews, raising=False)
+    result = runner.invoke(cli.app, ["--json", "cluster", "info", "mlx-community/Qwen3-0.6B-4bit"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)["placements"]
+    assert len(rows) == 9 and all("nodes" not in row for row in rows)
+    result, text = _run("cluster", "info", "mlx-community/Qwen3-0.6B-4bit")
+    assert "Tensor RDMA 2 Macs" in text and "omm's pick" in text and "12D3KooW" not in text
 
 
 def test_info_of_an_unknown_model_shows_the_heads_reason(employee):
