@@ -4333,7 +4333,9 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _git_update_src(
+    branch: str = "main", *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
@@ -4357,7 +4359,11 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     Self-heals origin's URL to the current REPO_URL first: a clone made
     before a repo rename/transfer still has the old URL in its git config,
     and while GitHub redirects git operations for renamed/transferred repos,
-    that redirect isn't guaranteed to last forever."""
+    that redirect isn't guaranteed to last forever.
+
+    `target_commit` (a cluster member following its head, cluster/version_follow.py)
+    installs that exact commit instead of the branch tip. It must be on
+    `origin/<branch>` and passes the same signature and rollback checks."""
     remote_url = _run_git(["git", "-C", str(SRC_DIR), "remote", "get-url", "origin"], timeout=10)
     if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
         _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
@@ -4374,7 +4380,17 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", f"origin/{branch}"], timeout=10)
     if rev_parse.returncode != 0:
         return rev_parse
-    target_commit = rev_parse.stdout.strip()
+    checkout_ref = f"origin/{branch}"
+    if target_commit is None:
+        target_commit = rev_parse.stdout.strip()
+    else:
+        on_branch = _run_git(
+            ["git", "-C", str(SRC_DIR), "merge-base", "--is-ancestor", target_commit, f"origin/{branch}"],
+            timeout=10,
+        )
+        if on_branch.returncode != 0:
+            return subprocess.CompletedProcess([], 1, stdout="", stderr=f"commit {target_commit[:7]} is not on {branch}")
+        checkout_ref = target_commit
 
     ok, message = trust.verify_update(
         SRC_DIR, current_commit, target_commit, trust.current_trust_anchor(),
@@ -4384,17 +4400,19 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
     return _run_git(
-        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, f"origin/{branch}", "--force", "--quiet"]
+        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, checkout_ref, "--force", "--quiet"]
     )
 
 
-def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Serialize `_perform_update_unlocked` behind a self-update lock so two
     concurrent `omm update` (or channel switch) invocations can't race each
     other over SRC_DIR."""
     try:
         with locked(config_mod.OMM_HOME / "locks" / "self-update", timeout=0):
-            return _perform_update_unlocked(branch, same_branch=same_branch)
+            return _perform_update_unlocked(branch, same_branch=same_branch, target_commit=target_commit)
     except FileLockTimeout:
         return subprocess.CompletedProcess(
             [],
@@ -4404,7 +4422,9 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
         )
 
 
-def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update_unlocked(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
@@ -4413,7 +4433,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     `same_branch` must be False for an explicit channel switch - see
     `trust.verify_update`'s docstring for why a deliberate switch may accept
     a target that is an ancestor of the installed commit, while `omm update`
-    on the currently tracked branch never should."""
+    on the currently tracked branch never should.
+
+    `target_commit` installs that exact commit (see `_git_update_src`); it
+    needs an already-migrated editable install."""
     source = package_metadata.install_source()
     if source is not package_metadata.InstallSource.GIT:
         return subprocess.CompletedProcess(
@@ -4439,6 +4462,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     migrated = _src_head_commit() is not None
     editable_install = _editable_install_uses_src()
     try:
+        if not migrated and target_commit is not None:
+            return subprocess.CompletedProcess(
+                [], 1, stdout="", stderr="this omm is not the git-clone install `omm update` uses; update it by hand"
+            )
         if not migrated:
             result = _migrate_to_editable_install(branch)
             return (
@@ -4447,7 +4474,7 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
                 else result
             )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
-        result = _git_update_src(branch, same_branch=same_branch)
+        result = _git_update_src(branch, same_branch=same_branch, target_commit=target_commit)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
             if legacy_distribution or not editable_install:
