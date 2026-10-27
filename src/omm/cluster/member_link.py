@@ -87,13 +87,17 @@ def request(address: str, method: str, path: str, key: bytes, own_node: str, *, 
     """One member-route call; raises ClusterError unless the reply carries the head's proof."""
     host, _, port = address.rpartition(":")
     nonce = secrets.token_hex(16)
-    headers = member_auth.sign_request(key, method, path, own_node, now=time.time(), nonce=nonce)
-    if body is not None:
-        headers["Content-Type"] = "application/json"
     conn = http.client.HTTPSConnection(host, int(port), timeout=timeout, context=_blind_context())
     try:
+        # The certificate first: the request proof names it, so nobody in between can replay the request.
+        conn.connect()
+        der = conn.sock.getpeercert(binary_form=True) or b""
+        headers = member_auth.sign_request(key, method, path, own_node, now=time.time(), nonce=nonce,
+                                           leaf_sha256=member_auth.leaf_sha256(der),
+                                           body_sha256=hashlib.sha256(body or b"").hexdigest())
+        if body is not None:
+            headers["Content-Type"] = "application/json"
         conn.request(method, path, body=body, headers=headers)
-        der = conn.sock.getpeercert(binary_form=True)
         response = conn.getresponse()
         data = response.read()
         reply_headers = {k: v for k, v in response.getheaders()}

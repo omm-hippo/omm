@@ -41,13 +41,18 @@ def _blind():
     return context
 
 
-def call(srv, method, path, *, node="12D3member", key=KEY, nonce=None, body=None, headers=None):
+def call(srv, method, path, *, node="12D3member", key=KEY, nonce=None, body=None, headers=None, leaf=None,
+         signed_body=None):
     """A member's request; returns (status, body, headers, leaf sha256, nonce)."""
     nonce = nonce or f"n{time.monotonic_ns()}"
-    signed = member_auth.sign_request(key, method, path, node, now=time.time(), nonce=nonce) if key else {}
     conn = http.client.HTTPSConnection("127.0.0.1", srv.server_address[1], timeout=10, context=_blind())
+    conn.connect()
+    seen = member_auth.leaf_sha256(conn.sock.getpeercert(binary_form=True))
+    body_sha = hashlib.sha256(signed_body if signed_body is not None else body or b"").hexdigest()
+    signed = member_auth.sign_request(key, method, path, node, now=time.time(), nonce=nonce,
+                                      leaf_sha256=leaf or seen, body_sha256=body_sha) if key else {}
     conn.request(method, path, body=body, headers={**signed, **(headers or {})})
-    leaf = member_auth.leaf_sha256(conn.sock.getpeercert(binary_form=True))
+    leaf = seen
     resp = conn.getresponse()
     data = resp.read()
     conn.close()
@@ -161,3 +166,16 @@ def test_head_proof_uses_the_leaf_of_a_chain_file(server):
     for _ in range(5):
         status, data, headers, leaf, nonce = poll(server)
         assert status == 200 and proven(data, headers, leaf, nonce)
+
+
+def test_relayed_request_with_another_leaf_is_refused(server):
+    # The member signed for the relay's certificate, not the head's: no snapshot leaves the head.
+    DocumentStore().create_collection("company")
+    status, data, *_ = call(server, "GET", "/omm/member/rag/snapshot", leaf="00" * 32)
+    assert status == 401 and b"SQLite" not in data
+
+
+def test_tampered_report_is_refused(server):
+    status, *_ = call(server, "POST", "/omm/member/poll", body=json.dumps({**REPORT, "prepared": False}).encode(),
+                      signed_body=json.dumps(REPORT).encode())
+    assert status == 401 and members.load() == {}

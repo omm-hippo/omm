@@ -2,9 +2,11 @@
 
 Every Mac in the cluster holds the namespace (exo's pnet key), so both sides
 derive one key from it and never send the namespace itself. A member signs
-each request; the head signs each reply over the request's nonce, the TLS
-leaf certificate the member saw and the body. The leaf is part of the proof
-because a member does not pin the head's CA: the CA changes on handover, and
+each request, and the head each reply, over the nonce, the TLS leaf
+certificate the member saw and the body. With the leaf in the request proof,
+a relay that ends the member's TLS with its own certificate cannot replay
+the request to the head. The leaf stands in for a pinned CA, which a member
+does not have: the CA changes on handover, and
 a member may reach the head over the office network.
 """
 
@@ -32,13 +34,18 @@ def _mac(key: bytes, message: str) -> str:
     return hmac.new(key, message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def sign_request(key: bytes, method: str, path: str, node_id: str, *, now: float, nonce: str) -> dict[str, str]:
+def _request_message(method, path, node_id, stamp, nonce, leaf_sha256, body_sha256) -> str:
+    return f"member|{method}|{path}|{node_id}|{stamp}|{nonce}|{leaf_sha256}|{body_sha256}"
+
+
+def sign_request(key: bytes, method: str, path: str, node_id: str, *, now: float, nonce: str, leaf_sha256: str,
+                 body_sha256: str) -> dict[str, str]:
     stamp = str(int(now))
     return {
         HEADER_NODE: node_id,
         HEADER_TIME: stamp,
         HEADER_NONCE: nonce,
-        HEADER_PROOF: _mac(key, f"member|{method}|{path}|{node_id}|{stamp}|{nonce}"),
+        HEADER_PROOF: _mac(key, _request_message(method, path, node_id, stamp, nonce, leaf_sha256, body_sha256)),
     }
 
 
@@ -60,8 +67,9 @@ class NonceCache:
             return False
 
 
-def verify_request(key: bytes, method: str, path: str, headers, *, now: float, nonces: NonceCache) -> str | None:
-    """The calling member's node id, or None when the request is not proven."""
+def verify_request(key: bytes, method: str, path: str, headers, *, now: float, nonces: NonceCache, leaf_sha256: str,
+                   body_sha256: str) -> str | None:
+    """The calling member's node id, or None when the request is not proven for this leaf and body."""
     node, stamp, nonce, proof = (headers.get(name) for name in (HEADER_NODE, HEADER_TIME, HEADER_NONCE, HEADER_PROOF))
     if not (node and stamp and nonce and proof):
         return None
@@ -71,7 +79,8 @@ def verify_request(key: bytes, method: str, path: str, headers, *, now: float, n
         return None
     if abs(now - sent) > WINDOW_SECONDS:
         return None
-    if not hmac.compare_digest(proof, _mac(key, f"member|{method}|{path}|{node}|{stamp}|{nonce}")):
+    expected = _mac(key, _request_message(method, path, node, stamp, nonce, leaf_sha256, body_sha256))
+    if not hmac.compare_digest(proof, expected):
         return None
     if nonces.seen(nonce, now):
         return None

@@ -460,8 +460,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _member(self, path: str) -> tuple[int, str | None]:
         key = self.server.member_key
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_REPORT_BYTES or self.headers.get("Transfer-Encoding"):
+            self._reply_error(413, "invalid_request_error", "omm cluster: member report is too large")
+            return 413, None
+        # Read before the proof check: the proof covers the body and the leaf this connection presented.
+        raw = self.rfile.read(length) if length else b""
         node = None if key is None else member_auth.verify_request(
-            key, self.command, path, self.headers, now=time.time(), nonces=self.server.nonces)
+            key, self.command, path, self.headers, now=time.time(), nonces=self.server.nonces,
+            leaf_sha256=self._leaf_sha256(), body_sha256=hashlib.sha256(raw).hexdigest())
         if node is None:
             self._reply_error(401, "authentication_error", "omm cluster: this is not a Mac of this cluster")
             return 401, None
@@ -493,14 +503,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_error(404, "not_found_error", "omm cluster: this path is not served by the gateway")
             return 404, caller
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = -1
-        if length < 0 or length > MAX_REPORT_BYTES or self.headers.get("Transfer-Encoding"):
-            self._reply_error(413, "invalid_request_error", "omm cluster: member report is too large")
-            return 413, caller
-        try:
-            report = json.loads(self.rfile.read(length) or b"null")
+            report = json.loads(raw or b"null")
         except ValueError:
             report = None
         if not isinstance(report, dict):
@@ -530,12 +533,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return 200, caller
 
-    def _head_proof(self, nonce: str, body_sha256: str) -> str:
+    def _leaf_sha256(self) -> str:
         # server.pem holds the chain; the leaf comes first and is what the member sees.
         chain = (self.server.certificates.directory / tls.SERVER_FILE).read_text(encoding="ascii")
         end = "-----END CERTIFICATE-----"
-        leaf = member_auth.leaf_sha256(ssl.PEM_cert_to_DER_cert(chain[:chain.index(end) + len(end)]))
-        return member_auth.head_proof(self.server.member_key, nonce, leaf, body_sha256)
+        return member_auth.leaf_sha256(ssl.PEM_cert_to_DER_cert(chain[:chain.index(end) + len(end)]))
+
+    def _head_proof(self, nonce: str, body_sha256: str) -> str:
+        return member_auth.head_proof(self.server.member_key, nonce, self._leaf_sha256(), body_sha256)
 
     def _reply_ca(self) -> int:
         body = self.server.certificates.ca_pem()
