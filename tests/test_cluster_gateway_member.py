@@ -66,9 +66,9 @@ def proven(data, headers, leaf, nonce, body_sha=None):
 def test_settings_head_epoch_round_trip_and_default(isolated_omm_home):
     settings.save(settings.ClusterSettings("head", NS, 52440, head_epoch=7))
     assert settings.load().head_epoch == 7
-    raw = json.loads(settings.settings_path().read_text())
+    raw = json.loads(settings.settings_path().read_text(encoding="utf-8"))
     del raw["head_epoch"]
-    settings.settings_path().write_text(json.dumps(raw))
+    settings.settings_path().write_text(json.dumps(raw), encoding="utf-8")
     assert settings.load().head_epoch == 0
 
 
@@ -156,7 +156,7 @@ def test_rag_writes_refused_during_handover(server):
 
 def test_head_proof_uses_the_leaf_of_a_chain_file(server):
     # server.pem holds the leaf and the CA; the proof is over the leaf the member sees.
-    pem = (server.certificates.directory / "server.pem").read_text()
+    pem = (server.certificates.directory / "server.pem").read_text(encoding="ascii")
     assert pem.count("BEGIN CERTIFICATE") >= 2
     for _ in range(5):
         status, data, headers, leaf, nonce = poll(server)

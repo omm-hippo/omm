@@ -251,3 +251,8 @@ def test_handover_rerun_after_expiry(command, monkeypatch):
     assert "omm cluster token add <name>      for each employee: kim" in result.output
     assert "omm rag remote set https://192.0.2.1:52440" in result.output
     assert settings.load().role == "member" and settings.load().head_epoch == 3
+
+
+def test_cli_handover_help_lists_yes():
+    result = runner.invoke(cli.app, ["cluster", "handover", "--help"])
+    assert result.exit_code == 0 and "--yes" in result.output

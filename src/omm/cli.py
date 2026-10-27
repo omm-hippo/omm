@@ -347,6 +347,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "cluster handover",
     "cluster leave",
     "cluster uninstall",
     "arena",
