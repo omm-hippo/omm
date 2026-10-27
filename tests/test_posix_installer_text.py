@@ -65,6 +65,28 @@ def _extract_function(script: str, marker: str) -> str:
     return script[start:end]
 
 
+def _python_discovery_functions(script: str) -> str:
+    return "".join(
+        _extract_function(script, f"{name}() {{")
+        for name in (
+            "find_real_command",
+            "list_versioned_pythons",
+            "python_candidates",
+            "python_is_supported",
+            "first_supported_python",
+            "find_supported_python",
+            "describe_python_candidates",
+        )
+    )
+
+
+def _exit_guard(script: str) -> str:
+    """The EXIT-trap block at the top of install.sh, as written there."""
+    start = script.index('INSTALL_STEP="starting"\n')
+    marker = "trap installer_exit_guard EXIT\n"
+    return script[start : script.index(marker) + len(marker)]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
 def test_unix_installer_resolves_omm_home_prefix_before_using_it(tmp_path):
     """OMM_HOME=$HOME/. or $HOME// or a symlink to $HOME must not slip past
@@ -330,15 +352,11 @@ def test_find_supported_python_never_runs_a_clt_stub(tmp_path):
     dialog on a fresh Mac. A stubbed python3 must be skipped unexecuted."""
     script = (ROOT / "install.sh").read_text(encoding="utf-8")
     script_path = tmp_path / "find.sh"
-    script_path.write_text(
-        _extract_function(script, "find_real_command() {")
-        + _extract_function(script, "find_supported_python() {"),
-        encoding="utf-8",
-    )
+    script_path.write_text(_python_discovery_functions(script), encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     marker = tmp_path / "ran"
-    for name in ("python3", "python"):
+    for name in ("python3", "python", "python3.12"):
         fake = bin_dir / name
         fake.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\nexit 0\n", encoding="utf-8")
         fake.chmod(0o755)
@@ -346,6 +364,7 @@ def test_find_supported_python_never_runs_a_clt_stub(tmp_path):
     def run(stub_rc: int) -> subprocess.CompletedProcess:
         harness = f"""
 PATH={shlex.quote(str(bin_dir))}:/usr/bin:/bin
+BREW_BIN_DIRS={shlex.quote(str(tmp_path / "no-brew"))}
 is_macos_clt_stub() {{ return {stub_rc}; }}
 . {shlex.quote(str(script_path))}
 find_supported_python
@@ -369,5 +388,329 @@ def test_unix_installer_is_parsed_in_full_before_it_runs():
     lines = script.splitlines()
 
     assert lines[lines.index("set -eu") + 1 :].count("{") == 1
-    assert script.index("\n{\nREPO_URL=") > script.index("set -eu")
+    assert script.index("set -eu") < script.index("\n{\n") < script.index("REPO_URL=")
     assert script.endswith("\n}\n")
+
+
+def _run_piped(script_text: str, shell: str = "sh") -> subprocess.CompletedProcess:
+    """Feed a script to sh on stdin, the way `curl ... | sh` does."""
+    return subprocess.run([shell], input=script_text, capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh under test")
+def test_installer_never_exits_zero_before_omm_is_installed():
+    """2026-10-27, a Mac mini over ssh: `curl -fsSL https://omm.run/install.sh
+    | sh` printed Homebrew's errors and then nothing, and omm was not
+    installed. A command that fails without printing anything of its own
+    makes `set -e` stop the script silently, and sh running out of script
+    early (a child reading the piped script from stdin) ends it with status
+    0. The EXIT trap must turn every early stop into a non-zero exit that
+    names the step, and stay silent once omm is installed."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    guard = _exit_guard(script)
+
+    def run(body: str, shell: str = "sh") -> subprocess.CompletedProcess:
+        return _run_piped(f"set -eu\n{{\n{guard}INSTALL_STEP=\"installing Python with Homebrew\"\n{body}\n}}\n", shell)
+
+    # A silent set -e abort (brew exiting 1 after printing only its own errors).
+    aborted = run("false\necho unreachable")
+    assert aborted.returncode == 1
+    assert "unreachable" not in aborted.stdout
+    assert "omm installer failed while installing Python with Homebrew (exit status 1)" in aborted.stderr
+
+    # An explicit failure keeps its own status.
+    explicit = run("echo 'Homebrew could not install python' >&2\nexit 3")
+    assert explicit.returncode == 3
+    assert "failed while installing Python with Homebrew" in explicit.stderr
+
+    # Running off the end before omm is installed is a failure, not success.
+    early = run("echo half-way")
+    assert early.returncode == 1
+    assert "stopped unexpectedly while installing Python with Homebrew" in early.stderr
+
+    # Once omm is installed the real status passes through untouched.
+    finished = run("OMM_INSTALL_FINISHED=1")
+    assert (finished.returncode, finished.stderr) == (0, "")
+    interrupted = run("OMM_INSTALL_FINISHED=1\nexit 130")
+    assert (interrupted.returncode, interrupted.stderr) == (130, "")
+
+    # A failing command substitution handled by its caller must not trip
+    # the guard from inside the subshell.
+    handled = run('x=$(exit 4) || true\ny=$(false || true)\nOMM_INSTALL_FINISHED=1')
+    assert (handled.returncode, handled.stderr) == (0, "")
+
+    # Wiring in the real script: the trap is armed before the first exit,
+    # and the only place that marks the install finished is after "Done.".
+    assert script.index("trap installer_exit_guard EXIT") < script.index("REPO_URL=")
+    assert script.count("OMM_INSTALL_FINISHED=1") == 1
+    assert script.index('echo "Done.') < script.index("OMM_INSTALL_FINISHED=1")
+    assert script.index("OMM_INSTALL_FINISHED=1") < script.index('if [ "${OMM_INSTALL_OPEN_WEB:-}" = "1" ]')
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh under test")
+def test_exit_guard_catches_a_child_that_swallows_the_piped_script(tmp_path):
+    """The original exit-0 failure mode: under `curl | sh`, a child that
+    reads stdin eats the rest of the script and sh exits 0 at EOF. The brace
+    group prevents that for install.sh itself; this proves the exit guard
+    alone also turns it into a failure, in any shell, should a future edit
+    ever break the brace group."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    guard = _exit_guard(script)
+    brew = tmp_path / "brew"
+    brew.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n", encoding="utf-8")
+    brew.chmod(0o755)
+    # Padding pushes the rest of the script past any shell's read buffer.
+    padding = "# padding\n" * 8000
+    unguarded = (
+        f'set -eu\n{shlex.quote(str(brew))} install python\n{padding}echo "Done."\n'
+    )
+    guarded = (
+        f'set -eu\n{guard}INSTALL_STEP="installing Python with Homebrew"\n'
+        f'{shlex.quote(str(brew))} install python\n{padding}echo "Done."\nOMM_INSTALL_FINISHED=1\n'
+    )
+    for shell in ("sh", "bash", "dash", "zsh"):
+        if shell != "sh" and not Path(f"/bin/{shell}").exists():
+            continue
+        before = _run_piped(unguarded, shell)
+        assert (before.returncode, before.stdout) == (0, ""), shell  # the bug: silent success
+        after = _run_piped(guarded, shell)
+        assert after.returncode == 1, shell
+        assert "stopped unexpectedly while installing Python with Homebrew" in after.stderr, shell
+
+
+def _darwin_bootstrap_block(script: str) -> str:
+    start = script.index('if [ "$OS_NAME" = "Darwin" ]; then\n    # A clean macOS')
+    end = script.index("\nelse\n    PACKAGE_MANAGER=$(detect_package_manager", start)
+    return script[start:end] + "\nfi\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh under test")
+def test_failed_brew_install_python_explains_itself_and_exits_nonzero(tmp_path):
+    """node3's log: Homebrew could not write a prefix another macOS account
+    owns, then the script stopped with no word of its own. A failed `brew
+    install python` must print why and exit non-zero - unless Python 3.10+
+    turned up anyway (brew can fail after finding it already installed). brew
+    also gets /dev/null as stdin so it can never read the piped script."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    brew_log = tmp_path / "brew-stdin"
+    brew = tmp_path / "brew"
+    brew.write_text(
+        "#!/bin/sh\n"
+        "echo 'Error: /opt/homebrew is not writable.' >&2\n"
+        "echo 'Warning: python@3.15 3.15.0 is already installed.' >&2\n"
+        f"cat > {shlex.quote(str(brew_log))}\n"
+        'exit "$BREW_RC"\n',
+        encoding="utf-8",
+    )
+    brew.chmod(0o755)
+    prefix = tmp_path / "foreign-homebrew"
+    prefix.mkdir()
+    prefix.chmod(0o555)
+    python_marker = tmp_path / "python-appeared"
+
+    def run(brew_rc: int, python_appears: bool) -> subprocess.CompletedProcess:
+        if python_marker.exists():
+            python_marker.unlink()
+        if python_appears:
+            python_marker.touch()
+        harness = (
+            "set -eu\n{\n"
+            + _exit_guard(script)
+            + _extract_function(script, "report_brew_install_failure() {")
+            + f"""
+export BREW_RC={brew_rc}
+OS_NAME=Darwin
+PY=""
+BREW={shlex.quote(str(brew))}
+BREW_PREFIX={shlex.quote(str(prefix))}
+prepare_macos_brew() {{ :; }}
+find_real_command() {{ echo /usr/bin/git; }}
+find_supported_python() {{ [ -e {shlex.quote(str(python_marker))} ] && echo /fake/python3; }}
+"""
+            + _darwin_bootstrap_block(script)
+            + 'echo "continued"\nOMM_INSTALL_FINISHED=1\n}\n# rest of the piped script\n'
+        )
+        return _run_piped(harness)
+
+    try:
+        failed = run(1, python_appears=False)
+        assert failed.returncode == 1
+        assert "continued" not in failed.stdout
+        assert "Homebrew could not install python" in failed.stderr
+        if os.geteuid() != 0:
+            assert f"{prefix} is not writable by" in failed.stderr
+            assert "belongs to another macOS account" in failed.stderr
+        assert "python.org/downloads/macos" in failed.stderr
+        assert "omm installer failed while installing Python with Homebrew" in failed.stderr
+        assert brew_log.read_text(encoding="utf-8") == ""  # stdin was /dev/null
+
+        recovered = run(1, python_appears=True)
+        assert recovered.returncode == 0, recovered.stderr
+        assert "continued" in recovered.stdout
+
+        ok = run(0, python_appears=True)
+        assert ok.returncode == 0, ok.stderr
+    finally:
+        prefix.chmod(0o755)
+
+
+def _fake_python(path: Path, version: str) -> None:
+    supported = tuple(int(part) for part in version.split(".")[:2]) >= (3, 10)
+    path.write_text(
+        "#!/bin/sh\n"
+        f'case "$2" in *SystemExit*) exit {0 if supported else 1} ;; esac\n'
+        f"echo {version}\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_find_supported_python_considers_versioned_and_homebrew_interpreters(tmp_path):
+    """node3: PATH had /usr/bin (python3 = 3.9) before /opt/homebrew/bin, and
+    only python3/python were probed, so the installer missed Homebrew's
+    python3.15 and tried to install Python again. Discovery must also try
+    python3.N names on PATH (newest first) and Homebrew's bin directories
+    even when they are not on PATH."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    script_path = tmp_path / "find.sh"
+    script_path.write_text(_python_discovery_functions(script), encoding="utf-8")
+
+    def make_dir(name: str, pythons: dict[str, str]) -> Path:
+        directory = tmp_path / name
+        directory.mkdir()
+        for filename, version in pythons.items():
+            _fake_python(directory / filename, version)
+        return directory
+
+    def find(path_dirs: list[str], brew_dirs: list[Path], function: str = "find_supported_python"):
+        harness = f"""
+PATH={shlex.quote(":".join(path_dirs + ["/usr/bin", "/bin"]))}
+BREW_BIN_DIRS={shlex.quote(" ".join(str(d) for d in brew_dirs))}
+is_macos_clt_stub() {{ return 1; }}
+. {shlex.quote(str(script_path))}
+{function}
+"""
+        return subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+
+    system = make_dir("usr-bin", {"python3": "3.9.6"})
+    no_brew = tmp_path / "no-brew"
+
+    # Homebrew not on PATH at all (non-login ssh shell), only python3.15 there.
+    brew_versioned = make_dir("brew-versioned", {"python3.15": "3.15.0", "python3.9": "3.9.1"})
+    found = find([str(system)], [brew_versioned])
+    assert found.returncode == 0, found.stderr
+    assert found.stdout.strip() == str(brew_versioned / "python3.15")
+
+    # Homebrew's unversioned python3 wins over its versioned names.
+    brew_full = make_dir("brew-full", {"python3": "3.13.1", "python3.15": "3.15.0"})
+    assert find([str(system)], [brew_full]).stdout.strip() == str(brew_full / "python3")
+
+    # Versioned names on PATH, newest first; -config and other suffixes are
+    # not interpreters, python3.9 is too old.
+    on_path = make_dir(
+        "on-path dir",
+        {"python3.9": "3.9.2", "python3.11": "3.11.4", "python3.13": "3.13.0", "python3.14-config": "3.14.0"},
+    )
+    found = find([str(system), "", str(on_path)], [brew_full])
+    assert found.stdout.strip() == str(on_path / "python3.13")
+
+    # Equal versions keep PATH order.
+    first = make_dir("first", {"python3.12": "3.12.0"})
+    second = make_dir("second", {"python3.12": "3.12.0"})
+    assert find([str(system), str(second), str(first)], [no_brew]).stdout.strip() == str(second / "python3.12")
+
+    # A supported unversioned python3 on PATH is still the first choice.
+    modern = make_dir("modern", {"python3": "3.12.3"})
+    assert find([str(modern), str(on_path)], [brew_full]).stdout.strip() == str(modern / "python3")
+
+    # Nothing usable: fail, and say what was looked at.
+    missing = find([str(system)], [no_brew])
+    assert missing.returncode != 0 and missing.stdout == ""
+    described = find([str(system)], [brew_versioned], "describe_python_candidates")
+    assert f"{system / 'python3'}: Python 3.9.6" in described.stdout
+    assert f"{brew_versioned / 'python3.15'}: Python 3.15.0" in described.stdout
+    assert described.stdout.count(str(system / "python3")) == 1
+
+    assert 'BREW_BIN_DIRS="/opt/homebrew/bin /usr/local/bin"' in script
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_pipx_install_falls_back_to_no_watch_extra_once(tmp_path):
+    """node1: watchdog has no wheel for Python 3.15, building it failed on a
+    broken Command Line Tools linker, and the whole install failed after the
+    shared-pip repair retry. The [watch] extra only powers auto-import, so the
+    same verified checkout is installed once more without it, later repairs
+    reuse that spec, and the user is told how to add auto-import later."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    script_path = tmp_path / "pipx.sh"
+    script_path.write_text(
+        _extract_function(script, "pipx_install_with_repair() {")
+        + _extract_function(script, "pipx_install_without_watch() {")
+        + _extract_function(script, "report_skipped_watch_extra() {"),
+        encoding="utf-8",
+    )
+    calls = tmp_path / "calls"
+    shared = tmp_path / "shared"
+
+    def run(watch_rc: int, base_rc: int) -> tuple[subprocess.CompletedProcess, list[str]]:
+        shared.mkdir(exist_ok=True)
+        calls.write_text("", encoding="utf-8")
+        harness = f"""
+set -eu
+PY=/fake/python3.15
+OS_NAME=Darwin
+PIPX_ENV=omm-model
+INSTALL_SPEC='/src/abc[watch]'
+NO_WATCH_INSTALL_SPEC='/src/abc'
+WATCH_EXTRA_SKIPPED=0
+run_pipx() {{
+    if [ "$1" = environment ]; then printf '%s\\n' {shlex.quote(str(shared))}; return 0; fi
+    printf '%s\\n' "$*" >> {shlex.quote(str(calls))}
+    case "$*" in *"[watch]"*) return {watch_rc} ;; esac
+    return {base_rc}
+}}
+pipx_shared_dir_is_safe() {{ return 0; }}
+. {shlex.quote(str(script_path))}
+if ! pipx_install_with_repair && ! pipx_install_without_watch; then
+    echo INSTALL-FAILED
+    exit 1
+fi
+echo "SPEC=$INSTALL_SPEC SKIPPED=$WATCH_EXTRA_SKIPPED"
+report_skipped_watch_extra
+"""
+        result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+        return result, calls.read_text(encoding="utf-8").splitlines()
+
+    install = "install --force --editable --python /fake/python3.15"
+
+    fell_back, made = run(watch_rc=1, base_rc=0)
+    assert fell_back.returncode == 0, fell_back.stderr
+    assert made == [f"{install} /src/abc[watch]", f"{install} /src/abc[watch]", f"{install} /src/abc"]
+    assert "SPEC=/src/abc SKIPPED=1" in fell_back.stdout
+    assert "retrying once without it" in fell_back.stderr
+    assert "'omm setting auto-import' will not work yet" in fell_back.stderr
+    assert "Xcode Command Line Tools" in fell_back.stderr
+    assert '"/fake/python3.15" -m pipx inject omm-model watchdog plyer' in fell_back.stderr
+
+    both_failed, made = run(watch_rc=1, base_rc=1)
+    assert both_failed.returncode == 1
+    assert "INSTALL-FAILED" in both_failed.stdout
+    assert len(made) == 3
+
+    with_watch, made = run(watch_rc=0, base_rc=0)
+    assert with_watch.returncode == 0
+    assert made == [f"{install} /src/abc[watch]"]
+    assert "SPEC=/src/abc[watch] SKIPPED=0" in with_watch.stdout
+    assert "auto-import" not in with_watch.stderr
+
+    # The real script: no-watch spec keeps [nvidia], every later repair
+    # reinstalls "$INSTALL_SPEC" (now the spec that worked), and the warning
+    # is printed with the closing message.
+    assert 'NO_WATCH_INSTALL_SPEC="${SRC_DIR}[nvidia]"' in script
+    assert "if ! pipx_install_with_repair && ! pipx_install_without_watch; then" in script
+    tail = script[script.index("if ! pipx_install_with_repair && ! pipx_install_without_watch; then"):]
+    assert tail.count('run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"') == 2
+    assert tail.index('echo "Done.') < tail.index("report_skipped_watch_extra\n") < tail.index(
+        "OMM_INSTALL_FINISHED=1"
+    )
