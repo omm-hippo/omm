@@ -2764,11 +2764,11 @@ def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> N
     else:
         console.print("  Not loaded; does not fit the cluster's free memory now", markup=False)
     # An older head sends no placements.
-    for line in _cluster_placement_lines(data["model"], data.get("placements") or []):
+    for line in _cluster_placement_lines(data["model"], data.get("placements") or [], admin=point is None):
         console.print(line, markup=False)
 
 
-def _cluster_placement_lines(model: str, rows: list[dict]) -> list[str]:
+def _cluster_placement_lines(model: str, rows: list[dict], *, admin: bool = True) -> list[str]:
     """`omm cluster info`'s table of the ways exo can place a model right now."""
     if not rows:
         return []
@@ -2785,7 +2785,8 @@ def _cluster_placement_lines(model: str, rows: list[dict]) -> list[str]:
         if row["automatic"]:
             text += "  <- omm's pick"
         lines.append(text)
-    if any(row["fits"] for row in rows):
+    if admin and any(row["fits"] for row in rows):
+        # Loading is the head admin's call; an employee only sees what is possible.
         lines.append(f"  Choose one: omm cluster load {model} --sharding tensor|pipeline --macs N")
     return lines
 

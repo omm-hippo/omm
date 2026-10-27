@@ -128,6 +128,7 @@ def test_info_lists_placements_by_mac_count_only(employee, monkeypatch):
     assert len(rows) == 9 and all("nodes" not in row for row in rows)
     result, text = _run("cluster", "info", "mlx-community/Qwen3-0.6B-4bit")
     assert "Tensor RDMA 2 Macs" in text and "omm's pick" in text and "12D3KooW" not in text
+    assert "omm cluster load" not in text  # loading is the head admin's call
 
 
 def test_info_of_an_unknown_model_shows_the_heads_reason(employee):
