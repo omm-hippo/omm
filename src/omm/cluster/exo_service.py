@@ -19,7 +19,7 @@ LAUNCHD_LABEL = "com.omm.cluster-exo"
 LIBP2P_PORT = 52416
 
 
-def install(namespace: str, *, run=subprocess.run) -> None:
+def install(namespace: str, *, run=subprocess.run, keep_if_same: bool = False) -> None:
     runtime = str(preflight.runtime_dir())
     workdir = Path.home() / ".exo"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,7 @@ def install(namespace: str, *, run=subprocess.run) -> None:
         "ThrottleInterval": 10,
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
-    }, run=run)
+    }, run=run, keep_if_same=keep_if_same)
 
 
 def uninstall(*, run=subprocess.run) -> None:

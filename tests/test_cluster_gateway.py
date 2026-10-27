@@ -6,12 +6,14 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+from pathlib import Path
 import socket
+import ssl
 import threading
 
 import pytest
 
-from omm.cluster import gateway, tokens
+from omm.cluster import gateway, tls, tokens
 
 SSE_BYTES = b"event: a\ndata: 1\n\n" + b"event: b\ndata: 2\n\n" + b"event: c\ndata: 3\n\n"
 
@@ -90,8 +92,14 @@ def gateway_without_upstream(token):
     server.server_close()
 
 
+def connect(server):
+    """HTTPS that trusts only this gateway's CA, as an employee PC that pinned it."""
+    context = tls.client_context(cadata=server.certificates.ca_pem().decode())
+    return http.client.HTTPSConnection("127.0.0.1", server.server_address[1], timeout=10, context=context)
+
+
 def request(server, method, path, headers=None, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+    conn = connect(server)
     conn.request(method, path, body=body, headers=headers or {})
     return conn.getresponse()
 
@@ -154,7 +162,7 @@ def test_admin_paths_are_404_even_with_a_valid_token(gateway_server, upstream, t
 
 
 def test_oversized_body_is_413(gateway_server, upstream, token):
-    conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
+    conn = connect(gateway_server)
     conn.putrequest("POST", "/v1/messages")
     conn.putheader("Authorization", f"Bearer {token}")
     conn.putheader("Content-Length", str(16 * 1024 * 1024 + 1))
@@ -264,7 +272,7 @@ def test_absolute_form_target_is_forwarded_as_the_checked_path(gateway_server, u
 def test_chunked_request_body_is_411_and_never_reaches_upstream(gateway_server, upstream, token):
     # Headers only: the gateway answers and closes without reading a chunked
     # body, so a client still writing chunks gets a broken pipe (Linux CI).
-    conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
+    conn = connect(gateway_server)
     conn.putrequest("POST", "/v1/messages")
     conn.putheader("Authorization", f"Bearer {token}")
     conn.putheader("Transfer-Encoding", "chunked")
@@ -330,3 +338,120 @@ def test_access_log_rotates_and_stays_out_of_the_run_log(gateway_server, token, 
     finally:
         gateway.detach_access_log(handler)
     assert gateway.log.propagate is True
+
+
+FIX = Path(__file__).parent / "fixtures" / "exo"
+
+
+class _Exo(ThreadingHTTPServer):
+    """exo answering from fixtures: `routes` maps (method, path) to (status, body)."""
+
+    def __init__(self, routes):
+        super().__init__(("127.0.0.1", 0), _ExoHandler)
+        self.routes = routes
+        self.paths = []
+
+
+class _ExoHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _serve(self):
+        self.server.paths.append((self.command, self.path))
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        status, body = self.server.routes.get((self.command, self.path), (404, b'{"detail":"Not Found"}'))
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _serve
+
+
+@pytest.fixture
+def exo_gateway(token):
+    started = []
+
+    def make(routes):
+        exo = _start(_Exo(routes))
+        server = _start(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{exo.server_address[1]}"))
+        started.extend((server, exo))
+        return server, exo
+
+    yield make
+    for server in started:
+        server.shutdown()
+        server.server_close()
+
+
+def _models_routes(state_fixture):
+    return {("GET", "/v1/models"): (200, (FIX / "models.json").read_bytes()),
+            ("GET", "/state"): (200, (FIX / state_fixture).read_bytes())}
+
+
+def test_models_lists_only_models_with_a_ready_instance(exo_gateway, token):
+    server, _ = exo_gateway(_models_routes("state-1node.json"))
+    resp = request(server, "GET", "/v1/models", headers={"Authorization": f"Bearer {token}"})
+    raw = resp.read()
+    assert resp.status == 200
+    assert resp.getheader("Content-Length") == str(len(raw)) and resp.getheader("Transfer-Encoding") is None
+    catalog = json.loads((FIX / "models.json").read_text(encoding="utf-8"))
+    loaded = [m for m in catalog["data"] if m["id"] == "mlx-community/Llama-3.2-1B-Instruct-4bit"]
+    assert len(catalog["data"]) > 1 and len(loaded) == 1
+    assert json.loads(raw) == {**catalog, "data": loaded}
+
+
+def test_models_is_empty_when_nothing_is_loaded(exo_gateway, token):
+    server, exo = exo_gateway(_models_routes("state.json"))
+    resp = request(server, "GET", "/v1/models", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status == 200 and json.loads(resp.read())["data"] == []
+    assert {path for _, path in exo.paths} == {"/v1/models", "/state"}
+
+
+def test_models_needs_a_token_before_asking_exo(exo_gateway):
+    server, exo = exo_gateway(_models_routes("state-1node.json"))
+    resp = request(server, "GET", "/v1/models")
+    assert resp.status == 401
+    resp.read()
+    assert exo.paths == []
+
+
+def test_models_with_exo_down_is_502(gateway_without_upstream, token):
+    resp = request(gateway_without_upstream, "GET", "/v1/models", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status == 502
+    assert json.loads(resp.read())["error"] == {"type": "api_error", "message": "omm cluster: exo is not running on this Mac"}
+
+
+def test_unloaded_model_404_says_how_to_load_it(exo_gateway, token):
+    # exo 1.0.71's answer for a catalog model nobody loaded (#531).
+    missing = b'{"message":"No instance found for model mlx-community/MiniMax-M2.7-4bit"}'
+    server, _ = exo_gateway({("POST", "/v1/chat/completions"): (404, missing)})
+    resp = post(server, "/v1/chat/completions", headers={"Authorization": f"Bearer {token}"},
+                body=b'{"model":"mlx-community/MiniMax-M2.7-4bit","messages":[]}')
+    assert resp.status == 404
+    error = json.loads(resp.read())["error"]
+    assert error["type"] == "not_found_error"
+    assert "mlx-community/MiniMax-M2.7-4bit is not loaded on the cluster" in error["message"]
+    assert "omm cluster load mlx-community/MiniMax-M2.7-4bit" in error["message"]
+
+
+def test_other_upstream_404_passes_through_unchanged(exo_gateway, token):
+    server, _ = exo_gateway({})
+    resp = post(server, "/v1/messages", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status == 404 and resp.read() == b'{"detail":"Not Found"}'
+
+
+def test_a_member_recognises_the_gateway_but_not_exo(gateway_server, upstream):
+    from omm.cluster import commands
+
+    assert commands._is_gateway("127.0.0.1", gateway_server.server_address[1]) is True
+    assert commands._is_gateway("127.0.0.1", upstream.server_address[1]) is False
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    assert commands._is_gateway("127.0.0.1", closed) is False

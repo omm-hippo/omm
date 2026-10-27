@@ -14,6 +14,8 @@ from omm import cli, rag_readiness, rag_remote
 from omm.cluster import gateway, tokens
 from omm.documents import DocumentStore
 
+from tests import _gateway_tls
+
 runner = CliRunner()
 
 
@@ -203,15 +205,17 @@ def head(isolated_omm_home, machine):
     server = gateway.GatewayServer("127.0.0.1", 0, upstream="http://127.0.0.1:9")
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", token
+    yield server, token
     server.shutdown()
     server.server_close()
 
 
 @pytest.fixture
 def employee(head, tmp_path, monkeypatch):
-    url, token = head
+    server, token = head
+    url = _gateway_tls.url(server)
     monkeypatch.setattr(rag_remote, "remote_path", lambda: tmp_path / "employee-rag-remote.json")
+    _gateway_tls.pin(server)
     rag_remote.save(rag_remote.Remote(url, token))
     return url, token
 

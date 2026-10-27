@@ -9,12 +9,14 @@ import uuid
 import pytest
 import requests
 
+from omm import rag_remote
+from omm.cluster import tls
 from omm.web import shared_ai
 from omm.web.server import WebServer
 
 
 @pytest.fixture
-def gateway(monkeypatch):
+def gateway(monkeypatch, tmp_path):
     class Gateway(BaseHTTPRequestHandler):
         calls = []
         status = 200
@@ -41,11 +43,15 @@ def gateway(monkeypatch):
             self.calls.append(("POST", self.path, body))
             self.respond([] if self.invalid_chat else {"model": self.response_model or body["model"], "choices": [{"message": {"content": "56"}, "finish_reason": "stop"}]})
     server = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    # HTTPS from a head CA that `omm rag remote set` already pinned (#536).
+    certificates = tls.HeadCertificates(tmp_path / "head-tls", names=lambda: ["10.42.0.2", "10.42.0.3"])
+    server.socket = certificates.context().wrap_socket(server.socket, server_side=True)
+    rag_remote.save_ca(certificates.ca_pem().decode())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     # Use a real socket while keeping loopback unavailable in production URLs.
     monkeypatch.setattr(shared_ai, "private_address", lambda *_: "127.0.0.1")
-    yield f"http://10.42.0.2:{server.server_port}", Gateway
+    yield f"https://10.42.0.2:{server.server_port}", Gateway
     server.shutdown()
     server.server_close()
     thread.join(5)
@@ -133,7 +139,7 @@ def test_saved_token_reused_only_for_same_destination(app, gateway):
     url, _ = gateway
     assert connect(server, client, url).status_code == 200
     assert connect(server, client, url, "").status_code == 200
-    response = connect(server, client, "http://10.42.0.3:52440", "")
+    response = connect(server, client, "https://10.42.0.3:52440", "")
     assert response.json()["code"] == "token"
 
 
@@ -272,3 +278,29 @@ def test_partial_connection_metadata_is_recoverable_storage_error(app, gateway):
     path.write_text(json.dumps(value), encoding="utf-8")
     assert client.get(server.url + "api/shared-ai").json()["code"] == "storage"
     assert client.post(server.url + "api/shared-ai/clear", json={"confirmed": True}).status_code == 200
+
+
+def test_plain_http_is_refused_before_sending_the_token(app, gateway):
+    server, client = app
+    url, remote = gateway
+    response = connect(server, client, url.replace("https://", "http://")).json()
+    assert response["code"] == "plain" and "https://" in response["action"]
+    assert remote.calls == []
+
+
+def test_without_a_pinned_certificate_the_terminal_check_comes_first(app, gateway):
+    server, client = app
+    url, remote = gateway
+    rag_remote.ca_path().unlink()
+    response = connect(server, client, url).json()
+    assert response["code"] == "tls" and "omm rag remote set https://" in response["action"]
+    assert remote.calls == []
+
+
+def test_a_server_with_another_certificate_is_refused(app, gateway, tmp_path):
+    server, client = app
+    url, remote = gateway
+    tls.ensure(tmp_path / "other", ["10.42.0.2"])
+    rag_remote.save_ca((tmp_path / "other" / "ca.pem").read_text(encoding="utf-8"))
+    assert connect(server, client, url).json()["code"] == "tls"
+    assert remote.calls == []

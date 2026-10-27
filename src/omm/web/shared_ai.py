@@ -2,7 +2,8 @@
 
 Only a user action contacts the gateway. Tokens stay in an owner-only local
 file; chat text and responses live in memory. The existing local-runtime and
-RAG connections are deliberately unchanged.
+RAG connections are deliberately unchanged. The gateway is HTTPS only and is
+trusted through the head certificate `omm rag remote set` pinned (#536).
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def normalize_url(value):
     if not isinstance(value, str) or len(value) > 512 or re.search(r"[\s\\\x00-\x1f\x7f]", value.strip()):
         raise problem("address")
     try:
-        parsed = urlsplit(value.strip() if "://" in value else "http://" + value.strip())
+        parsed = urlsplit(value.strip() if "://" in value else "https://" + value.strip())
         port = 52440 if parsed.port is None else parsed.port
         host = parsed.hostname
         if (parsed.scheme not in {"http", "https"} or not host or parsed.username is not None
@@ -89,14 +90,30 @@ def private_address(host, port):
     return addresses[0]
 
 
+def pinned_context():
+    """Trust only the head certificate the terminal's `omm rag remote set` pinned."""
+    from omm import rag_remote
+    unchecked = SharedError("tls", "이 PC가 공유 서버의 인증서를 아직 확인하지 않았어요.",
+                            "터미널에서 `omm rag remote set https://<주소>:52440` 을 실행해 대표 Mac이 보여 주는 지문과 같은지 먼저 확인하세요.")
+    path = rag_remote.ca_path()
+    if not path.is_file():
+        raise unchecked
+    try:
+        return ssl.create_default_context(cafile=str(path))
+    except (ssl.SSLError, OSError):
+        raise unchecked from None
+
+
 def gateway_call(url, token, path, payload=None):
-    """Direct, bounded, pinned HTTP; no proxies, redirects, retries or fallback."""
+    """Direct, bounded, pinned HTTPS; no proxies, redirects, retries or fallback."""
     parsed = urlsplit(normalize_url(url))
+    if parsed.scheme != "https":
+        raise SharedError("plain", "공유 서버가 이제 HTTPS만 받아요.", "주소를 https://<주소>:52440 으로 다시 입력하세요.")
+    context = pinned_context()
     address = private_address(parsed.hostname, parsed.port)
-    cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    connection = cls(parsed.hostname, parsed.port, timeout=10)
-    # HTTPSConnection still verifies the original hostname using the default
-    # TLS context; only the socket destination is pinned to the validated IP.
+    connection = http.client.HTTPSConnection(parsed.hostname, parsed.port, timeout=10, context=context)
+    # HTTPSConnection still verifies the original hostname against the pinned
+    # CA; only the socket destination is pinned to the validated IP.
     connection._create_connection = lambda _target, timeout=10, source_address=None: socket.create_connection(
         (address, parsed.port), timeout, source_address)
     body = None if payload is None else json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()

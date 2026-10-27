@@ -296,11 +296,70 @@ bridge by editing preferences.plist (order matters, see its docstring). `power.p
 adds exo (and the gateway's real Python binary on the head) to the macOS Application Firewall:
 with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The
 head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
-`_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
-tokens from `tokens.py` (fail closed) and forwards four inference routes. It also folds
+`_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It serves HTTPS only (#536,
+`cluster/tls.py`): the head makes its own CA once (`OMM_HOME/cluster/tls/`, kept by re-init and
+`leave`) and the gateway re-issues the server certificate from it when the Mac's LAN IPv4/`.local`
+names change; a plaintext request gets a 400 pointing to https before any byte of it is parsed.
+`GET /omm/ca.pem` is the one route without a token: `omm rag remote set` fetches it, proves the
+leaf chains to it, shows its SHA-256 fingerprint (TOFU, `--yes` when stdin is not a tty) and pins
+it as `OMM_HOME/rag-remote-ca.pem`; every employee-side caller (`rag_remote.Client`, `chat._open`,
+`agent_cluster`, web `shared_ai`) trusts only that file. Harnesses: Claude Code gets
+`env.NODE_EXTRA_CA_CERTS` in settings.json (applied but not in the journal's field list, so
+`agent_cluster.restore` drops it after a merged restore); Codex (`CODEX_CA_CERTIFICATE`) and pi
+(`NODE_EXTRA_CA_CERTS`) only read it from their launch environment, so omm prints the launch line. It verifies hashed
+tokens from `tokens.py` (fail closed) and forwards four inference routes; it answers
+`GET /omm/loaded-models` itself (exo's `/v1/models` lists every known model, not the loaded
+ones), which `omm cluster run` (`chat.py`) uses on an employee PC. It also folds
 Claude Code's `role: "system"` messages into the top-level `system` field, because exo
-answers those with 422. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
+answers those with 422. exo keeps instances only in memory, so the gateway process also runs
+`autoload.py`: every 30 s it reloads every model `omm cluster load`/`run` loaded on the head
+(`cluster.json` `models`, each with the admin's `--sharding`/`--macs` choice or automatic; an old
+single `model` string still loads; `unload`/`uninstall` and Memory Guard victims drop their entry), one at
+a time and never unloading anything, after waiting up to 10 min for every known Mac.
+`load --sharding tensor|pipeline --macs N` filters exo's `/instance/previews` (RDMA `MlxJaccl` first, then
+least memory per Mac); exo offers exactly one node set per sharding/backend/count, so Macs cannot be
+named. Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
+`info` shows every preview as a table (`recommend.placement_rows`; Mac names only on the head).
+Model verbs mirror top-level omm (`cluster/models.py`): `install` downloads to every Mac with exo's
+`/download/start` (each Mac's Pending entry carries the whole-model shard) without loading, `uninstall`
+uses `DELETE /download/{node}/{model}`, `load`/`run` apply `memory_guard_policy` (exo marks a
+non-fitting preview with `No cycles found with sufficient memory`). Mutating ones are head-only
+(`commands.require_head_for`). `omm list`/`omm run` also reach cluster models (`chat.cluster_configured`;
+`omm list --json` stays local-only). On an employee PC (no `cluster.json`, `omm rag remote set`),
+`status`/`recommend`/`search`/`info` come from the gateway's read-only `GET /omm/{status,recommend,search,info}`
+(`gateway.VIEW_ROUTES`; counts only, never Mac names or firewall details), `benchmark` measures a
+loaded model through `/v1/chat/completions`, and admin verbs say to ask the head's admin.
+On the head, `status` also reports document search (RAG) readiness (`cluster/document_search.py`, #534):
+Ollama installed/running and the `omm rag embedding-model` pulled, with the fix command as a problem only
+once the head has documents or its own collections. It never installs, starts or pulls anything.
+Spec: `docs/superpowers/specs/2026-10-26-cluster-cli-redesign-design.md`.
+Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
+head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
+list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
 and `2026-10-22-exo-cluster-spike-findings.md`.
+Member link (`member_link.py`, LaunchAgent `com.omm.cluster-member`, hidden `_cluster-member-run`,
+installed by `join`): every 60 s a member polls the head's `POST /omm/member/poll` (and
+`GET /omm/member/rag/snapshot`) on the gateway port, Thunderbolt addresses first. These routes take no
+employee token: with a key derived from the namespace (never the namespace itself), `member_auth.py`
+signs each request and each reply over the nonce, the TLS leaf the member saw (the first block of
+`tls/server.pem`) and the body, because members do not pin the head's CA and a relay must not replay a
+request to the head. Every Mac with the
+namespace is trusted equally (spec decision). The member follows the head's exact commit through
+`cli._perform_update(..., target_commit=)` (signed, on the channel branch, never backward: a member ahead
+waits for `omm update` on the head; it switches to the head's channel), then exits for launchd to restart
+it; the head's `omm update` restarts its gateway and warns that members follow. It also keeps the head's
+document store as `OMM_HOME/cluster/rag-backup/library.sqlite3` (`rag_backup.py`, never served). The head
+records reports in `cluster/members.json` and `status` lists each Mac's version and backup. `join` now
+opens the gateway port in pf and ALF on every member, so `omm cluster handover MAC` (`handover.py`, run on
+the head) needs no sudo: it freezes `/rag/*` and `/mcp` (503), writes `cluster/handover.json` with
+`head_epoch + 1` and the kept models; the target's link pulls a final snapshot, swaps it in as its live
+store (its own store moved aside to `library.sqlite3.before-handover-<ts>`) and starts its gateway; the old
+head then steps down (tokens deleted, TLS CA kept, its store becomes its backup via `stepped-down.json`).
+Tokens and the CA are never moved; employees re-run `omm rag remote set`. A gateway that finds a peer head
+with a higher (epoch, node id) steps down (`handover.stale_head_loop`), and a gateway started on a
+member removes itself. The target re-checks the instruction just before taking over, and a failed
+promote rolls back to a working member. Spec:
+`docs/superpowers/specs/2026-10-27-cluster-handover-version-sync-design.md`.
 
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported

@@ -43,6 +43,11 @@ def connect(
     if remote:
         console.print("It searches the cluster head over the office network. Your employee token is stored in that "
                       "configuration file; do not share or upload the file.")
+        from omm import rag_remote
+        from omm.cluster import tls
+        hint, command = tls.harness_trust_hint(harness, rag_remote.ca_path())
+        console.print(escape(hint))
+        console.print(f"  {command}", markup=False, soft_wrap=True)
         console.print("Start a new session in the harness.")
     else:
         console.print("Start a new session in the harness. Documents and questions stay on this computer.")
@@ -233,19 +238,51 @@ def _read_token(token: str | None) -> str:
     return (token or "").strip()
 
 
+def _trust_head_certificate(offered, yes: bool) -> None:
+    """Pin the head's certificate on first use; refuse one that differs from the pinned one."""
+    from omm import rag_remote
+    from omm.cluster import tls
+    console, escape = _printers()
+    pinned = rag_remote.pinned_ca()
+    if pinned:
+        try:
+            same = tls.fingerprint(pinned) == offered.fingerprint
+        except ValueError:
+            same = False
+        if same:
+            return
+        raise rag_remote.RemoteError(rag_remote.WRONG_CERTIFICATE)
+    console.print("헤드 인증서 지문 (SHA-256):")
+    console.print(f"  {offered.fingerprint}", markup=False, soft_wrap=True, emoji=False)
+    console.print("헤드 Mac에서 `omm cluster status` 가 보여 주는 지문(토큰을 받을 때 함께 받은 지문)과 똑같은지 확인해 주세요.")
+    if yes:
+        return
+    from omm.cli import _ask_confirm, _stdin_is_tty
+    if not _stdin_is_tty():
+        raise rag_remote.RemoteError("터미널이 아니라 지문을 확인받을 수 없어요. 지문이 같은 것을 직접 확인했다면 --yes 를 붙여 다시 실행해 주세요.")
+    if not _ask_confirm("지문이 같나요? 이 헤드를 신뢰할까요?"):
+        raise rag_remote.RemoteError("헤드 인증서를 신뢰하지 않아서 아무것도 저장하지 않았어요.")
+
+
 @remote_app.command(name="set")
 def remote_set(
-    url: str = typer.Argument(..., help="Cluster head address, e.g. 192.168.0.10 or http://head.local:52440."),
+    url: str = typer.Argument(..., help="Cluster head address, e.g. 192.168.0.10 or https://head.local:52440."),
     token: str | None = typer.Option(None, "--token", help="Employee token. Omit it to type the token hidden (or pipe it on stdin) so it stays out of shell history."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Trust the head's certificate without asking (needed when the token comes on stdin). Compare the printed fingerprint with omm cluster status on the head yourself."),
 ) -> None:
-    """Point `omm rag` at the cluster head after checking the employee token."""
+    """Point `omm rag` at the cluster head after checking its certificate and the employee token."""
     from omm import rag_remote
+    from omm.cluster import tls
     console, escape = _printers()
     try:
         remote = rag_remote.Remote(rag_remote.normalize_url(url), _read_token(token))
         if not remote.token:
             raise rag_remote.RemoteError("토큰이 비어 있어요. 관리자에게 받은 omm_... 토큰을 넣어 주세요.")
-        name = rag_remote.Client(remote).whoami()
+        # The certificate is settled before the token is sent anywhere.
+        offered = tls.fetch_ca(remote.url)
+        _trust_head_certificate(offered, yes)
+        name = rag_remote.Client(remote, ca_pem=offered.pem).whoami()
+        rag_remote.save_ca(offered.pem)
         path = rag_remote.save(remote)
     except (ValueError, OSError) as error:
         _fail(str(error) if isinstance(error, ValueError) else "설정 파일을 쓰지 못했어요. 권한을 확인해 주세요.")
