@@ -13,7 +13,8 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import appfw, exo_client, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
+from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, netconfig, power, preflight,
+                         recommend, service, settings, tokens)
 from omm.cluster.errors import ClusterError, UsageProblem
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -220,6 +221,7 @@ def status() -> dict:
                 settings.save(dataclasses.replace(current, known_nodes=merged))
     fw = "missing"
     gateway = "not_head"
+    documents = None
     if current is not None and settings.is_legacy(current.namespace):
         problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
                         "on the head Mac and omm cluster join <new name> on every other Mac")
@@ -237,11 +239,14 @@ def status() -> dict:
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
+            # The head answers employees' document questions (#534).
+            documents, found = document_search.check()
+            problems += found
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway,
             "kept_models": [dataclasses.asdict(entry) for entry in current.models]
             if current is not None and current.role == "head" else [],
-            "problems": problems}
+            "document_search": documents, "problems": problems}
 
 
 def exposure() -> dict | None:

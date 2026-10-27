@@ -118,7 +118,7 @@ omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manag
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
 omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
-omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems (employee PCs: Macs connected, memory, loaded models)
+omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, document search (head), and any problems (employee PCs: Macs connected, memory, loaded models)
 omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
 omm cluster recommend [--json]  # Show the biggest exo models that fit the cluster's free memory
 omm cluster search TEXT [--json]  # Search Hugging Face for MLX models exo can run

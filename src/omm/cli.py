@@ -2493,7 +2493,7 @@ def cluster_join_cmd(
 @cluster_app.command(name="status")
 @global_flags
 def cluster_status_cmd() -> None:
-    """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
+    """Show nodes, memory, RDMA, firewall, gateway and document search, and list any problems."""
     from omm.cluster import chat, commands as cluster_commands, settings as cluster_settings
 
     if cluster_settings.load() is None and chat.cluster_configured():
@@ -2540,6 +2540,10 @@ def cluster_status_cmd() -> None:
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
     console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
+    if report["document_search"] is not None:
+        from omm.cluster import document_search
+
+        console.print(f"Document search: {document_search.summary(report['document_search'])}", markup=False)
     if report["problems"]:
         console.print("Problems:", markup=False)
         for problem in report["problems"]:

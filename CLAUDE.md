@@ -319,6 +319,9 @@ non-fitting preview with `No cycles found with sufficient memory`). Mutating one
 `status`/`recommend`/`search`/`info` come from the gateway's read-only `GET /omm/{status,recommend,search,info}`
 (`gateway.VIEW_ROUTES`; counts only, never Mac names or firewall details), `benchmark` measures a
 loaded model through `/v1/chat/completions`, and admin verbs say to ask the head's admin.
+On the head, `status` also reports document search (RAG) readiness (`cluster/document_search.py`, #534):
+Ollama installed/running and the `omm rag embedding-model` pulled, with the fix command as a problem only
+once the head has documents or its own collections. It never installs, starts or pulls anything.
 Spec: `docs/superpowers/specs/2026-10-26-cluster-cli-redesign-design.md`.
 Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field

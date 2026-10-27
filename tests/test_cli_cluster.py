@@ -51,6 +51,7 @@ class _Fakes:
         self.raw_state_calls = 0
         self.started, self.deleted_downloads, self.added = [], [], []
         self.gateway_at = None  # the address whose omm gateway answers a member's probe
+        self.ollama = ("running", True)  # (Ollama state, embedding model pulled) on the head
 
     def _node_id(self, name):
         return next(k for k, v in self.state["nodeIdentities"].items() if v["friendlyName"] == name)
@@ -134,7 +135,7 @@ class _FakeExoClient:
 
 @pytest.fixture
 def cluster_fakes(monkeypatch, isolated_omm_home):
-    from omm.cluster import appfw, commands, exo_service, firewall, netconfig, power, preflight, service
+    from omm.cluster import appfw, commands, document_search, exo_service, firewall, netconfig, power, preflight, service
     from omm.cluster import models as cluster_models
 
     fakes = _Fakes()
@@ -170,6 +171,7 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(exo_client, "ExoClient", _FakeExoClient)
     monkeypatch.setattr(commands, "lan_ipv4", lambda: "192.0.2.10")
     monkeypatch.setattr(commands, "_is_gateway", lambda address, port: address == fakes.gateway_at)
+    monkeypatch.setattr(document_search, "_ollama", lambda model, url: fakes.ollama)
     return fakes
 
 
@@ -275,7 +277,8 @@ def test_init_on_member_is_refused(cluster_fakes):
 def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
-    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_models", "problems"}
+    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_models", "document_search",
+                         "problems"}
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
     assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
@@ -1483,3 +1486,109 @@ def test_autoload_skips_a_kept_model_whose_choice_is_not_offered_and_unloads_not
     assert [p.model_id for p in cluster_fakes.created] == [other]
     assert "Tensor on 3 Macs" in caplog.text
     assert cluster_fakes.deleted == [] and settings.load().models[0] == settings.KeptModel(MODEL, "Tensor", 3)
+
+
+# -- document search on the head (#534) ---------------------------------------
+
+
+def _documents_in_use():
+    from omm.documents import DocumentStore
+
+    DocumentStore().create_collection("인사")
+
+
+def test_status_reports_semantic_document_search_on_the_head(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    data = _status()
+    assert data["document_search"] == {"mode": "semantic", "model": "bge-m3", "url": "http://127.0.0.1:11434",
+                                       "ollama": "running", "model_pulled": True, "in_use": False}
+    assert data["problems"] == []
+    assert "Document search: semantic (Ollama, bge-m3; no documents yet)" in _plain_status()
+
+
+def test_status_without_documents_does_not_raise_a_missing_ollama(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.ollama = ("stopped", None)
+    data = _status()
+    assert data["document_search"]["mode"] == "keyword" and data["problems"] == []
+    output = _plain_status()
+    assert "Document search: keyword only (Ollama not running; no documents yet)" in output
+    assert "No problems found" in output
+
+
+def test_status_tells_how_to_install_ollama_when_documents_exist(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _documents_in_use()
+    cluster_fakes.ollama = ("not_installed", None)
+    data = _status()
+    assert data["document_search"]["ollama"] == "not_installed" and data["document_search"]["in_use"] is True
+    assert data["problems"] == [
+        "document search is keyword-only: Ollama is not installed; run brew install ollama, then "
+        "brew services start ollama (it then starts again after a reboot or logout), then ollama pull bge-m3"]
+    assert "Document search: keyword only (Ollama not installed)" in _plain_status()
+
+
+def test_status_tells_how_to_keep_a_brew_ollama_running(cluster_fakes, monkeypatch):
+    from omm import linker
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    _documents_in_use()
+    cluster_fakes.ollama = ("stopped", None)
+    monkeypatch.setattr(linker, "engine_app_bundle_path", lambda key: None)
+    assert _status()["problems"] == [
+        "document search is keyword-only: Ollama is not running at http://127.0.0.1:11434; run "
+        "brew services start ollama (it then starts again after a reboot or logout)"]
+
+
+def test_status_tells_how_to_start_the_ollama_app(cluster_fakes, monkeypatch):
+    import shutil
+    from omm import linker
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    _documents_in_use()
+    cluster_fakes.ollama = ("stopped", None)
+    monkeypatch.setattr(linker, "engine_app_bundle_path", lambda key: Path("/Applications/Ollama.app"))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    (problem,) = _status()["problems"]
+    assert "run open -a Ollama" in problem and "Login Items" in problem
+
+
+def test_status_tells_how_to_pull_the_configured_embedding_model(cluster_fakes):
+    from omm.documents import DocumentStore
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    _documents_in_use()
+    DocumentStore().set_embedding_model("nomic-embed-text")
+    cluster_fakes.ollama = ("running", False)
+    data = _status()
+    assert data["document_search"]["model"] == "nomic-embed-text" and data["document_search"]["mode"] == "keyword"
+    assert data["problems"] == ["document search is keyword-only: Ollama does not have the embedding model "
+                                "nomic-embed-text; run ollama pull nomic-embed-text"]
+    assert "Document search: keyword only (nomic-embed-text not pulled in Ollama)" in _plain_status()
+
+
+def test_status_flags_an_ollama_whose_model_list_is_unreadable(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _documents_in_use()
+    cluster_fakes.ollama = ("running", None)
+    (problem,) = _status()["problems"]
+    assert "did not list its models" in problem
+    assert "Document search: keyword only (Ollama model list unreadable)" in _plain_status()
+
+
+def test_status_counts_only_the_empty_default_collection_as_unused(cluster_fakes):
+    from omm.documents import DocumentStore
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    DocumentStore().set_embedding_model("nomic-embed-text")  # creates the store with only the default collection
+    cluster_fakes.ollama = ("stopped", None)
+    data = _status()
+    assert data["document_search"]["in_use"] is False and data["document_search"]["model"] == "nomic-embed-text"
+    assert data["problems"] == []
+
+
+def test_status_on_a_member_mac_skips_document_search(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    cluster_fakes.ollama = ("not_installed", None)
+    assert _status()["document_search"] is None
+    assert "Document search" not in _plain_status()
