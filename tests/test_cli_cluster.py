@@ -48,6 +48,7 @@ class _Fakes:
         self.model_ready = True
         self.raw_state_calls = 0
         self.started, self.deleted_downloads, self.added = [], [], []
+        self.gateway_at = None  # the address whose omm gateway answers a member's probe
 
     def _node_id(self, name):
         return next(k for k, v in self.state["nodeIdentities"].items() if v["friendlyName"] == name)
@@ -83,7 +84,7 @@ class _FakeExoClient:
         self._guard()
         return exo_client.parse_state(copy.deepcopy(self.fakes.state))
 
-    def raw_state(self):
+    def raw_state(self, timeout=10):
         self._guard()
         self.fakes.raw_state_calls += 1
         return copy.deepcopy(self.fakes.state)
@@ -166,6 +167,7 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     # chat.loaded_models imports it from exo_client at call time.
     monkeypatch.setattr(exo_client, "ExoClient", _FakeExoClient)
     monkeypatch.setattr(commands, "lan_ipv4", lambda: "192.0.2.10")
+    monkeypatch.setattr(commands, "_is_gateway", lambda address, port: address == fakes.gateway_at)
     return fakes
 
 
@@ -1113,6 +1115,16 @@ def test_install_refused_on_member(cluster_fakes):
     assert result.exit_code == 2 and "runs on the head Mac" in " ".join(result.output.split())
 
 
+def test_member_refusal_names_the_head_mac(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-" + "a" * 32])
+    node_c = cluster_fakes._node_id("mac-c")
+    cluster_fakes.state["nodeNetwork"][node_c]["interfaces"].append(
+        {"name": "en8", "ipAddress": "169.254.40.3", "interfaceType": "thunderbolt"})
+    cluster_fakes.gateway_at = "169.254.40.3"
+    result = runner.invoke(cli.app, ["cluster", "install", LIVE_MODEL])
+    assert result.exit_code == 2 and "runs on the head Mac (mac-c)" in " ".join(result.output.split())
+
+
 def test_list_json_keys(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     _on_every_mac(cluster_fakes)
@@ -1143,7 +1155,8 @@ def test_search_lists_hits(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     result = runner.invoke(cli.app, ["cluster", "search", "qwen3"])
     assert result.exit_code == 0, result.output
-    assert "mlx-community/Qwen3-0.6B-8bit" in result.output and "install adds it" in result.output
+    # The fixture's one repo outside exo's list is a speech model, which search leaves out.
+    assert "mlx-community/Qwen3-0.6B-8bit" in result.output and "Qwen3-ASR" not in result.output
 
 
 def test_unload_of_a_model_that_is_not_loaded_exits_1(cluster_fakes):
@@ -1231,7 +1244,29 @@ def test_list_survives_an_unreachable_cluster(cluster_fakes):
     cluster_fakes.exo_down()
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0, result.output
-    assert "Cluster: unreachable" in " ".join(result.output.split())
+    assert "Cluster: exo is not running on this Mac" in " ".join(result.output.split())
+
+
+def test_list_waits_only_briefly_for_this_macs_exo(cluster_fakes, monkeypatch):
+    from omm.cluster import models as cluster_models
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    seen = []
+    monkeypatch.setattr(cluster_models, "inventory", lambda **kwargs: seen.append(kwargs) or [])
+    assert runner.invoke(cli.app, ["list"]).exit_code == 0
+    assert seen == [{"timeout": cli.CLUSTER_LIST_TIMEOUT}]
+
+
+def test_list_without_a_cluster_skips_the_cluster_modules(isolated_omm_home):
+    import os
+    import subprocess
+    import sys
+
+    code = ("import sys; from omm import cli; cli._print_cluster_section(); "
+            "print('omm.cluster.commands' in sys.modules)")
+    env = {**os.environ, "OMM_HOME": str(isolated_omm_home)}
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
+    assert result.stdout.strip().splitlines()[-1] == "False", result.stderr
 
 
 def test_list_makes_no_cluster_call_without_a_cluster(isolated_omm_home, monkeypatch):

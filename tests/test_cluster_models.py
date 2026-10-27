@@ -5,6 +5,7 @@ entries reuse the shapes captured from a live exo 1.0.71 (downloads-mixed.json).
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from pathlib import Path
 import platform
@@ -53,7 +54,7 @@ class FakeExo:
         self.hits = [exo_client.SearchHit(SMALL, 40482, ("text-generation",)),
                      exo_client.SearchHit("someone/New-4bit", 12, ())]
 
-    def raw_state(self):
+    def raw_state(self, timeout=10):
         downloads = {}
         for node, items in self.downloads.items():
             rows = []
@@ -353,3 +354,73 @@ def test_guard_ask_refuses_when_unloading_everything_is_not_enough(exo):
     with pytest.raises(ClusterError, match="even with every loaded model unloaded"):
         _guarded(exo, GuardPolicy.ASK, answer=True)
     assert exo.deleted_instances == []
+
+
+def test_guard_block_does_not_suggest_unloading_when_it_cannot_help(exo):
+    _two_loaded(exo)
+    exo.free = {n: 1 * GIB for n in exo.nodes}
+    with pytest.raises(ClusterError, match="even with every loaded model unloaded") as caught:
+        _guarded(exo, GuardPolicy.BLOCK)
+    assert "omm cluster unload" not in str(caught.value)
+
+
+def test_guard_block_names_only_what_would_make_room(exo):
+    _two_loaded(exo)
+    exo.free = {n: 40 * GIB for n in exo.nodes}
+    with pytest.raises(ClusterError, match=f"omm cluster unload {OTHER}") as caught:
+        _guarded(exo, GuardPolicy.BLOCK)
+    assert f"unload {SMALL}" not in str(caught.value)
+
+
+def test_guard_ask_loads_the_unloaded_models_back_when_the_load_fails(exo):
+    _two_loaded(exo)
+    exo.free = {n: 25 * GIB for n in exo.nodes}
+    exo.fit_alone = set()  # exo still refuses BIG after the unloads
+    exo.fits.update({SMALL: True, OTHER: True})
+    settings.save(dataclasses.replace(settings.load(), model=SMALL))
+    with pytest.raises(ClusterError, match=f"still does not fit .*Loaded {OTHER}, {SMALL} back"):
+        _guarded(exo, GuardPolicy.ASK, answer=True)
+    assert sorted(model for model, _ in exo.instances.values()) == sorted([SMALL, OTHER])
+    # The model the head reloads after a restart is still the admin's own choice.
+    assert settings.load().model == SMALL
+
+
+def test_guard_observe_does_not_claim_to_try(exo):
+    _two_loaded(exo)
+    seen, out = _lines()
+    with pytest.raises(ClusterError):
+        models.ensure_loaded(BIG, out, policy=GuardPolicy.OBSERVE, confirm=None, client=exo)
+    assert seen and "trying anyway" not in " ".join(seen)
+
+
+def test_load_of_an_installed_model_does_not_mention_downloading(exo):
+    from omm.cluster import commands
+
+    exo.have(SMALL, "n1", "n2", "n3")
+    seen, out = _lines()
+    commands.load_model(SMALL, out, exo)
+    assert seen[0] == f"Loading {SMALL} (Pipeline)..."
+    exo.instances.clear()
+    exo.downloads["n3"].clear()
+    seen, out = _lines()
+    commands.load_model(SMALL, out, exo)
+    assert "download it first" in seen[0]
+
+
+def test_search_leaves_out_speech_and_image_models(exo):
+    exo.hits.append(exo_client.SearchHit("mlx-community/Qwen3-ASR-0.6B-8bit", 900,
+                                         ("mlx-audio", "speech-to-text", "asr")))
+    exo.hits.append(exo_client.SearchHit("mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ", 900,
+                                         ("text-generation", "sentence-similarity", "feature-extraction")))
+    found = [row["model"] for row in models.search("qwen3", exo)]
+    assert SMALL in found and not [model for model in found if "ASR" in model or "Embedding" in model]
+
+
+def test_load_placed_only_on_macs_that_have_it_does_not_mention_downloading(exo):
+    from omm.cluster import commands
+
+    exo.have(SMALL, "n1", "n2")
+    placement = exo_client.Placement(SMALL, "Tensor", {"MlxJacclInstance": {}}, {"n1": GIB, "n2": GIB})
+    seen, out = _lines()
+    commands.load_model(SMALL, out, exo, placement)
+    assert seen[0] == f"Loading {SMALL} (Tensor)..."

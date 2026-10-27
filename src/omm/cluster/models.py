@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 
 from typing import Callable
 
-from omm.cluster import commands, exo_client, recommend
+from omm.cluster import commands, exo_client, recommend, settings
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 
@@ -42,11 +42,11 @@ def _names(state: exo_client.ClusterState) -> dict[str, str]:
     return {node.node_id: node.name for node in state.nodes}
 
 
-def inventory(client: ExoClient | None = None) -> list[ModelRow]:
+def inventory(client: ExoClient | None = None, timeout: float = 10) -> list[ModelRow]:
     """Every model at least one Mac has (or is fetching), plus loaded ones."""
     commands.require_macos()
     client = client or ExoClient()
-    return inventory_from(client.raw_state())
+    return inventory_from(client.raw_state(timeout=timeout))
 
 
 def inventory_from(raw: dict) -> list[ModelRow]:
@@ -192,6 +192,16 @@ def info(model_id: str, client: ExoClient | None = None) -> dict:
     }
 
 
+# Hugging Face tags of MLX repos nobody chats with (speech, audio, images, embeddings), e.g.
+# Qwen3-ASR, Qwen3-TTS and Qwen3-Embedding in a search for "qwen3" (2026-10-27). An embedding
+# repo also carries "text-generation", so these tags win over any chat tag.
+NOT_CHAT_TAGS = frozenset({
+    "mlx-audio", "speech", "speech-to-text", "text-to-speech", "automatic-speech-recognition", "asr", "stt", "tts",
+    "audio", "text-to-audio", "audio-to-audio", "text-to-image", "image-to-image", "diffusers", "mflux",
+    "sentence-similarity", "feature-extraction", "sentence-transformers",
+})
+
+
 def search(query: str, client: ExoClient | None = None) -> list[dict]:
     if client is None:
         commands.require_macos()
@@ -202,6 +212,8 @@ def search(query: str, client: ExoClient | None = None) -> list[dict]:
     budget = recommend.HEADROOM * sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
     rows = []
     for hit in hits:
+        if NOT_CHAT_TAGS & {tag.lower() for tag in hit.tags}:
+            continue
         model = catalog.get(hit.model_id)
         size = model.size_bytes if model else None
         rows.append({"model": hit.model_id, "downloads": hit.downloads, "in_catalog": model is not None,
@@ -268,29 +280,63 @@ def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], b
         raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
     sizes = {model.model_id: model.size_bytes for model in client.models()}
     listed = ", ".join(f"{name} ({_gib(sizes.get(name))})" for name in loaded)
+    victims, room = _make_room(model_id, loaded, sizes, state)
     if policy is GuardPolicy.OBSERVE:
-        out(f"Memory Guard warning: {model_id} does not fit next to {listed}; trying anyway (observe mode).")
+        # exo offers no placement at all, so there is nothing to try.
+        out(f"Memory Guard warning (observe mode): {model_id} does not fit next to {listed}.")
         raise ClusterError(f"exo refused to load {model_id}: {exo_client.NO_MEMORY}")
+    if not room:
+        raise ClusterError(f"{model_id} ({_gib(sizes.get(model_id))}) does not fit even with every loaded "
+                           f"model unloaded")
+    names = ", ".join(victims)
     if policy is GuardPolicy.BLOCK or confirm is None:
         raise ClusterError(f"Memory Guard blocked the load: {model_id} ({_gib(sizes.get(model_id))}) does not fit "
-                           f"next to {listed}. Free memory with: omm cluster unload <model>")
-    free = sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
-    need = sizes.get(model_id) or 0
-    victims: list[str] = []
-    for name in sorted(loaded, key=lambda name: sizes.get(name) or 0, reverse=True):
-        if free >= need:
-            break
-        victims.append(name)
-        free += sizes.get(name) or 0
-    if free < need:
-        raise ClusterError(f"{model_id} ({_gib(need)}) does not fit even with every loaded model unloaded")
-    names = ", ".join(victims)
+                           f"next to {listed}. Unloading {names} would make room: "
+                           + "; ".join(f"omm cluster unload {name}" for name in victims))
     if not confirm(f"Unload {names} to make room for {model_id}? They may be in use by other people."):
         raise ClusterError(f"Kept {names} loaded; {model_id} was not loaded.")
+    # unload_model forgets the head's kept model; a failed load puts it back.
+    kept = settings.load()
     for name in victims:
         commands.unload_model(name, client)
         out(f"Unloaded {name}.")
-    placement = recommend.choose_placement(client.previews(model_id))
-    if placement is None:
-        raise ClusterError(f"{model_id} still does not fit after unloading {names}")
-    return commands.load_model(model_id, out, client, placement)
+    try:
+        placement = recommend.choose_placement(client.previews(model_id))
+        if placement is None:
+            raise ClusterError(f"{model_id} still does not fit after unloading {names}.")
+        return commands.load_model(model_id, out, client, placement)
+    except ClusterError as error:
+        raise ClusterError(f"{error} {_restore(model_id, victims, kept, out, client)}") from error
+
+
+def _make_room(model_id: str, loaded: list[str], sizes: dict, state) -> tuple[list[str], bool]:
+    """The loaded models to unload, biggest first, and whether that frees enough memory."""
+    free = sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
+    need = sizes.get(model_id)
+    victims: list[str] = []
+    for name in sorted(loaded, key=lambda name: sizes.get(name) or 0, reverse=True):
+        # An unknown size might need everything freed.
+        if need is not None and free >= need:
+            break
+        victims.append(name)
+        free += sizes.get(name) or 0
+    return victims, need is None or free >= need
+
+
+def _restore(model_id: str, victims: list[str], kept, out: Out, client: ExoClient) -> str:
+    """Put back what a failed load unloaded, so a failure never leaves the cluster empty."""
+    # A stalled load keeps its instance (and the memory it holds).
+    commands.unload_model(model_id, client)
+    failed = []
+    for name in victims:
+        out(f"Loading {name} back...")
+        try:
+            commands.load_model(name, out, client)
+        except ClusterError:
+            failed.append(name)
+    if kept is not None:
+        # load_model remembered the last one it loaded; keep the head's own choice for autoload.
+        settings.save(kept)
+    if failed:
+        return "Could not load these back: " + "; ".join(f"omm cluster load {name}" for name in failed)
+    return f"Loaded {', '.join(victims)} back."

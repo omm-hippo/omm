@@ -2859,11 +2859,11 @@ def _cluster_chat(model: str | None) -> None:
     except ImportError:
         pass
     point = _cluster_call(chat.endpoint)
-    loaded = _cluster_call(chat.loaded_models, point)
+    loaded, loading = _cluster_call(chat.loaded_models, point)
     if model is not None and model not in loaded and cluster_settings.load() is not None:
         _cluster_load_installed(model)
-        loaded = _cluster_call(chat.loaded_models, point)
-    chosen = _cluster_call(chat.pick_model, model, loaded)
+        loaded, loading = _cluster_call(chat.loaded_models, point)
+    chosen = _cluster_call(chat.pick_model, model, loaded, loading)
     console.print(f"{chosen} on {point.where}", markup=False)
     console.print("[muted]Type /bye to leave the chat.[/muted]")
     messages: list[dict] = []
@@ -10022,18 +10022,22 @@ CLUSTER_LIST_TIMEOUT = 2
 
 def _print_cluster_section() -> None:
     """`omm list`'s cluster models, only on a cluster Mac or a PC with `omm rag remote set`."""
-    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+    from omm.cluster import chat, settings as cluster_settings
     from omm.cluster.errors import ClusterError
 
     if not chat.cluster_configured():
         return
+    # Only now: the model helpers pull in every cluster module (~15 ms).
+    from omm.cluster import models as cluster_models
+
     try:
         if cluster_settings.load() is not None:
-            rows = cluster_models.inventory()
+            rows = cluster_models.inventory(timeout=CLUSTER_LIST_TIMEOUT)
         else:
             rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
     except ClusterError as error:
-        console.print(f"[muted]Cluster: unreachable ({escape(str(error))})[/muted]")
+        # The message already says what went wrong (token, older head, offline).
+        console.print(f"[muted]Cluster: {escape(str(error))}[/muted]")
         return
     console.print()
     console.print("Cluster", style="bold")

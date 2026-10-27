@@ -252,6 +252,19 @@ def parse_previews(data: dict) -> list[Placement]:
     return placements
 
 
+def node_ipv4s(data: dict) -> dict[str, list[str]]:
+    """Each node's IPv4 addresses from `/state` `nodeNetwork`, loopback left out."""
+    addresses = {}
+    for node_id, network in _dict(data.get("nodeNetwork")).items():
+        found = []
+        for interface in _dict(network).get("interfaces") or []:
+            address = _dict(interface).get("ipAddress")
+            if isinstance(address, str) and address.count(".") == 3 and not address.startswith("127."):
+                found.append(address)
+        addresses[str(node_id)] = found
+    return addresses
+
+
 def instance_ready(data: dict, model_id: str) -> bool:
     """True when an instance of `model_id` exists and every runner it uses is ready."""
     runners = _dict(_dict(data).get("runners"))
@@ -304,18 +317,24 @@ def parse_downloads(data: dict) -> list[NodeDownload]:
 
 
 def load_progress(data: dict, model_id: str) -> LoadProgress:
-    """Download and load progress of `model_id` across every Mac in `/state`.
+    """Download and load progress of `model_id` on the Macs its instance uses (every Mac before one exists).
 
     exo keeps one download entry per node and model. Pending, Ongoing and
     Failed entries mean a Mac still has files to fetch; once every entry is
     Completed (or exo lists none) the Macs are loading weights into memory.
+    A Mac outside the instance keeps its Pending entry and never fetches it
+    (Tensor on 2 of 3 Macs, 2026-10-27).
     """
+    nodes = {node for instance in parse_state(_dict(data)).instances if instance.model_id == model_id
+             for node in instance.node_ids} or None
     unfinished: list[tuple[int, int]] = []
     transferred = 0
     failure: str | None = None
     failed_on: str | None = None
     identities = _dict(_dict(data).get("nodeIdentities"))
     for node_id, items in _dict(_dict(data).get("downloads")).items():
+        if nodes is not None and node_id not in nodes:
+            continue
         for wrapper in items if isinstance(items, list) else []:
             entry = _download_entry(wrapper, model_id)
             if entry is None:
@@ -369,10 +388,10 @@ class ExoClient:
     def _get(self, path: str, **kwargs) -> dict:
         return self._call("GET", path, **kwargs)
 
-    def raw_state(self) -> dict:
+    def raw_state(self, timeout: float = 10) -> dict:
         # For callers that need both parse_state and the load helpers
         # (instance_ready, load_progress) from one consistent snapshot.
-        return self._get("/state")
+        return self._get("/state", timeout=timeout)
 
     def state(self) -> ClusterState:
         return parse_state(self.raw_state())
@@ -407,7 +426,9 @@ class ExoClient:
             if instance_ready(data, model_id):
                 return True
             progress = load_progress(data, model_id)
-            if on_progress is not None:
+            # Until exo places the instance, every Mac's Pending entry would read as 0% downloaded.
+            placed = any(instance.model_id == model_id for instance in parse_state(data).instances)
+            if on_progress is not None and (placed or progress.failed):
                 on_progress(progress)
             if progress.failed:
                 # exo does not try a failed download again until it restarts.

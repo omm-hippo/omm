@@ -437,3 +437,14 @@ def test_other_upstream_404_passes_through_unchanged(exo_gateway, token):
     server, _ = exo_gateway({})
     resp = post(server, "/v1/messages", headers={"Authorization": f"Bearer {token}"})
     assert resp.status == 404 and resp.read() == b'{"detail":"Not Found"}'
+
+
+def test_a_member_recognises_the_gateway_but_not_exo(gateway_server, upstream):
+    from omm.cluster import commands
+
+    assert commands._is_gateway("127.0.0.1", gateway_server.server_address[1]) is True
+    assert commands._is_gateway("127.0.0.1", upstream.server_address[1]) is False
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    assert commands._is_gateway("127.0.0.1", closed) is False

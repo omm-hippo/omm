@@ -85,7 +85,7 @@ def head(exo, isolated_omm_home):
 
 
 def test_gateway_lists_only_loaded_model_ids(head):
-    assert chat.loaded_models(head) == [LOADED]
+    assert chat.loaded_models(head) == ([LOADED], [])
 
 
 def test_gateway_loaded_models_needs_a_token(head):
@@ -134,6 +134,14 @@ def test_pick_model():
         chat.pick_model("c", ["a"])
 
 
+def test_pick_model_never_picks_a_loading_model():
+    assert chat.pick_model(None, ["a"], ["b"]) == "a"
+    with pytest.raises(ClusterError, match="b is still loading"):
+        chat.pick_model(None, [], ["b"])
+    with pytest.raises(ClusterError, match="b is still loading"):
+        chat.pick_model("b", ["a"], ["b"])
+
+
 def test_endpoint_on_a_cluster_mac_is_local_exo(isolated_omm_home):
     settings.save(settings.ClusterSettings("member", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d", 52440))
     assert chat.endpoint() == chat.Endpoint(chat.LOCAL_EXO, None)
@@ -163,7 +171,7 @@ def test_cli_run_chats_until_bye_and_keeps_history(monkeypatch, isolated_omm_hom
         return f"answer {len(seen)}"
 
     monkeypatch.setattr(chat, "endpoint", lambda: point)
-    monkeypatch.setattr(chat, "loaded_models", lambda p: [LOADED])
+    monkeypatch.setattr(chat, "loaded_models", lambda p: ([LOADED], []))
     monkeypatch.setattr(chat, "reply", fake_reply)
     result = runner.invoke(cli.app, ["cluster", "run"], input="first\n\nsecond\n/bye\n")
     assert result.exit_code == 0, result.output
@@ -189,7 +197,7 @@ def test_cli_run_keeps_chatting_after_a_failed_turn(monkeypatch, isolated_omm_ho
         return "ok"
 
     monkeypatch.setattr(chat, "endpoint", lambda: chat.Endpoint(chat.LOCAL_EXO, None))
-    monkeypatch.setattr(chat, "loaded_models", lambda p: [LOADED])
+    monkeypatch.setattr(chat, "loaded_models", lambda p: ([LOADED], []))
     monkeypatch.setattr(chat, "reply", flaky_reply)
     result = runner.invoke(cli.app, ["cluster", "run"], input="one\ntwo\n/bye\n")
     assert result.exit_code == 0
@@ -216,7 +224,7 @@ def test_chat_accepts_an_older_gateway_that_sends_only_ids(monkeypatch):
 
     monkeypatch.setattr(chat, "_open", lambda *a, **k: _Response())
     point = chat.Endpoint("http://head:52440", "omm_x")
-    assert chat.loaded_models(point) == [LOADED]
+    assert chat.loaded_models(point) == ([LOADED], [])
     rows = chat.loaded_rows(point)
     assert [(row.model, row.state, row.size_bytes) for row in rows] == [(LOADED, "loaded", None)]
 

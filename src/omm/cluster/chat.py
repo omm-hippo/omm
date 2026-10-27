@@ -14,8 +14,7 @@ from typing import Callable, Iterator
 from urllib import error as urlerror, request as urlrequest
 
 from omm.cluster import settings
-from omm.cluster.commands import UsageProblem
-from omm.cluster.errors import ClusterError
+from omm.cluster.errors import ClusterError, UsageProblem
 
 LOCAL_EXO = "http://127.0.0.1:52415"
 LOADED_MODELS_PATH = "/omm/loaded-models"
@@ -147,12 +146,21 @@ def loaded_rows(point: Endpoint, timeout: float | None = None):
     return rows
 
 
-def loaded_models(point: Endpoint) -> list[str]:
-    return list(dict.fromkeys(row.model for row in loaded_rows(point)))
+def loaded_models(point: Endpoint) -> tuple[list[str], list[str]]:
+    """(ready, still loading) model ids."""
+    rows = loaded_rows(point)
+    ready = list(dict.fromkeys(row.model for row in rows if row.state == "loaded"))
+    return ready, [model for model in dict.fromkeys(row.model for row in rows) if model not in ready]
 
 
-def pick_model(requested: str | None, loaded: list[str]) -> str:
+def pick_model(requested: str | None, loaded: list[str], loading: list[str] = ()) -> str:
+    if requested is not None and requested in loading:
+        raise ClusterError(f"{requested} is still loading; try again in a minute (omm cluster list shows when "
+                           "it is loaded)")
     if not loaded:
+        if loading:
+            raise ClusterError(f"{', '.join(loading)} is still loading; try again in a minute "
+                               "(omm cluster list shows when it is loaded)")
         raise ClusterError("No model is loaded on the cluster. On the head Mac run: omm cluster load <model>")
     if requested is None:
         if len(loaded) == 1:
