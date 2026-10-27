@@ -190,6 +190,24 @@ def test_first_run_scan_flag_preserves_concurrent_setting_change(isolated_omm_ho
     assert saved["usage_stats_policy"] == "never"
 
 
+def test_cluster_commands_skip_first_run_import_scan(isolated_omm_home, monkeypatch):
+    """`omm cluster join` on a fresh Mac printed "No externally-managed .gguf
+    files found." before its own output (real Mac mini, 2026-10-27), and with
+    stray GGUFs present it would stop on an import prompt. Cluster Macs are set
+    up over SSH and exo owns their models, so the cluster group skips the scan
+    the same way it skips the onboarding wizard - and leaves the one-time flag
+    unset so the next ordinary interactive command still offers the import."""
+    config.update_config(external_scan_done=False)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    calls = []
+    monkeypatch.setattr(cli, "_run_import_flow", lambda *a, **k: calls.append(1))
+
+    cli._maybe_auto_import(types.SimpleNamespace(invoked_subcommand="cluster"))
+
+    assert calls == []
+    assert config.load_config()["external_scan_done"] is False
+
+
 def test_auto_import_run_skips_update_check_onboarding_and_import_offer(
     isolated_omm_home, monkeypatch
 ):
