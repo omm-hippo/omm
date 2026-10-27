@@ -2548,6 +2548,13 @@ def cluster_status_cmd() -> None:
                                            f" ({recommend.describe(entry['sharding'], entry['macs'])})")
                          for entry in report["kept_models"])
         console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
+    if report.get("members"):
+        console.print("Macs following this head:", markup=False)
+        for row in report["members"]:
+            backup = {"current": "documents backed up", "behind": "documents backup behind",
+                      "none": "no documents backup"}[row["backup"]]
+            console.print(f"  {row['name']}: omm {row['version'] or '?'} ({row['version_state'] or 'not checked yet'}), "
+                          f"{backup}", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
@@ -4807,8 +4814,31 @@ def update() -> None:
 
     after = _version_line(_installed_commit())
     console.print(f"[success]Ω Updated: {before} -> {after}[/success]")
+    _after_update_on_cluster_head()
     _refresh_data()
     _maybe_prompt_data_sharing_after_update()
+
+
+def _after_update_on_cluster_head() -> None:
+    """On a cluster head: run the gateway on the new code, and say that the members follow it."""
+    from omm.cluster import settings as cluster_settings
+
+    current = cluster_settings.load()
+    if current is None or current.role != "head":
+        return
+    from omm.cluster import launchd, service
+    from omm.cluster.errors import ClusterError
+
+    try:
+        launchd.restart_agent(service.LAUNCHD_LABEL)
+    except ClusterError as error:
+        console.print(f"[muted]Could not restart the cluster gateway ({escape(str(error))}); "
+                      "run omm cluster restart.[/muted]")
+    others = max(len(current.known_nodes) - 1, 0)
+    if others:
+        console.print(f"{others} other Mac(s) in the cluster will update to this version within a few minutes. "
+                      "Cluster models may stop answering briefly while they do; this Mac loads them again "
+                      "automatically.", markup=False)
 
 
 def _maybe_prompt_data_sharing_after_update() -> None:
