@@ -173,7 +173,7 @@ omm rag connect cursor --remote
 omm rag connect pi --remote
 ```
 
-헤드의 MCP 주소(`http://<헤드>:52440/mcp`)를 각 에이전트 설정에 HTTP 방식으로 넣습니다.
+헤드의 MCP 주소(`https://<헤드>:52440/mcp`)를 각 에이전트 설정에 HTTP 방식으로 넣습니다.
 에이전트가 검색하면 **그 직원 토큰으로 볼 수 있는 컬렉션만** 찾습니다.
 
 | 에이전트 | 넣는 모양 |
@@ -188,6 +188,10 @@ omm rag connect pi --remote
 - 백업·복원 방식은 위의 로컬 연결과 같습니다. `omm rag disconnect <에이전트>` 로 원래대로
   돌립니다. `--remote` 없이 다시 `connect` 하면 이 PC의 문서 검색으로 바뀝니다.
 - `omm rag remote clear` 는 에이전트 설정에 들어간 토큰까지 지우지는 않습니다.
+- 게이트웨이는 HTTPS만 받고, 인증서는 헤드가 직접 만든 것이라 에이전트가 그 인증서(`omm rag remote set`
+  이 고정해 둔 `OMM_HOME/rag-remote-ca.pem`)를 믿게 해야 합니다. `connect --remote` 가 에이전트별 방법을
+  알려 줍니다: Claude Code는 `~/.claude/settings.json` 의 `env.NODE_EXTRA_CA_CERTS`, Codex는
+  `CODEX_CA_CERTIFICATE=<파일> codex`, pi와 Cursor는 `NODE_EXTRA_CA_CERTS=<파일>` 로 시작합니다.
   `disconnect` 도 같이 해 주세요.
 
 ### 게이트웨이 주소 (참고)

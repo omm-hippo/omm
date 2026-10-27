@@ -13,8 +13,9 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import appfw, exo_client, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
-from omm.cluster.errors import ClusterError
+from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, netconfig, power, preflight,
+                         recommend, service, settings, tls, tokens)
+from omm.cluster.errors import ClusterError, UsageProblem
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
 
@@ -30,10 +31,6 @@ MODEL_STALL_TIMEOUT = 900
 # model` short without flooding exo's loopback API.
 PREVIEW_WORKERS = 8
 _GIB = 1024**3
-
-
-class UsageProblem(ClusterError):
-    """A request that can never succeed as typed (exit 2)."""
 
 
 def require_macos() -> None:
@@ -99,14 +96,17 @@ def init(out: Out) -> settings.ClusterSettings:
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
     # The remembered Macs start over: running init again is how a Mac that
     # left for good stops being reported missing (status says so).
-    # The model to serve survives a re-run, which restarts exo and so drops it.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, model=current.model if current else None)
+    # The models to serve survive a re-run, which restarts exo and so drops them.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
     power.keep_awake()
     # Before the gateway (re)starts, so its first connection is not held.
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
+    # The CA is made once and kept (a re-run and leave keep it too), so
+    # employees who already trust it never have to again.
+    tls.ensure()
     service.install()
     out(SCREEN_APPROVAL_HINT)
     out(HIGH_PORTS_HINT)
@@ -115,7 +115,22 @@ def init(out: Out) -> settings.ClusterSettings:
     out("Run this on every other Mac:")
     out(f"  omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
+    for line in employee_setup_lines():
+        out(line)
     return saved
+
+
+def gateway_url() -> str:
+    return f"https://{lan_ipv4()}:{GATEWAY_PORT}"
+
+
+def employee_setup_lines() -> list[str]:
+    """How an employee's PC connects, and the fingerprint they must see when it does."""
+    lines = ["Employees connect with:", f"  omm rag remote set {gateway_url()}"]
+    fingerprint = tls.head_fingerprint()
+    if fingerprint:
+        lines += ["It shows the gateway certificate's fingerprint; it must be exactly:", f"  {fingerprint}"]
+    return lines
 
 
 def join(namespace: str, out: Out) -> settings.ClusterSettings:
@@ -224,6 +239,7 @@ def status() -> dict:
                 settings.save(dataclasses.replace(current, known_nodes=merged))
     fw = "missing"
     gateway = "not_head"
+    documents = None
     if current is not None and settings.is_legacy(current.namespace):
         problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
                         "on the head Mac and omm cluster join <new name> on every other Mac")
@@ -241,10 +257,16 @@ def status() -> dict:
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
+            # The head answers employees' document questions (#534).
+            documents, found = document_search.check()
+            problems += found
+    head = current is not None and current.role == "head"
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway,
-            "kept_model": current.model if current is not None and current.role == "head" else None,
-            "problems": problems}
+            "gateway_url": gateway_url() if head else None,
+            "gateway_ca_sha256": tls.head_fingerprint() if head else None,
+            "kept_models": [dataclasses.asdict(entry) for entry in current.models] if head else [],
+            "document_search": documents, "problems": problems}
 
 
 def exposure() -> dict | None:
@@ -312,24 +334,38 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
     return recommend.rank(models, previews, state)
 
 
-def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None) -> str:
+def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None, *,
+               sharding: str | None = None, macs: int | None = None) -> str:
+    """Load `model_id` (on `placement`, else omm's pick) and remember it with the admin's choice."""
     require_macos()
     client = client or ExoClient()
-    if any(i.model_id == model_id for i in client.state().instances):
+    raw = client.raw_state()
+    state = exo_client.parse_state(raw)
+    created = False
+    if any(i.model_id == model_id for i in state.instances):
         # exo would place a second full copy next to the first one.
         out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
     else:
-        placement = placement or recommend.choose_placement(client.previews(model_id))
+        placement = placement or recommend.choose_placement(client.previews(model_id),
+                                                            sharding=sharding, macs=macs)
         if placement is None:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
         client.create_instance(placement)
-        out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
+        created = True
+        installed = {row.node_id for row in exo_client.parse_downloads(raw)
+                     if row.model_id == model_id and row.kind == "Completed"}
+        # Only the Macs exo placed it on fetch anything (Tensor on 2 of 3 Macs, 2026-10-27).
+        used = set(placement.memory_delta_by_node) or {node.node_id for node in state.nodes}
+        if used <= installed:
+            out(f"Loading {model_id} ({placement.sharding})...")
+        else:
+            out(f"Loading {model_id} ({placement.sharding}); Macs without it download it first...")
     last: dict = {"key": None, "line": "", "progress": None}
 
     def report(progress: exo_client.LoadProgress) -> None:
         last["progress"] = progress
         if progress.phase == "loading":
-            line, key = f"Every Mac has {model_id}; loading it into memory...", ("loading",)
+            line, key = f"{model_id} is downloaded; loading it into memory...", ("loading",)
         elif progress.total_bytes:
             percent = progress.downloaded_bytes * 100 // progress.total_bytes
             line = (f"Downloading {model_id}: {percent}% ({progress.downloaded_bytes / _GIB:.1f} of "
@@ -360,9 +396,11 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
     if current.role != "head":
         # Only the head runs the gateway; this Mac's own address serves nothing.
         return f"Serving {model_id}; employees reach it through the head Mac's gateway"
-    if current.model != model_id:
-        settings.save(dataclasses.replace(current, model=model_id))
-    return f"Serving {model_id} at http://{lan_ipv4()}:{current.gateway_port}"
+    entry = settings.KeptModel(model_id, sharding, macs)
+    # A plain load of a model already serving keeps the choice it was loaded with.
+    if current.kept(model_id) != entry and (created or sharding or macs or not current.kept(model_id)):
+        settings.save(current.keeping(entry))
+    return f"Serving {model_id} at https://{lan_ipv4()}:{current.gateway_port}"
 
 
 def unload_model(model_id: str, client: ExoClient | None = None) -> int:
@@ -372,9 +410,9 @@ def unload_model(model_id: str, client: ExoClient | None = None) -> int:
     for instance_id in matching:
         client.delete_instance(instance_id)
     current = settings.load()
-    if current is not None and current.model == model_id:
+    if current is not None and current.kept(model_id) is not None:
         # Otherwise the head would load it again within a minute.
-        settings.save(dataclasses.replace(current, model=None))
+        settings.save(current.forgetting(model_id))
     return len(matching)
 
 
@@ -405,7 +443,52 @@ def require_head_for(action: str) -> None:
     if current is None:
         raise UsageProblem("this Mac is not in a cluster; run omm cluster init or join first")
     if current.role != "head":
-        raise UsageProblem(f"{action} runs on the head Mac; this Mac is a member of the cluster")
+        head = head_name()
+        where = f" ({head})" if head else ""
+        raise UsageProblem(f"{action} runs on the head Mac{where}; this Mac is a member of the cluster")
+
+
+# Per address, all probed at once: Thunderbolt and office-network addresses answer in milliseconds.
+HEAD_PROBE_TIMEOUT = 1.5
+
+
+def _is_gateway(address: str, port: int) -> bool:
+    """True when an omm cluster gateway answers there (it refuses a request without a token)."""
+    import ssl
+    from urllib import error as urlerror, request as urlrequest
+
+    # Only asks who serves there and sends nothing secret, so the
+    # certificate is not checked (a member Mac has not pinned the head's CA).
+    blind = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    blind.check_hostname = False
+    blind.verify_mode = ssl.CERT_NONE
+    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}), urlrequest.HTTPSHandler(context=blind))
+    try:
+        opener.open(f"https://{address}:{port}/omm/status", timeout=HEAD_PROBE_TIMEOUT).close()
+    except urlerror.HTTPError as error:
+        try:
+            return error.code == 401 and b"omm cluster:" in error.read()
+        except OSError:
+            return False
+    except (urlerror.URLError, OSError, ValueError):
+        return False
+    return False
+
+
+def head_name(client: ExoClient | None = None) -> str | None:
+    """The name exo shows for the Mac running the gateway, for a member's messages; None if unknown."""
+    try:
+        raw = (client or ExoClient()).raw_state(timeout=3)
+    except ClusterError:
+        return None
+    names = {node.node_id: node.name for node in exo_client.parse_state(raw).nodes}
+    probes = [(node_id, address) for node_id, addresses in exo_client.node_ipv4s(raw).items()
+              if node_id in names for address in addresses]
+    if not probes:
+        return None
+    with ThreadPoolExecutor(max_workers=min(len(probes), 16)) as pool:
+        answers = list(pool.map(lambda probe: _is_gateway(probe[1], GATEWAY_PORT), probes))
+    return next((names[node_id] for (node_id, _), found in zip(probes, answers) if found), None)
 
 
 def leave(out: Out) -> None:

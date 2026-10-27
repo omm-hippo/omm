@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import re
@@ -21,15 +21,37 @@ LEGACY_NAMESPACE_RE = re.compile(r"^omm-[0-9a-f]{8}$")
 
 
 @dataclass(frozen=True)
+class KeptModel:
+    """A model loaded from the head, and how the admin asked to place it."""
+
+    model: str
+    # `omm cluster load --sharding/--macs`; None means omm picked (recommend.choose_placement).
+    sharding: str | None = None
+    macs: int | None = None
+
+
+@dataclass(frozen=True)
 class ClusterSettings:
     role: Literal["head", "member"]
     namespace: str
     gateway_port: int
     known_nodes: tuple[str, ...] = ()
-    # The model `omm cluster load` (or `run`) last loaded from the head. exo forgets its
+    # Every model `omm cluster load` (or `run`) loaded from the head. exo forgets its
     # instances when it restarts (a reboot, a restart), so the head's gateway
-    # service loads this one again (autoload.py); unloading it clears it.
-    model: str | None = None
+    # service loads these again (autoload.py); unloading one forgets it.
+    models: tuple[KeptModel, ...] = ()
+
+    def kept(self, model_id: str) -> KeptModel | None:
+        return next((entry for entry in self.models if entry.model == model_id), None)
+
+    def keeping(self, entry: KeptModel) -> "ClusterSettings":
+        """These settings with `entry` remembered, in place of an older entry for the same model."""
+        if self.kept(entry.model) is None:
+            return replace(self, models=(*self.models, entry))
+        return replace(self, models=tuple(entry if old.model == entry.model else old for old in self.models))
+
+    def forgetting(self, model_id: str) -> "ClusterSettings":
+        return replace(self, models=tuple(entry for entry in self.models if entry.model != model_id))
 
 
 def settings_path() -> Path:
@@ -56,10 +78,26 @@ def load() -> ClusterSettings | None:
             or not isinstance(port, int)):
         return None
     nodes = data.get("known_nodes") or []
-    model = data.get("model")
     return ClusterSettings(data["role"], namespace, port,
                            tuple(n for n in nodes if isinstance(n, str)) if isinstance(nodes, list) else (),
-                           model if isinstance(model, str) and model else None)
+                           _kept_models(data))
+
+
+def _kept_models(data: dict) -> tuple[KeptModel, ...]:
+    rows = data.get("models")
+    if not isinstance(rows, list):
+        # omm before 2026-10-27 kept one model id under "model".
+        rows = [{"model": data["model"]}] if isinstance(data.get("model"), str) else []
+    kept: dict[str, KeptModel] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("model"), str) or not row["model"]:
+            continue
+        sharding, macs = row.get("sharding"), row.get("macs")
+        kept.setdefault(row["model"], KeptModel(
+            row["model"],
+            sharding if sharding in ("Tensor", "Pipeline") else None,
+            macs if isinstance(macs, int) and not isinstance(macs, bool) and macs > 0 else None))
+    return tuple(kept.values())
 
 
 def save(value: ClusterSettings) -> None:
@@ -67,7 +105,8 @@ def save(value: ClusterSettings) -> None:
 
     data = asdict(value)
     data["known_nodes"] = list(value.known_nodes)
-    atomic_write_text(settings_path(), json.dumps({"version": 1, **data}, ensure_ascii=False, indent=2) + "\n")
+    data["models"] = [asdict(entry) for entry in value.models]
+    atomic_write_text(settings_path(), json.dumps({"version": 2, **data}, ensure_ascii=False, indent=2) + "\n")
 
 
 def clear() -> None:

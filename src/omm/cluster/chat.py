@@ -2,8 +2,9 @@
 
 A Mac in the cluster talks to its own exo on loopback (no token). Any other
 PC goes through the head's gateway with the address and employee token that
-`omm rag remote set` saved. Requests go straight there: proxy environment
-variables are ignored so the token never passes through a proxy.
+`omm rag remote set` saved, over HTTPS that trusts only the head certificate
+pinned there. Requests go straight there: proxy environment variables are
+ignored so the token never passes through a proxy.
 """
 
 from __future__ import annotations
@@ -14,8 +15,7 @@ from typing import Callable, Iterator
 from urllib import error as urlerror, request as urlrequest
 
 from omm.cluster import settings
-from omm.cluster.commands import UsageProblem
-from omm.cluster.errors import ClusterError
+from omm.cluster.errors import ClusterError, UsageProblem
 
 LOCAL_EXO = "http://127.0.0.1:52415"
 LOADED_MODELS_PATH = "/omm/loaded-models"
@@ -28,10 +28,16 @@ BAD_TOKEN = ("The cluster head rejected your token. Ask the head Mac's admin for
              "(omm cluster token add <name>), then run: omm rag remote set <head address>")
 
 
+WRONG_CERTIFICATE = ("The cluster head at {url} did not show the certificate pinned by omm rag remote set. "
+                     "Ask the admin whether the head was set up again; if so, run omm rag remote clear, "
+                     "then omm rag remote set {url} and compare the fingerprint")
+
+
 @dataclass(frozen=True)
 class Endpoint:
     url: str
     token: str | None  # None on a cluster Mac: its own exo needs no token
+    cafile: str | None = None  # the head certificate `omm rag remote set` pinned
 
     @property
     def where(self) -> str:
@@ -49,7 +55,23 @@ def endpoint() -> Endpoint:
         raise UsageProblem(str(error)) from error
     if remote is None:
         raise UsageProblem(NO_REMOTE)
-    return Endpoint(remote.url, remote.token)
+    try:
+        rag_remote.ssl_context(remote)
+    except rag_remote.RemoteError as error:
+        raise UsageProblem(_english(str(error))) from error
+    return Endpoint(remote.url, remote.token, str(rag_remote.ca_path()))
+
+
+def _english(message: str) -> str:
+    # rag_remote speaks Korean; the cluster commands speak English.
+    from omm import rag_remote
+
+    if message == rag_remote.PLAIN_HTTP:
+        return ("The cluster gateway now accepts HTTPS only. Run: omm rag remote set https://<head address>:52440")
+    if message == rag_remote.NOT_PINNED:
+        return ("This PC has not checked the cluster head's certificate yet. Run: omm rag remote set "
+                "https://<head address>:52440 and compare the fingerprint with the head's omm cluster status")
+    return message
 
 
 def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: float):
@@ -61,7 +83,12 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
     req = urlrequest.Request(point.url + path, data=data, headers=headers, method=method)
-    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+    handlers = [urlrequest.ProxyHandler({})]
+    if point.cafile is not None:
+        from omm.cluster import tls
+
+        handlers.append(urlrequest.HTTPSHandler(context=tls.client_context(point.cafile)))
+    opener = urlrequest.build_opener(*handlers)
     try:
         return opener.open(req, timeout=timeout)
     except urlerror.HTTPError as error:
@@ -79,6 +106,10 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
     except (urlerror.URLError, OSError) as error:
         if point.token is None:
             raise ClusterError("exo is not running on this Mac; check it with omm cluster status") from error
+        from omm.cluster import tls
+
+        if tls.is_certificate_error(error):
+            raise ClusterError(WRONG_CERTIFICATE.format(url=point.url)) from error
         raise ClusterError(f"could not reach the cluster head at {point.url}; check the address "
                            "(omm rag remote) and that you are on the office network") from error
 
@@ -147,12 +178,21 @@ def loaded_rows(point: Endpoint, timeout: float | None = None):
     return rows
 
 
-def loaded_models(point: Endpoint) -> list[str]:
-    return list(dict.fromkeys(row.model for row in loaded_rows(point)))
+def loaded_models(point: Endpoint) -> tuple[list[str], list[str]]:
+    """(ready, still loading) model ids."""
+    rows = loaded_rows(point)
+    ready = list(dict.fromkeys(row.model for row in rows if row.state == "loaded"))
+    return ready, [model for model in dict.fromkeys(row.model for row in rows) if model not in ready]
 
 
-def pick_model(requested: str | None, loaded: list[str]) -> str:
+def pick_model(requested: str | None, loaded: list[str], loading: list[str] = ()) -> str:
+    if requested is not None and requested in loading:
+        raise ClusterError(f"{requested} is still loading; try again in a minute (omm cluster list shows when "
+                           "it is loaded)")
     if not loaded:
+        if loading:
+            raise ClusterError(f"{', '.join(loading)} is still loading; try again in a minute "
+                               "(omm cluster list shows when it is loaded)")
         raise ClusterError("No model is loaded on the cluster. On the head Mac run: omm cluster load <model>")
     if requested is None:
         if len(loaded) == 1:

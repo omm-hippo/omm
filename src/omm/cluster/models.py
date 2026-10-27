@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 
 from typing import Callable
 
-from omm.cluster import commands, exo_client, recommend
+from omm.cluster import commands, exo_client, recommend, settings
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 
@@ -42,11 +42,11 @@ def _names(state: exo_client.ClusterState) -> dict[str, str]:
     return {node.node_id: node.name for node in state.nodes}
 
 
-def inventory(client: ExoClient | None = None) -> list[ModelRow]:
+def inventory(client: ExoClient | None = None, timeout: float = 10) -> list[ModelRow]:
     """Every model at least one Mac has (or is fetching), plus loaded ones."""
     commands.require_macos()
     client = client or ExoClient()
-    return inventory_from(client.raw_state())
+    return inventory_from(client.raw_state(timeout=timeout))
 
 
 def inventory_from(raw: dict) -> list[ModelRow]:
@@ -173,11 +173,15 @@ def info(model_id: str, client: ExoClient | None = None) -> dict:
         nodes.append({"name": node.name,
                       "state": {"Completed": "installed", "Pending": "missing"}.get(kind, kind.lower())})
     instance = next((i for i in state.instances if i.model_id == model_id), None)
-    fits, peak = None, None
+    fits, peak, placements = None, None, []
     if instance is None:
-        placement = recommend.choose_placement(client.previews(model_id))
+        # Only for a model that is not loaded: exo sizes previews from free memory,
+        # which a loaded copy already uses up.
+        previews = client.previews(model_id)
+        placement = recommend.choose_placement(previews)
         fits = placement is not None
         peak = max(placement.memory_delta_by_node.values(), default=0) if placement else None
+        placements = recommend.placement_rows(previews, _names(state))
     model = catalog.get(model_id)
     sizes = [row.total_bytes for row in mine.values() if row.total_bytes]
     return {
@@ -187,9 +191,21 @@ def info(model_id: str, client: ExoClient | None = None) -> dict:
         "nodes": nodes,
         "loaded": instance is not None,
         "sharding": instance.sharding if instance else None,
+        "loaded_macs": len(instance.node_ids) if instance else None,
         "fits": True if instance is not None else fits,
         "peak_node_bytes": peak,
+        "placements": placements,
     }
+
+
+# Hugging Face tags of MLX repos nobody chats with (speech, audio, images, embeddings), e.g.
+# Qwen3-ASR, Qwen3-TTS and Qwen3-Embedding in a search for "qwen3" (2026-10-27). An embedding
+# repo also carries "text-generation", so these tags win over any chat tag.
+NOT_CHAT_TAGS = frozenset({
+    "mlx-audio", "speech", "speech-to-text", "text-to-speech", "automatic-speech-recognition", "asr", "stt", "tts",
+    "audio", "text-to-audio", "audio-to-audio", "text-to-image", "image-to-image", "diffusers", "mflux",
+    "sentence-similarity", "feature-extraction", "sentence-transformers",
+})
 
 
 def search(query: str, client: ExoClient | None = None) -> list[dict]:
@@ -202,6 +218,8 @@ def search(query: str, client: ExoClient | None = None) -> list[dict]:
     budget = recommend.HEADROOM * sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
     rows = []
     for hit in hits:
+        if NOT_CHAT_TAGS & {tag.lower() for tag in hit.tags}:
+            continue
         model = catalog.get(hit.model_id)
         size = model.size_bytes if model else None
         rows.append({"model": hit.model_id, "downloads": hit.downloads, "in_catalog": model is not None,
@@ -219,6 +237,8 @@ def employee_info(model_id: str, client: ExoClient) -> dict:
     nodes = data.pop("nodes")
     data["nodes_installed"] = sum(1 for node in nodes if node["state"] == "installed")
     data["nodes_total"] = len(nodes)
+    for row in data["placements"]:
+        row.pop("nodes", None)
     return data
 
 
@@ -244,53 +264,111 @@ def recommend_rows(client: ExoClient | None = None) -> list[dict]:
              "state": rows.get(item.model_id, "not installed")} for item in commands.candidates(client)]
 
 
+def _not_offered(model_id: str, choice: str, previews) -> ClusterError:
+    return ClusterError(f"exo offers no {choice} placement for {model_id} right now. "
+                        f"Possible: {recommend.possible(previews)}. See each one: omm cluster info {model_id}")
+
+
 def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], bool] | None,
-                  client: ExoClient | None = None) -> str:
+                  client: ExoClient | None = None, sharding: str | None = None, macs: int | None = None) -> str:
     """Load `model_id` unless it is loaded, applying `omm setting memory-guard`.
 
     exo builds its placements from each Mac's free memory, which already
     leaves out loaded models, and marks every row of a model that does not
     fit with NO_MEMORY. `confirm` is None without a terminal to ask on.
+    `sharding`/`macs` are the admin's placement choice (None: omm picks).
     """
     from omm.memory_guard import GuardPolicy
 
     commands.require_head_for("Loading a model")
     client = client or ExoClient()
+    choice = dict(sharding=sharding, macs=macs)
+    chosen = sharding is not None or macs is not None
     state = client.state()
-    if any(instance.model_id == model_id for instance in state.instances):
-        return commands.load_model(model_id, out, client)
+    instance = next((i for i in state.instances if i.model_id == model_id), None)
+    if instance is not None:
+        if ((sharding and instance.sharding.lower() != sharding.lower())
+                or (macs and len(instance.node_ids) != macs)):
+            now = recommend.describe(instance.sharding, len(instance.node_ids))
+            raise ClusterError(f"{model_id} is already loaded as {now}. To load it as "
+                               f"{recommend.describe(sharding, macs)}, unload it first: omm cluster unload {model_id}")
+        return commands.load_model(model_id, out, client, **choice)
     previews = client.previews(model_id)
-    placement = recommend.choose_placement(previews)
+    placement = recommend.choose_placement(previews, **choice)
     if placement is not None:
-        return commands.load_model(model_id, out, client, placement)
+        return commands.load_model(model_id, out, client, placement, **choice)
+    if chosen and any(row.error is None for row in previews):
+        # It fits, just not the way the admin asked.
+        raise _not_offered(model_id, recommend.describe(sharding, macs), previews)
     loaded = list(dict.fromkeys(instance.model_id for instance in state.instances))
     if not loaded or not any(exo_client.NO_MEMORY in (row.error or "") for row in previews):
         raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
     sizes = {model.model_id: model.size_bytes for model in client.models()}
     listed = ", ".join(f"{name} ({_gib(sizes.get(name))})" for name in loaded)
+    victims, room = _make_room(model_id, loaded, sizes, state)
     if policy is GuardPolicy.OBSERVE:
-        out(f"Memory Guard warning: {model_id} does not fit next to {listed}; trying anyway (observe mode).")
+        # exo offers no placement at all, so there is nothing to try.
+        out(f"Memory Guard warning (observe mode): {model_id} does not fit next to {listed}.")
         raise ClusterError(f"exo refused to load {model_id}: {exo_client.NO_MEMORY}")
+    if not room:
+        raise ClusterError(f"{model_id} ({_gib(sizes.get(model_id))}) does not fit even with every loaded "
+                           f"model unloaded")
+    names = ", ".join(victims)
     if policy is GuardPolicy.BLOCK or confirm is None:
         raise ClusterError(f"Memory Guard blocked the load: {model_id} ({_gib(sizes.get(model_id))}) does not fit "
-                           f"next to {listed}. Free memory with: omm cluster unload <model>")
-    free = sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
-    need = sizes.get(model_id) or 0
-    victims: list[str] = []
-    for name in sorted(loaded, key=lambda name: sizes.get(name) or 0, reverse=True):
-        if free >= need:
-            break
-        victims.append(name)
-        free += sizes.get(name) or 0
-    if free < need:
-        raise ClusterError(f"{model_id} ({_gib(need)}) does not fit even with every loaded model unloaded")
-    names = ", ".join(victims)
+                           f"next to {listed}. Unloading {names} would make room: "
+                           + "; ".join(f"omm cluster unload {name}" for name in victims))
     if not confirm(f"Unload {names} to make room for {model_id}? They may be in use by other people."):
         raise ClusterError(f"Kept {names} loaded; {model_id} was not loaded.")
+    # unload_model forgets each victim the head keeps; a failed load puts them back.
+    kept = settings.load()
     for name in victims:
         commands.unload_model(name, client)
         out(f"Unloaded {name}.")
-    placement = recommend.choose_placement(client.previews(model_id))
-    if placement is None:
-        raise ClusterError(f"{model_id} still does not fit after unloading {names}")
-    return commands.load_model(model_id, out, client, placement)
+    try:
+        previews = client.previews(model_id)
+        placement = recommend.choose_placement(previews, **choice)
+        if placement is None:
+            if chosen and any(row.error is None for row in previews):
+                raise _not_offered(model_id, recommend.describe(sharding, macs), previews)
+            raise ClusterError(f"{model_id} still does not fit after unloading {names}.")
+        return commands.load_model(model_id, out, client, placement, **choice)
+    except ClusterError as error:
+        raise ClusterError(f"{error} {_restore(model_id, victims, kept, out, client)}") from error
+
+
+def _make_room(model_id: str, loaded: list[str], sizes: dict, state) -> tuple[list[str], bool]:
+    """The loaded models to unload, biggest first, and whether that frees enough memory."""
+    free = sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
+    need = sizes.get(model_id)
+    victims: list[str] = []
+    for name in sorted(loaded, key=lambda name: sizes.get(name) or 0, reverse=True):
+        # An unknown size might need everything freed.
+        if need is not None and free >= need:
+            break
+        victims.append(name)
+        free += sizes.get(name) or 0
+    return victims, need is None or free >= need
+
+
+def _restore(model_id: str, victims: list[str], kept, out: Out, client: ExoClient) -> str:
+    """Put back what a failed load unloaded, so a failure never leaves the cluster empty."""
+    # A stalled load keeps its instance (and the memory it holds).
+    commands.unload_model(model_id, client)
+    failed = []
+    for name in victims:
+        out(f"Loading {name} back...")
+        entry = kept.kept(name) if kept is not None else None
+        try:
+            # The way the admin placed it, else omm's pick so the cluster is not left without it.
+            placement = (recommend.choose_placement(client.previews(name), sharding=entry.sharding, macs=entry.macs)
+                         if entry is not None and (entry.sharding or entry.macs) else None)
+            commands.load_model(name, out, client, placement)
+        except ClusterError:
+            failed.append(name)
+    if kept is not None:
+        # load_model remembered each one as placed by omm; keep the head's own choices for autoload.
+        settings.save(kept)
+    if failed:
+        return "Could not load these back: " + "; ".join(f"omm cluster load {name}" for name in failed)
+    return f"Loaded {', '.join(victims)} back."

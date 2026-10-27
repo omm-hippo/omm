@@ -288,11 +288,11 @@ When an employee PC runs `omm rag remote set <head>`, `omm rag` collection, add,
 search, share and unshare commands send their data to the office cluster head instead of
 storing it on that PC: uploaded files (whole file bytes, at most 6 MiB each), collection
 and document names, questions, and share targets go to the head's gateway (port 52440,
-plain HTTP inside the office network, the same channel and caveat as the cluster
-inference routes below). Original text, chunks and vectors are kept only in the head's
+HTTPS, the same channel as the cluster inference routes below). Original text, chunks and vectors are kept only in the head's
 `OMM_HOME/documents`, and embeddings run on the head's own loopback Ollama. The employee
 PC keeps only the head address and the employee token in `OMM_HOME/rag-remote.json`
-(mode 0600 on macOS/Linux); the token is never printed. These requests ignore
+(mode 0600 on macOS/Linux), plus the head's public CA certificate it pinned in
+`OMM_HOME/rag-remote-ca.pem`; the token is never printed. These requests ignore
 `HTTP(S)_PROXY`. `omm rag connect <harness> --remote` writes the token into the
 harness's own configuration file as an `Authorization` header (tightened to mode 0600
 on macOS/Linux) and into the private copy under `OMM_HOME/rag-connections`; do not
@@ -346,9 +346,14 @@ employee PCs that send them.
   then forwards only the inference routes to exo on loopback (and answers the shared
   document routes `/mcp` and `/rag/v1/...` itself, see above). It logs only the method,
   path, status, token name, and duration of each request. It never logs a request or
-  response body or the token itself. The connection is plain HTTP inside the office
-  network. Anyone who can capture that network's traffic can read the requests and the
-  token.
+  response body or the token itself. It speaks HTTPS only, with a certificate from a CA
+  the head creates for itself (`OMM_HOME/cluster/tls/`, private keys mode 0600; the CA
+  key never leaves the head). A plain HTTP request is answered with a pointer to https
+  and closed without being read. The first `omm rag remote set` on an employee PC shows
+  that CA's SHA-256 fingerprint; the employee compares it with what `omm cluster status`
+  or `omm cluster token add` shows on the head, and the PC then trusts only that CA for
+  the gateway. A different certificate is refused. Comparing the fingerprint is what
+  stops a machine on the office network from posing as the head the first time.
 - **Tokens** (`omm cluster token add`) are shown once. Only their SHA-256 digests are
   stored, in `OMM_HOME/cluster/tokens.json` (mode 0600). Revoking a token takes effect on
   the gateway's next request.

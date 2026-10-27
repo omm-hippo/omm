@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import errno
 import functools
 import inspect
@@ -801,15 +802,24 @@ def agent_cluster_cmd(
         raise typer.Exit(1)
     console.print(f"Saved cluster routing settings for {escape(harness)} ({escape(metadata['base_url'])}). Start a new harness session.")
     console.print("The settings file now holds your employee token and is readable only by you.")
+    if metadata.get("launch"):
+        # Codex and pi read the CA variable only from the environment they start in.
+        console.print(f"{escape(harness)} trusts the cluster's certificate only when started like this:")
+        # Unwrapped: a command split over two lines does not paste.
+        console.print(f"  {metadata['launch']}", markup=False, soft_wrap=True)
+    elif metadata.get("ca_conflict"):
+        console.print(f"Your Claude Code settings already set NODE_EXTRA_CA_CERTS ({escape(metadata['ca_conflict'])}); "
+                      "omm left it. Append the cluster certificate to that file:")
+        console.print(f"  cat {metadata['ca_file']} >> {metadata['ca_conflict']}", markup=False, soft_wrap=True)
     console.print("The model must be loaded on the cluster (omm cluster load on the head); tool calling is not verified.")
 
 
 @agent_app.command(name="cloud")
 def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
     """Restore original routing while preserving unrelated settings edits."""
-    from omm import agent_connection
+    from omm import agent_cluster, agent_connection
     try:
-        restored = agent_connection.restore(harness)
+        restored = agent_cluster.restore(harness)
     except (agent_connection.ConnectionError, OSError) as error:
         message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Backup retained."
         err_console.print(f"[error]{escape(message)}[/error]")
@@ -2466,7 +2476,9 @@ def _cluster_call(func, *args):
 
 
 def _cluster_out(line: str) -> None:
-    console.print(line, markup=False)
+    # The terminal wraps long lines itself: rich's hard line breaks split the
+    # commands and the certificate fingerprint these lines carry.
+    console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_app.command(name="init")
@@ -2492,7 +2504,7 @@ def cluster_join_cmd(
 @cluster_app.command(name="status")
 @global_flags
 def cluster_status_cmd() -> None:
-    """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
+    """Show nodes, memory, RDMA, firewall, gateway and document search, and list any problems."""
     from omm.cluster import chat, commands as cluster_commands, settings as cluster_settings
 
     if cluster_settings.load() is None and chat.cluster_configured():
@@ -2528,12 +2540,25 @@ def cluster_status_cmd() -> None:
             else:
                 line = f"Waiting for exo to start downloading {model}"
             console.print(f"  {line}", markup=False)
-    if report["kept_model"]:
-        console.print(f"Kept loaded: {report['kept_model']} (this Mac loads it again after exo restarts)", markup=False)
+    if report["kept_models"]:
+        from omm.cluster import recommend
+
+        kept = ", ".join(entry["model"] + ("" if not (entry["sharding"] or entry["macs"]) else
+                                           f" ({recommend.describe(entry['sharding'], entry['macs'])})")
+                         for entry in report["kept_models"])
+        console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
     console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
+    if report["document_search"] is not None:
+        from omm.cluster import document_search
+
+        console.print(f"Document search: {document_search.summary(report['document_search'])}", markup=False)
+    if report.get("gateway_ca_sha256"):
+        # What an employee's `omm rag remote set` must show before they accept it.
+        console.print(f"Gateway address: {report['gateway_url']}", markup=False)
+        console.print(f"Gateway certificate (SHA-256): {report['gateway_ca_sha256']}", markup=False, soft_wrap=True, emoji=False)
     if report["problems"]:
         console.print("Problems:", markup=False)
         for problem in report["problems"]:
@@ -2706,7 +2731,7 @@ def _cluster_rows_text(rows) -> list[str]:
 @cluster_app.command(name="info")
 @global_flags
 def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
-    """Show a model's details, which Macs have it, and whether it fits now."""
+    """Show a model's details, which Macs have it, and the ways it can be placed now."""
     from omm.cluster import chat, models as cluster_models
 
     point = _cluster_employee_point()
@@ -2732,16 +2757,54 @@ def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> N
         # An employee PC is told how many Macs have it, not which ones.
         console.print(f"  Macs: {data['nodes_installed']}/{data['nodes_total']} installed", markup=False)
     if data["loaded"]:
-        console.print(f"  Loaded ({data['sharding']})", markup=False)
+        macs = data.get("loaded_macs")
+        console.print(f"  Loaded ({data['sharding']}" + (f", {macs} Mac(s))" if macs else ")"), markup=False)
     elif data["fits"]:
         console.print(f"  Not loaded; fits now ({_cluster_gib(data['peak_node_bytes'])} on the busiest Mac)", markup=False)
     else:
         console.print("  Not loaded; does not fit the cluster's free memory now", markup=False)
+    # An older head sends no placements.
+    for line in _cluster_placement_lines(data["model"], data.get("placements") or [], admin=point is None):
+        console.print(line, markup=False)
+
+
+def _cluster_placement_lines(model: str, rows: list[dict], *, admin: bool = True) -> list[str]:
+    """`omm cluster info`'s table of the ways exo can place a model right now."""
+    if not rows:
+        return []
+    lines = ["  Placements now (sharding, link, Macs, memory per Mac):"]
+    for row in rows:
+        if not row["fits"]:
+            lines.append(f"    {row['sharding']:<9} not possible: {row['error']}")
+            continue
+        macs = row["macs"] or 0
+        count = f"{macs} Mac{'' if macs == 1 else 's'}"
+        text = f"    {row['sharding']:<9} {row['link']:<5} {count:<7} {_cluster_gib(row['memory_per_mac_bytes'])} each"
+        if row.get("nodes"):
+            text += f"  ({', '.join(row['nodes'])})"
+        if row["automatic"]:
+            text += "  <- omm's pick"
+        lines.append(text)
+    if admin and any(row["fits"] for row in rows):
+        # Loading is the head admin's call; an employee only sees what is possible.
+        lines.append(f"  Choose one: omm cluster load {model} --sharding tensor|pipeline --macs N")
+    return lines
+
+
+class _ClusterSharding(str, enum.Enum):
+    tensor = "tensor"
+    pipeline = "pipeline"
 
 
 @cluster_app.command(name="load")
 @global_flags
-def cluster_load_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+def cluster_load_cmd(
+    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
+    sharding: _ClusterSharding | None = typer.Option(
+        None, "--sharding", case_sensitive=False,
+        help="Split the model by tensor or by layers (pipeline); omit to let omm pick"),
+    macs: int | None = typer.Option(None, "--macs", min=1, help="How many Macs to spread it over; omit to let omm pick"),
+) -> None:
     """Load a model into the cluster's memory so employees can use it (head Mac only)."""
     from omm.cluster import commands as cluster_commands, models as cluster_models
 
@@ -2750,7 +2813,9 @@ def cluster_load_cmd(model: str = typer.Argument(..., help="exo model id (see om
     if model not in rows:
         console.print(f"{model} is not installed yet; exo downloads it first "
                       f"(omm cluster install {model} downloads without loading).", markup=False)
-    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+    # exo spells them "Tensor" and "Pipeline".
+    choice = {"sharding": sharding.value.capitalize() if sharding else None, "macs": macs}
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard(), **choice)),
                   markup=False)
 
 
@@ -2859,11 +2924,11 @@ def _cluster_chat(model: str | None) -> None:
     except ImportError:
         pass
     point = _cluster_call(chat.endpoint)
-    loaded = _cluster_call(chat.loaded_models, point)
+    loaded, loading = _cluster_call(chat.loaded_models, point)
     if model is not None and model not in loaded and cluster_settings.load() is not None:
         _cluster_load_installed(model)
-        loaded = _cluster_call(chat.loaded_models, point)
-    chosen = _cluster_call(chat.pick_model, model, loaded)
+        loaded, loading = _cluster_call(chat.loaded_models, point)
+    chosen = _cluster_call(chat.pick_model, model, loaded, loading)
     console.print(f"{chosen} on {point.where}", markup=False)
     console.print("[muted]Type /bye to leave the chat.[/muted]")
     messages: list[dict] = []
@@ -2913,6 +2978,8 @@ def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is
     token = _cluster_call(cluster_commands.tokens.add_token, name)
     console.print(f"Token for {name}: {token}", markup=False)
     console.print("Store it now - omm cannot show it again.", markup=False)
+    for line in cluster_commands.employee_setup_lines():
+        console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_token_app.command(name="list")
@@ -10022,18 +10089,22 @@ CLUSTER_LIST_TIMEOUT = 2
 
 def _print_cluster_section() -> None:
     """`omm list`'s cluster models, only on a cluster Mac or a PC with `omm rag remote set`."""
-    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+    from omm.cluster import chat, settings as cluster_settings
     from omm.cluster.errors import ClusterError
 
     if not chat.cluster_configured():
         return
+    # Only now: the model helpers pull in every cluster module (~15 ms).
+    from omm.cluster import models as cluster_models
+
     try:
         if cluster_settings.load() is not None:
-            rows = cluster_models.inventory()
+            rows = cluster_models.inventory(timeout=CLUSTER_LIST_TIMEOUT)
         else:
             rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
     except ClusterError as error:
-        console.print(f"[muted]Cluster: unreachable ({escape(str(error))})[/muted]")
+        # The message already says what went wrong (token, older head, offline).
+        console.print(f"[muted]Cluster: {escape(str(error))}[/muted]")
         return
     console.print()
     console.print("Cluster", style="bold")
@@ -11746,6 +11817,13 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
+    # exo ids are always "org/name"; a cluster model is measured over the cluster's own API.
+    if _cluster_configured():
+        on_cluster = [m for m in models if "/" in m and _cluster_lacks(m) is None]
+        if on_cluster:
+            err_console.print("\n".join(f"{m} is a cluster model; measure it with: omm cluster benchmark {m}"
+                                        for m in on_cluster), markup=False)
+            raise typer.Exit(2)
     engine = _select_benchmark_engine_for_models(models)
     if engine is not None:
         if not json_output:

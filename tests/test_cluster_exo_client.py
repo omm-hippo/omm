@@ -212,7 +212,10 @@ def test_await_instance_keeps_waiting_while_the_download_advances(monkeypatch):
     client = exo_client.ExoClient()
     ready = _load("state-1node.json")
     llama = "mlx-community/Llama-3.2-1B-Instruct-4bit"
-    steps = [{"downloads": {"a": [_ongoing("a", n * GIB, 100 * GIB, llama)]}} for n in range(1, 11)]
+    placed = {"i1": {"MlxRingInstance": {"instanceId": "i1", "shardAssignments": {
+        "modelId": llama, "nodeToRunner": {"a": "r1"}, "runnerToShard": {"r1": {"PipelineShardMetadata": {}}}}}}}
+    steps = [{"downloads": {"a": [_ongoing("a", n * GIB, 100 * GIB, llama)]}, "instances": placed}
+             for n in range(1, 11)]
     states = iter([*steps, ready])
     monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
     clock = iter(range(0, 10_000, 20))  # 11 polls, 20 s apart: far beyond a 30 s stall window
@@ -325,3 +328,29 @@ def test_parse_models_keeps_the_raw_card():
 def test_no_memory_text_matches_the_live_refusal():
     rows = exo_client.parse_previews(_load("previews-nomem.json"))
     assert rows and all(exo_client.NO_MEMORY in row.error for row in rows)
+
+
+def test_load_progress_skips_a_mac_the_instance_does_not_use():
+    # Tensor on a and b; c keeps the Pending entry `omm cluster install` left and never fetches.
+    data = {
+        "downloads": {"a": [_download("DownloadCompleted", "a", total=_memory(GIB))],
+                      "b": [_download("DownloadCompleted", "b", total=_memory(GIB))],
+                      "c": [_download("DownloadPending", "c", downloaded=_memory(0), total=_memory(GIB))]},
+        "instances": {"i1": {"MlxJacclInstance": {"instanceId": "i1", "shardAssignments": {
+            "modelId": MODEL, "nodeToRunner": {"a": "r1", "b": "r2"},
+            "runnerToShard": {"r1": {"TensorShardMetadata": {}}, "r2": {"TensorShardMetadata": {}}}}}}},
+    }
+    assert exo_client.load_progress(data, MODEL).phase == "loading"
+    del data["instances"]
+    assert exo_client.load_progress(data, MODEL).phase == "downloading"
+
+
+def test_await_instance_reports_nothing_before_exo_places_the_instance(monkeypatch):
+    client = exo_client.ExoClient()
+    pending = {"downloads": {"a": [_download("DownloadPending", "a", downloaded=_memory(0), total=_memory(GIB))]}}
+    states = iter([pending, pending, _load("state-1node.json")])
+    monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
+    seen = []
+    assert client.await_instance("mlx-community/Llama-3.2-1B-Instruct-4bit", 30, on_progress=seen.append,
+                                 sleep=lambda s: None) is True
+    assert seen == []
