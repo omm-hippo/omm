@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.56",
+  "omm_version": "0.4.59",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -381,7 +381,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Show a model's details, which Macs have it, and whether it fits now.",
+      "summary": "Show a model's details, which Macs have it, and the ways it can be placed now.",
       "description": "",
       "usage": "omm cluster info [OPTIONS] {model}",
       "arguments": [
@@ -657,6 +657,26 @@
         }
       ],
       "options": [
+        {
+          "flags": [
+            "--sharding"
+          ],
+          "metavar": "<tensor|pipeline>",
+          "is_flag": false,
+          "help": "Split the model by tensor or by layers (pipeline); omit to let omm pick",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--macs"
+          ],
+          "metavar": "<int range>",
+          "is_flag": false,
+          "help": "How many Macs to spread it over; omit to let omm pick",
+          "default": null,
+          "global": false
+        },
         {
           "flags": [
             "--quiet",

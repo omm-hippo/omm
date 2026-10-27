@@ -93,6 +93,8 @@ class Placement:
     instance: dict = field(hash=False, compare=True)
     memory_delta_by_node: dict = field(hash=False, compare=True)
     error: str | None = None
+    # The backend exo tried ("MlxRing" / "MlxJaccl"); the only one an error row names.
+    instance_meta: str = ""
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,7 @@ def parse_previews(data: dict) -> list[Placement]:
             instance=_dict(row.get("instance")),
             memory_delta_by_node=deltas,
             error=None if error is None else str(error),
+            instance_meta=str(row.get("instance_meta") or ""),
         ))
     return placements
 

@@ -302,8 +302,14 @@ tokens from `tokens.py` (fail closed) and forwards four inference routes; it ans
 ones), which `omm cluster run` (`chat.py`) uses on an employee PC. It also folds
 Claude Code's `role: "system"` messages into the top-level `system` field, because exo
 answers those with 422. exo keeps instances only in memory, so the gateway process also runs
-`autoload.py`: every 30 s it reloads the model `omm cluster load`/`run` last loaded on the head
-(`cluster.json` `model`, cleared by `unload`/`uninstall`), after waiting up to 10 min for every known Mac.
+`autoload.py`: every 30 s it reloads every model `omm cluster load`/`run` loaded on the head
+(`cluster.json` `models`, each with the admin's `--sharding`/`--macs` choice or automatic; an old
+single `model` string still loads; `unload`/`uninstall` and Memory Guard victims drop their entry), one at
+a time and never unloading anything, after waiting up to 10 min for every known Mac.
+`load --sharding tensor|pipeline --macs N` filters exo's `/instance/previews` (RDMA `MlxJaccl` first, then
+least memory per Mac); exo offers exactly one node set per sharding/backend/count, so Macs cannot be
+named. Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
+`info` shows every preview as a table (`recommend.placement_rows`; Mac names only on the head).
 Model verbs mirror top-level omm (`cluster/models.py`): `install` downloads to every Mac with exo's
 `/download/start` (each Mac's Pending entry carries the whole-model shard) without loading, `uninstall`
 uses `DELETE /download/{node}/{model}`, `load`/`run` apply `memory_guard_policy` (exo marks a

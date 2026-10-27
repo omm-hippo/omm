@@ -224,12 +224,14 @@ def test_uninstall_unloads_then_deletes_and_clears_kept_model(exo):
     exo.have(SMALL, "n1", "n2", "n3")
     exo.load(SMALL)
     current = settings.load()
-    settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port, model=SMALL))
+    settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port,
+                                           models=(settings.KeptModel(SMALL), settings.KeptModel(OTHER, "Tensor", 2))))
     seen, out = _lines()
     assert models.uninstall(SMALL, out, exo) == 3
     assert exo.deleted_instances == [f"i-{SMALL}"]
     assert sorted(exo.deleted_downloads) == [("n1", SMALL), ("n2", SMALL), ("n3", SMALL)]
-    assert settings.load().model is None
+    # Only that one is forgotten; the other keeps its placement choice.
+    assert settings.load().models == (settings.KeptModel(OTHER, "Tensor", 2),)
 
 
 def test_uninstall_not_installed_errors(exo):
@@ -377,12 +379,13 @@ def test_guard_ask_loads_the_unloaded_models_back_when_the_load_fails(exo):
     exo.free = {n: 25 * GIB for n in exo.nodes}
     exo.fit_alone = set()  # exo still refuses BIG after the unloads
     exo.fits.update({SMALL: True, OTHER: True})
-    settings.save(dataclasses.replace(settings.load(), model=SMALL))
+    kept = (settings.KeptModel(SMALL, "Pipeline", 3), settings.KeptModel(OTHER))
+    settings.save(dataclasses.replace(settings.load(), models=kept))
     with pytest.raises(ClusterError, match=f"still does not fit .*Loaded {OTHER}, {SMALL} back"):
         _guarded(exo, GuardPolicy.ASK, answer=True)
     assert sorted(model for model, _ in exo.instances.values()) == sorted([SMALL, OTHER])
-    # The model the head reloads after a restart is still the admin's own choice.
-    assert settings.load().model == SMALL
+    # The models the head reloads after a restart are still the admin's own choices.
+    assert settings.load().models == kept
 
 
 def test_guard_observe_does_not_claim_to_try(exo):
@@ -424,3 +427,96 @@ def test_load_placed_only_on_macs_that_have_it_does_not_mention_downloading(exo)
     seen, out = _lines()
     commands.load_model(SMALL, out, exo, placement)
     assert seen[0] == f"Loading {SMALL} (Tensor)..."
+
+
+# --- several kept models and the admin's placement choice (#532) -------------
+
+def _kept():
+    return settings.load().models
+
+
+def test_settings_from_an_older_omm_with_one_model_still_load(isolated_omm_home):
+    settings.settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings.settings_path().write_text(json.dumps({
+        "version": 1, "role": "head", "namespace": "omm-" + "0" * 32, "gateway_port": 52440,
+        "known_nodes": ["mac-a"], "model": SMALL}), encoding="utf-8")
+    assert settings.load().models == (settings.KeptModel(SMALL),)
+
+
+def test_settings_keep_several_models_with_their_choice(isolated_omm_home):
+    value = settings.ClusterSettings("head", "omm-" + "0" * 32, 52440, models=(
+        settings.KeptModel(SMALL, "Tensor", 2), settings.KeptModel(OTHER)))
+    settings.save(value)
+    assert settings.load() == value
+    saved = json.loads(settings.settings_path().read_text(encoding="utf-8"))
+    assert "model" not in saved and saved["models"][0] == {"model": SMALL, "sharding": "Tensor", "macs": 2}
+    # Junk from a hand-edited file is dropped, not trusted.
+    saved["models"] += [{"model": ""}, "x", {"model": "a/b", "sharding": "Diagonal", "macs": True}]
+    settings.settings_path().write_text(json.dumps(saved), encoding="utf-8")
+    assert settings.load().models == (*value.models, settings.KeptModel("a/b"))
+
+
+def test_loading_a_second_model_keeps_both(exo):
+    seen, out = _lines()
+    models.ensure_loaded(SMALL, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo)
+    models.ensure_loaded(OTHER, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo)
+    assert _kept() == (settings.KeptModel(SMALL), settings.KeptModel(OTHER))
+    from omm.cluster import commands
+
+    commands.unload_model(SMALL, exo)
+    assert _kept() == (settings.KeptModel(OTHER),)
+
+
+def test_choice_on_a_loaded_model_that_matches_is_remembered(exo):
+    exo.load(SMALL)  # Pipeline on all 3 Macs
+    seen, out = _lines()
+    models.ensure_loaded(SMALL, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo, macs=3)
+    assert _kept() == (settings.KeptModel(SMALL, None, 3),)
+    # A plain load afterwards does not throw the choice away.
+    models.ensure_loaded(SMALL, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo)
+    assert _kept() == (settings.KeptModel(SMALL, None, 3),)
+    assert exo.created == []
+
+
+def test_choice_on_a_loaded_model_that_differs_says_to_unload_first(exo):
+    exo.load(SMALL)
+    with pytest.raises(ClusterError, match=r"already loaded as Pipeline on 3 Macs\. To load it as Tensor on 2 Macs, "
+                                           rf"unload it first: omm cluster unload {SMALL}"):
+        models.ensure_loaded(SMALL, lambda line: None, policy=GuardPolicy.BLOCK, confirm=None, client=exo,
+                             sharding="Tensor", macs=2)
+    assert exo.deleted_instances == [] and exo.created == []
+
+
+def test_a_choice_exo_does_not_offer_lists_what_it_does(exo):
+    # FakeExo offers only Pipeline rows without node counts.
+    with pytest.raises(ClusterError, match=r"exo offers no Tensor placement for .* Possible: Pipeline\. "
+                                           r"See each one: omm cluster info"):
+        models.ensure_loaded(SMALL, lambda line: None, policy=GuardPolicy.BLOCK, confirm=None, client=exo,
+                             sharding="Tensor")
+    assert exo.created == [] and _kept() == ()
+
+
+def test_guard_ask_forgets_the_models_it_unloaded(exo):
+    _two_loaded(exo)
+    exo.free = {n: 25 * GIB for n in exo.nodes}
+    settings.save(dataclasses.replace(settings.load(), models=(settings.KeptModel(SMALL), settings.KeptModel(OTHER))))
+    _guarded(exo, GuardPolicy.ASK, answer=True)
+    assert _kept() == (settings.KeptModel(BIG),)
+
+
+def test_info_lists_placements_and_employee_info_hides_mac_names(exo):
+    rows = json.loads((FIX / "previews-3node.json").read_text(encoding="utf-8"))
+    exo.previews = lambda model_id: exo_client.parse_previews(rows)
+    exo.have(SMALL, "n1")
+    data = models.info(SMALL, exo)
+    assert data["loaded"] is False and data["fits"] is True and len(data["placements"]) == 9
+    assert all("nodes" in row for row in data["placements"])
+    employee = models.employee_info(SMALL, exo)
+    assert employee["nodes_installed"] == 1 and len(employee["placements"]) == 9
+    assert all("nodes" not in row for row in employee["placements"])
+
+
+def test_info_of_a_loaded_model_skips_placements(exo):
+    exo.load(SMALL)
+    data = models.info(SMALL, exo)
+    assert data["loaded"] is True and data["loaded_macs"] == 3 and data["placements"] == []
