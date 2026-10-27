@@ -29,7 +29,11 @@ UPLOAD_TIMEOUT = 900  # The head embeds every chunk before it answers.
 
 
 class RemoteError(ValueError):
-    """A user-facing problem; never contains the token."""
+    """A user-facing problem; never contains the token. ``status`` is the head's HTTP status, if any."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 PLAIN_HTTP = ("클러스터 게이트웨이는 이제 HTTPS만 받아요. "
@@ -157,7 +161,7 @@ class Client:
             with self._opener.open(req, timeout=timeout) as response:
                 payload = response.read()
         except urlerror.HTTPError as error:
-            raise RemoteError(_message(error.code, error.read())) from None
+            raise RemoteError(_message(error.code, error.read()), error.code) from None
         except (urlerror.URLError, OSError) as error:
             if isinstance(getattr(error, "reason", error), ssl.SSLCertVerificationError):
                 raise RemoteError(WRONG_CERTIFICATE) from None

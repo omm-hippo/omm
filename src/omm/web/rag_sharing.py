@@ -79,16 +79,35 @@ def _harnesses(remote_mode: bool) -> list[dict]:
     return rows
 
 
+def _semantic_local() -> dict:
+    """This PC's semantic search readiness, worded for the administrator (fix included)."""
+    from omm import rag_readiness
+    result = rag_readiness.check()
+    text = None if result["ready"] else f"의미 검색이 꺼져 있어요. {result['message']} {rag_readiness.WORDS_ONLY}"
+    return {"state": result["state"], "ready": result["ready"], "model": result["model"],
+            "text": text and text.replace("`", ""), "command": result["command"],
+            "persistence": result["persistence"] and result["persistence"].replace("`", "")}
+
+
+def _semantic_remote(client) -> dict:
+    """The head's readiness for an employee: no fix command, just who to tell."""
+    from omm import rag_readiness
+    view = rag_readiness.remote_view(client)
+    ready = view["state"] == rag_readiness.READY
+    return {"state": view["state"], "ready": ready, "model": view["model"],
+            "text": None if ready else rag_readiness.remote_line(view), "command": None, "persistence": None}
+
+
 def state() -> dict:
     """Where the tab is looking, who I am there, and which admin panels apply."""
     try:
         remote = rag_remote.load()
     except rag_remote.RemoteError as error:
         return {"mode": "remote", "remote": None, "error": str(error), "admin": False, "tokens": False,
-                "harnesses": _harnesses(True)}
+                "harnesses": _harnesses(True), "semantic_search": None}
     if remote is None:
         return {"mode": "local", "remote": None, "error": None, "admin": True, "tokens": tokens_enabled(),
-                "harnesses": _harnesses(False)}
+                "harnesses": _harnesses(False), "semantic_search": _semantic_local()}
     name, error = None, None
     try:
         name = rag_remote.Client(remote).call("GET", "/rag/v1/whoami", timeout=8)["name"]
@@ -97,7 +116,8 @@ def state() -> dict:
     except (KeyError, TypeError):
         error = "헤드의 응답을 읽지 못했어요. 헤드의 omm 버전을 확인해 주세요."
     return {"mode": "remote", "remote": {"url": remote.url, "name": name}, "error": error, "admin": False,
-            "tokens": False, "harnesses": _harnesses(True)}
+            "tokens": False, "harnesses": _harnesses(True),
+            "semantic_search": None if error else _semantic_remote(rag_remote.Client(remote))}
 
 
 # -- collections and documents --------------------------------------------------

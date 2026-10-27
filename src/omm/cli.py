@@ -909,7 +909,8 @@ def _rag_confirm(message: str) -> None:
 @rag_app.command(name="status")
 @global_flags
 def rag_status_cmd() -> None:
-    """Show collections, the embedding model, and which documents need reindexing."""
+    """Show collections, the embedding model, whether semantic search is ready, and which documents need reindexing."""
+    from omm import rag_readiness
     from omm.documents import DocumentStore
     try:
         store = DocumentStore()
@@ -917,17 +918,29 @@ def rag_status_cmd() -> None:
         documents = store.list()
     except ValueError as error:
         _rag_fail(error)
-    if _global_opts().json:
-        _print_json(data={**result, "documents_detail": [
-            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
-            for d in documents]})
-        return
     embedding = result["embedding"]
+    readiness = rag_readiness.check(embedding["model"], embedding["base_url"])
+    client = _rag_cli.remote_client()
+    head = rag_readiness.remote_view(client) if client else None
+    if _global_opts().json:
+        data = {**result, "semantic_search": readiness, "documents_detail": [
+            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
+            for d in documents]}
+        if client:
+            data["remote"] = {"url": client.remote.url, "semantic_search": head}
+        _print_json(data=data)
+        return
+    if client:
+        console.print(f"원격 헤드: {escape(client.remote.url)}")
+        console.print(escape(rag_readiness.remote_line(head)))
+        console.print("아래는 이 PC에 저장된 문서예요.")
+        console.print()
     state = "사용 가능" if embedding["available"] else "사용 불가"
     console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
                   f"메모리 유지 {escape(_rag_keep_alive_label(embedding['keep_alive']))}")
-    if embedding["notice"]:
-        console.print(f"  {escape(embedding['notice'])}")
+    console.print(escape(rag_readiness.line(readiness)))
+    if readiness["persistence"]:
+        console.print(f"  {escape(readiness['persistence'])}")
     console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
                   f"재색인 필요 {result['reindex_needed']}개 · 원본 다시 등록 필요 {result['reregister_needed']}개")
     for collection in result["collections"]:

@@ -215,7 +215,7 @@ def _no_real_document_embeddings(monkeypatch):
         def embed(self, *args, **kwargs):
             raise document_embeddings.EmbeddingUnavailable("server_unavailable", "테스트에서는 Ollama를 쓰지 않아요.")
 
-        def available(self):
+        def available(self, **kwargs):
             raise document_embeddings.EmbeddingUnavailable("server_unavailable", "테스트에서는 Ollama를 쓰지 않아요.")
 
     monkeypatch.setattr(documents, "_embedder", _Offline)

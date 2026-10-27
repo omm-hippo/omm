@@ -220,6 +220,8 @@ def remote_show(ctx: typer.Context) -> None:
         console.print("원격 헤드가 설정돼 있지 않아요. `omm rag` 명령은 이 PC의 문서를 써요.")
         return
     console.print(f"원격 헤드: {escape(remote.url)} (토큰 저장됨)")
+    from omm import rag_readiness
+    console.print(escape(rag_readiness.remote_line(rag_readiness.remote_view(rag_remote.Client(remote)))))
     console.print("collection·add·remove·search·share·unshare 명령이 헤드의 문서를 써요. "
                   "되돌리려면 `omm rag remote clear`.")
 
