@@ -288,8 +288,13 @@ When an employee PC runs `omm rag remote set <head>`, `omm rag` collection, add,
 search, share and unshare commands send their data to the office cluster head instead of
 storing it on that PC: uploaded files (whole file bytes, at most 6 MiB each), collection
 and document names, questions, and share targets go to the head's gateway (port 52440,
-HTTPS, the same channel as the cluster inference routes below). Original text, chunks and vectors are kept only in the head's
-`OMM_HOME/documents`, and embeddings run on the head's own loopback Ollama. The employee
+HTTPS, the same channel as the cluster inference routes below). Original text, chunks and vectors are kept in the head's
+`OMM_HOME/documents`, and embeddings run on the head's own loopback Ollama. Every other Mac
+in the cluster keeps a full backup copy of that store in `OMM_HOME/cluster/rag-backup/`
+(mode 0600), refreshed about once a minute over the gateway's HTTPS port, preferring the
+Thunderbolt link. Only Macs holding the cluster name can fetch it, and `omm cluster leave`
+deletes the copy. The copy is never searched or served to employees; it exists so that
+`omm cluster handover` can move the documents to a new head. The employee
 PC keeps only the head address and the employee token in `OMM_HOME/rag-remote.json`
 (mode 0600 on macOS/Linux), plus the head's public CA certificate it pinned in
 `OMM_HOME/rag-remote-ca.pem`; the token is never printed. These requests ignore

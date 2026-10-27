@@ -337,6 +337,29 @@ Employee PCs route a harness to the gateway with `omm setting agent cluster` (`a
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
 list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
 and `2026-10-22-exo-cluster-spike-findings.md`.
+Member link (`member_link.py`, LaunchAgent `com.omm.cluster-member`, hidden `_cluster-member-run`,
+installed by `join`): every 60 s a member polls the head's `POST /omm/member/poll` (and
+`GET /omm/member/rag/snapshot`) on the gateway port, Thunderbolt addresses first. These routes take no
+employee token: with a key derived from the namespace (never the namespace itself), `member_auth.py`
+signs each request and each reply over the nonce, the TLS leaf the member saw (the first block of
+`tls/server.pem`) and the body, because members do not pin the head's CA and a relay must not replay a
+request to the head. Every Mac with the
+namespace is trusted equally (spec decision). The member follows the head's exact commit through
+`cli._perform_update(..., target_commit=)` (signed, on the channel branch, never backward: a member ahead
+waits for `omm update` on the head; it switches to the head's channel), then exits for launchd to restart
+it; the head's `omm update` restarts its gateway and warns that members follow. It also keeps the head's
+document store as `OMM_HOME/cluster/rag-backup/library.sqlite3` (`rag_backup.py`, never served). The head
+records reports in `cluster/members.json` and `status` lists each Mac's version and backup. `join` now
+opens the gateway port in pf and ALF on every member, so `omm cluster handover MAC` (`handover.py`, run on
+the head) needs no sudo: it freezes `/rag/*` and `/mcp` (503), writes `cluster/handover.json` with
+`head_epoch + 1` and the kept models; the target's link pulls a final snapshot, swaps it in as its live
+store (its own store moved aside to `library.sqlite3.before-handover-<ts>`) and starts its gateway; the old
+head then steps down (tokens deleted, TLS CA kept, its store becomes its backup via `stepped-down.json`).
+Tokens and the CA are never moved; employees re-run `omm rag remote set`. A gateway that finds a peer head
+with a higher (epoch, node id) steps down (`handover.stale_head_loop`), and a gateway started on a
+member removes itself. The target re-checks the instruction just before taking over, and a failed
+promote rolls back to a working member. Spec:
+`docs/superpowers/specs/2026-10-27-cluster-handover-version-sync-design.md`.
 
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported

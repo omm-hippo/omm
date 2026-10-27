@@ -40,6 +40,9 @@ class ClusterSettings:
     # instances when it restarts (a reboot, a restart), so the head's gateway
     # service loads these again (autoload.py); unloading one forgets it.
     models: tuple[KeptModel, ...] = ()
+    # Goes up by one on every head handover; a head that sees a peer head with
+    # a higher epoch steps down (cluster/handover.py).
+    head_epoch: int = 0
 
     def kept(self, model_id: str) -> KeptModel | None:
         return next((entry for entry in self.models if entry.model == model_id), None)
@@ -78,9 +81,11 @@ def load() -> ClusterSettings | None:
             or not isinstance(port, int)):
         return None
     nodes = data.get("known_nodes") or []
+    epoch = data.get("head_epoch")
     return ClusterSettings(data["role"], namespace, port,
                            tuple(n for n in nodes if isinstance(n, str)) if isinstance(nodes, list) else (),
-                           _kept_models(data))
+                           _kept_models(data),
+                           epoch if isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0 else 0)
 
 
 def _kept_models(data: dict) -> tuple[KeptModel, ...]:

@@ -13,8 +13,10 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, netconfig, power, preflight,
-                         recommend, service, settings, tls, tokens)
+from datetime import datetime, timezone
+
+from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, member_service, members, netconfig,
+                         power, preflight, rag_backup, recommend, service, settings, tls, tokens)
 from omm.cluster.errors import ClusterError, UsageProblem
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -97,7 +99,9 @@ def init(out: Out) -> settings.ClusterSettings:
     # The remembered Macs start over: running init again is how a Mac that
     # left for good stops being reported missing (status says so).
     # The models to serve survive a re-run, which restarts exo and so drops them.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else ())
+    # The epoch survives too: a reset one would tie with a head that took over meanwhile.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else (),
+                                     head_epoch=current.head_epoch if current else 0)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -147,9 +151,12 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
-    firewall.apply(gateway_port=None)
+    # Opened like on the head, so `omm cluster handover` needs no sudo later;
+    # nothing listens on the gateway port until this Mac becomes head.
+    firewall.apply(gateway_port=GATEWAY_PORT)
     power.keep_awake()
-    appfw.allow([appfw.exo_binary()])
+    appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
+    member_service.install()
     out(SCREEN_APPROVAL_HINT)
     out(HIGH_PORTS_HINT)
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
@@ -179,6 +186,10 @@ def status() -> dict:
         problems.append(str(error))
         raw = None
     state = None if raw is None else exo_client.parse_state(raw)
+    member_rows: list[dict] = []
+    if state is not None and current is not None and current.role == "head":
+        member_rows, found = _member_rows(raw, state)
+        problems += found
     if state is not None:
         instances = []
         for i in state.instances:
@@ -244,16 +255,19 @@ def status() -> dict:
         problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
                         "on the head Mac and omm cluster join <new name> on every other Mac")
     if current is not None:
-        fw = firewall.status(gateway_port=current.gateway_port if current.role == "head" else None)
+        fw = firewall.status(gateway_port=current.gateway_port)
         if fw not in ("active", "unchecked"):
             problems.append(f"firewall rules are {fw}; run omm cluster {'init' if current.role == 'head' else 'join'} again")
         idle = power.current_idle_sleep_minutes()
         if idle:
             problems.append(f"this Mac sleeps after {idle} min idle; run omm cluster "
                             f"{'init' if current.role == 'head' else 'join'} again")
+        problems += [f"the macOS firewall holds incoming connections to {path}; run omm cluster "
+                     f"{'init' if current.role == 'head' else 'join ' + current.namespace} again"
+                     for path in appfw.not_allowed([appfw.gateway_binary()])]
+        if current.role == "member" and not member_service.is_running():
+            problems.append(f"the member link is not running; run omm cluster join {current.namespace} again")
         if current.role == "head":
-            problems += [f"the macOS firewall holds incoming connections to {path}; run omm cluster init again"
-                         for path in appfw.not_allowed([appfw.gateway_binary()])]
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
@@ -266,7 +280,62 @@ def status() -> dict:
             "gateway_url": gateway_url() if head else None,
             "gateway_ca_sha256": tls.head_fingerprint() if head else None,
             "kept_models": [dataclasses.asdict(entry) for entry in current.models] if head else [],
-            "document_search": documents, "problems": problems}
+            "document_search": documents, "members": member_rows, "problems": problems}
+
+
+# A member polls every minute; this long without a poll means its link is not running.
+MEMBER_SILENT_SECONDS = 10 * 60
+
+
+def _own_node(raw: dict) -> str | None:
+    from omm.cluster import member_link
+
+    return member_link.own_node_id(raw, member_link.local_ipv4s())
+
+
+def _member_rows(raw: dict, state) -> tuple[list[dict], list[str]]:
+    """Each other Mac's omm version and backup, as its member link last reported them."""
+    from omm.cluster import version_follow
+
+    own = _own_node(raw)
+    if own is None:
+        # Without knowing which node is this Mac, every Mac would look silent.
+        return [], []
+    head_commit = version_follow.local_version().get("commit")
+    marker = rag_backup.store_marker()
+    records = members.load()
+    now = datetime.now(timezone.utc)
+    rows, problems = [], []
+    for node in state.nodes:
+        if node.node_id == own:
+            continue
+        record = records.get(node.node_id)
+        try:
+            ago = (now - datetime.fromisoformat(record["seen_at"])).total_seconds() if record else None
+        except (KeyError, TypeError, ValueError):
+            ago = None
+        if ago is None or ago > MEMBER_SILENT_SECONDS:
+            namespace = settings.load().namespace
+            problems.append(f"{node.name} has not checked in; run omm cluster join {namespace} again on it")
+            if record is None:
+                continue
+        version = record.get("version") if isinstance(record.get("version"), dict) else {}
+        commit, state_name = version.get("commit"), record.get("version_state")
+        backup = record.get("rag_marker")
+        rows.append({"name": node.name, "version": commit[:7] if isinstance(commit, str) else None,
+                     "version_state": state_name, "version_error": record.get("version_error"),
+                     "backup": "none" if not backup else "current" if backup == marker else "behind",
+                     "prepared": bool(record.get("prepared")), "seen_seconds_ago": None if ago is None else int(ago)})
+        if state_name == "ahead":
+            problems.append(f"{node.name} is newer than the head; run omm update on this Mac")
+        elif state_name == "blocked":
+            problems.append(f"{node.name} could not update: {record.get('version_error') or 'unknown error'}")
+        elif state_name == "manual" or not version.get("git"):
+            problems.append(f"{node.name} is not a git install; update omm on it by hand")
+        elif head_commit and commit != head_commit:
+            problems.append(f"{node.name} runs omm {(commit or '?')[:7]} but the head runs {head_commit[:7]}; "
+                            "it updates itself within a few minutes")
+    return rows, problems
 
 
 def exposure() -> dict | None:
@@ -279,17 +348,19 @@ def exposure() -> dict | None:
     from omm import engine_security
 
     head = current.role == "head"
-    ports = [*firewall.EXO_PORTS, *([current.gateway_port] if head else [])]
+    # Open on members too (so a handover needs no sudo); nothing listens there.
+    ports = [*firewall.EXO_PORTS, current.gateway_port]
     listeners = []
     for port in ports:
         rows, _error = engine_security._listener_rows(port)
         listeners += [{"address": row["address"], "port": port} for row in rows]
-    fw = firewall.status(gateway_port=current.gateway_port if head else None)
+    fw = firewall.status(gateway_port=current.gateway_port)
     again = "init" if head else f"join {current.namespace}"
     if fw == "active":
         status = "gateway_only"
         reason = ("pf blocks exo's API and model ports from other devices; "
-                  + (f"the gateway (port {current.gateway_port}) needs an employee token and " if head else "")
+                  + (f"the gateway (port {current.gateway_port}) needs an employee token and " if head else
+                     f"the gateway port {current.gateway_port} is closed until this Mac becomes head, and ")
                   + f"exo's peer port {firewall.LIBP2P_PORT} needs the cluster key")
     elif fw == "unchecked":
         status = "unknown"
@@ -494,9 +565,11 @@ def head_name(client: ExoClient | None = None) -> str | None:
 def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
-    steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove]
+    # Both agents on either role: a former head's gateway may still be registered.
+    steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove, service.uninstall,
+             member_service.uninstall, rag_backup.delete_backup, rag_backup.delete_snapshot]
     if current is None or current.role == "head":
-        steps.append(service.uninstall)
+        steps += [members.clear, members.clear_handover]
     steps += [exo_service.uninstall, preflight.remove_runtime]
     # Every step is safe to repeat, so one failure (usually a declined sudo
     # prompt) must not leave the rest of this Mac half dismantled.

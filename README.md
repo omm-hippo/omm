@@ -133,6 +133,7 @@ omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer
 omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
 omm cluster token list  # List employee tokens by name (head Mac)
 omm cluster token revoke <name>  # Revoke an employee token (head Mac)
+omm cluster handover MAC [--yes]  # Move the cluster head to another Mac in the cluster (head Mac; employees re-run omm rag remote set)
 omm cluster leave [--yes]  # Remove this Mac's cluster firewall, services, and settings
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings

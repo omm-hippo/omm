@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.62",
+  "omm_version": "0.4.73",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -373,6 +373,59 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#benchmark"
+    },
+    {
+      "path": [
+        "cluster",
+        "handover"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Move the cluster head to another Mac in the cluster.",
+      "description": "",
+      "usage": "omm cluster handover [OPTIONS] {mac}",
+      "arguments": [
+        {
+          "name": "mac",
+          "help": "The Mac to become head, as omm cluster status names it",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#handover"
     },
     {
       "path": [

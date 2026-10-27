@@ -347,6 +347,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "cluster handover",
     "cluster leave",
     "cluster uninstall",
     "arena",
@@ -2432,6 +2433,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 
@@ -2547,6 +2549,13 @@ def cluster_status_cmd() -> None:
                                            f" ({recommend.describe(entry['sharding'], entry['macs'])})")
                          for entry in report["kept_models"])
         console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
+    if report.get("members"):
+        console.print("Macs following this head:", markup=False)
+        for row in report["members"]:
+            backup = {"current": "documents backed up", "behind": "documents backup behind",
+                      "none": "no documents backup"}[row["backup"]]
+            console.print(f"  {row['name']}: omm {row['version'] or '?'} ({row['version_state'] or 'not checked yet'}), "
+                          f"{backup}", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
@@ -3009,6 +3018,63 @@ def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to
     console.print(f"Revoked the token for {name}.", markup=False)
 
 
+@cluster_app.command(name="handover")
+@global_flags
+def cluster_handover_cmd(
+    mac: str = typer.Argument(..., help="The Mac to become head, as omm cluster status names it"),
+) -> None:
+    """Move the cluster head to another Mac in the cluster."""
+    from datetime import datetime, timezone
+
+    from omm.cluster import commands as cluster_commands, handover, members, tokens
+
+    _cluster_call(cluster_commands.require_head_for, "handover")
+    node, problems = _cluster_call(lambda: handover.preflight(mac, now=datetime.now(timezone.utc)))
+    if problems:
+        err_console.print(f"Cannot hand over to {mac}:", markup=False)
+        for problem in problems:
+            err_console.print(f"  - {problem}", markup=False)
+        raise typer.Exit(1)
+    if not _global_opts().yes:
+        if not _stdin_is_tty():
+            err_console.print("Pass --yes to move the cluster head.", markup=False)
+            raise typer.Exit(1)
+        if not _ask_confirm(f"Move the cluster head to {mac}? Employee tokens are not moved: you will issue new "
+                            f"ones on {mac}, and every employee runs omm rag remote set again. Cluster models "
+                            "may stop answering for a minute."):
+            err_console.print("Cancelled.", markup=False)
+            raise typer.Exit(0)
+    # Before anything changes: the names are what the admin issues again on the new head.
+    names = [record.name for record in tokens.list_tokens()]
+    epoch = _cluster_call(lambda: handover.start(node, now=datetime.now(timezone.utc)))
+    try:
+        with console.status(f"Waiting for {mac} to take over...", spinner="dots"):
+            took_over = _cluster_call(lambda: handover.wait_for_new_head(
+                node, epoch, deadline=time.monotonic() + handover.WAIT_SECONDS))
+    except KeyboardInterrupt:
+        took_over = False
+    if not took_over:
+        # Called off; the target checks this just before it takes over. One that
+        # had already checked finishes within moments, so look once more.
+        members.clear_handover()
+        time.sleep(handover.SETTLE_SECONDS)
+        took_over = _cluster_call(lambda: handover.wait_for_new_head(node, epoch, deadline=time.monotonic()))
+    if not took_over:
+        err_console.print(f"{mac} did not take over within 3 minutes; this Mac is still the head. Check omm "
+                          f"cluster status, then run omm cluster handover {mac} again.", markup=False)
+        raise typer.Exit(1)
+    _cluster_call(handover.step_down, epoch)
+    address = _cluster_call(handover.lan_address, node) or f"<{mac}'s address>"
+    for line in (f"{mac} is now the cluster head. This Mac is a member.",
+                 f"Next, on {mac}:",
+                 f"  omm cluster token add <name>      for each employee: {', '.join(names) or '(none yet)'}",
+                 "  (use the same names: document ownership and shares follow the name)",
+                 "Then each employee runs:",
+                 f"  omm rag remote set https://{address}:52440",
+                 "  omm setting agent cluster          (only if they used it before)"):
+        _cluster_out(line)
+
+
 @cluster_app.command(name="leave")
 @global_flags
 def cluster_leave_cmd() -> None:
@@ -3034,6 +3100,16 @@ def _cluster_gateway_run_cmd() -> None:
     from omm.cluster import gateway
 
     raise typer.Exit(gateway.run_gateway())
+
+
+@app.command(name="_cluster-member-run", hidden=True)
+def _cluster_member_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster join` registers
+    (cluster/member_service.py); polls the head, follows its omm version,
+    keeps a backup of its documents and takes over on a handover."""
+    from omm.cluster import member_link
+
+    raise typer.Exit(member_link.run_member_link())
 
 
 @app.command(name="_auto-import-run", hidden=True)
@@ -3106,6 +3182,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
     # Cluster Macs are set up over SSH; the wizard's single-key prompt there
     # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
     "cluster",
@@ -3236,6 +3313,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_auto-import-run",
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
@@ -3243,6 +3321,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    "_cluster-member-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -3251,7 +3330,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
     {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
-     "_cluster-gateway-run"}
+     "_cluster-gateway-run", "_cluster-member-run"}
 )
 
 
@@ -4333,7 +4412,9 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _git_update_src(
+    branch: str = "main", *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
@@ -4357,7 +4438,11 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     Self-heals origin's URL to the current REPO_URL first: a clone made
     before a repo rename/transfer still has the old URL in its git config,
     and while GitHub redirects git operations for renamed/transferred repos,
-    that redirect isn't guaranteed to last forever."""
+    that redirect isn't guaranteed to last forever.
+
+    `target_commit` (a cluster member following its head, cluster/version_follow.py)
+    installs that exact commit instead of the branch tip. It must be on
+    `origin/<branch>` and passes the same signature and rollback checks."""
     remote_url = _run_git(["git", "-C", str(SRC_DIR), "remote", "get-url", "origin"], timeout=10)
     if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
         _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
@@ -4374,7 +4459,17 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
     rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", f"origin/{branch}"], timeout=10)
     if rev_parse.returncode != 0:
         return rev_parse
-    target_commit = rev_parse.stdout.strip()
+    checkout_ref = f"origin/{branch}"
+    if target_commit is None:
+        target_commit = rev_parse.stdout.strip()
+    else:
+        on_branch = _run_git(
+            ["git", "-C", str(SRC_DIR), "merge-base", "--is-ancestor", target_commit, f"origin/{branch}"],
+            timeout=10,
+        )
+        if on_branch.returncode != 0:
+            return subprocess.CompletedProcess([], 1, stdout="", stderr=f"commit {target_commit[:7]} is not on {branch}")
+        checkout_ref = target_commit
 
     ok, message = trust.verify_update(
         SRC_DIR, current_commit, target_commit, trust.current_trust_anchor(),
@@ -4384,17 +4479,19 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
     return _run_git(
-        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, f"origin/{branch}", "--force", "--quiet"]
+        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, checkout_ref, "--force", "--quiet"]
     )
 
 
-def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Serialize `_perform_update_unlocked` behind a self-update lock so two
     concurrent `omm update` (or channel switch) invocations can't race each
     other over SRC_DIR."""
     try:
         with locked(config_mod.OMM_HOME / "locks" / "self-update", timeout=0):
-            return _perform_update_unlocked(branch, same_branch=same_branch)
+            return _perform_update_unlocked(branch, same_branch=same_branch, target_commit=target_commit)
     except FileLockTimeout:
         return subprocess.CompletedProcess(
             [],
@@ -4404,7 +4501,9 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
         )
 
 
-def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+def _perform_update_unlocked(
+    branch: str, *, same_branch: bool = True, target_commit: str | None = None
+) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
@@ -4413,7 +4512,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     `same_branch` must be False for an explicit channel switch - see
     `trust.verify_update`'s docstring for why a deliberate switch may accept
     a target that is an ancestor of the installed commit, while `omm update`
-    on the currently tracked branch never should."""
+    on the currently tracked branch never should.
+
+    `target_commit` installs that exact commit (see `_git_update_src`); it
+    needs an already-migrated editable install."""
     source = package_metadata.install_source()
     if source is not package_metadata.InstallSource.GIT:
         return subprocess.CompletedProcess(
@@ -4439,6 +4541,10 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
     migrated = _src_head_commit() is not None
     editable_install = _editable_install_uses_src()
     try:
+        if not migrated and target_commit is not None:
+            return subprocess.CompletedProcess(
+                [], 1, stdout="", stderr="this omm is not the git-clone install `omm update` uses; update it by hand"
+            )
         if not migrated:
             result = _migrate_to_editable_install(branch)
             return (
@@ -4447,7 +4553,7 @@ def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subpro
                 else result
             )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
-        result = _git_update_src(branch, same_branch=same_branch)
+        result = _git_update_src(branch, same_branch=same_branch, target_commit=target_commit)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
             if legacy_distribution or not editable_install:
@@ -4766,8 +4872,31 @@ def update() -> None:
 
     after = _version_line(_installed_commit())
     console.print(f"[success]Ω Updated: {before} -> {after}[/success]")
+    _after_update_on_cluster_head()
     _refresh_data()
     _maybe_prompt_data_sharing_after_update()
+
+
+def _after_update_on_cluster_head() -> None:
+    """On a cluster head: run the gateway on the new code, and say that the members follow it."""
+    from omm.cluster import settings as cluster_settings
+
+    current = cluster_settings.load()
+    if current is None or current.role != "head":
+        return
+    from omm.cluster import launchd, service
+    from omm.cluster.errors import ClusterError
+
+    try:
+        launchd.restart_agent(service.LAUNCHD_LABEL)
+    except ClusterError as error:
+        console.print(f"[muted]Could not restart the cluster gateway ({escape(str(error))}); "
+                      "run omm cluster restart.[/muted]")
+    others = max(len(current.known_nodes) - 1, 0)
+    if others:
+        console.print(f"{others} other Mac(s) in the cluster will update to this version within a few minutes. "
+                      "Cluster models may stop answering briefly while they do; this Mac loads them again "
+                      "automatically.", markup=False)
 
 
 def _maybe_prompt_data_sharing_after_update() -> None:

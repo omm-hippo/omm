@@ -165,6 +165,13 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(service, "install", lambda **k: setattr(fakes, "service_install_calls", fakes.service_install_calls + 1))
     monkeypatch.setattr(service, "uninstall", lambda **k: setattr(fakes, "service_uninstall_calls", fakes.service_uninstall_calls + 1))
     monkeypatch.setattr(service, "is_running", lambda **k: fakes.gateway_running)
+    from omm.cluster import member_service
+
+    fakes.member_service_calls = []
+    fakes.member_link_running = True
+    monkeypatch.setattr(member_service, "install", lambda **k: fakes.member_service_calls.append("install"))
+    monkeypatch.setattr(member_service, "uninstall", lambda **k: fakes.member_service_calls.append("uninstall"))
+    monkeypatch.setattr(member_service, "is_running", lambda **k: fakes.member_link_running)
     monkeypatch.setattr(commands, "ExoClient", _FakeExoClient)
     monkeypatch.setattr(cluster_models, "ExoClient", _FakeExoClient)
     # chat.loaded_models imports it from exo_client at call time.
@@ -208,11 +215,14 @@ def test_join_rejects_bad_namespace(cluster_fakes):
     assert settings.load() is None
 
 
-def test_join_sets_member_without_gateway(cluster_fakes):
+def test_join_prepares_gateway_port_and_member_service(cluster_fakes):
     result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert result.exit_code == 0, result.output
     assert settings.load().role == "member" and settings.load().namespace == "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"
-    assert cluster_fakes.firewall_apply_calls == [None]
+    # Prepared like a head, so a handover needs no sudo; nothing listens on 52440 until then.
+    assert cluster_fakes.firewall_apply_calls == [52440]
+    assert cluster_fakes.appfw_allowed[-1] == ["exo", "Python"]
+    assert cluster_fakes.member_service_calls == ["install"]
     assert cluster_fakes.service_install_calls == 0
     assert cluster_fakes.exo_service_installs == ["omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"]
 
@@ -302,7 +312,7 @@ def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
     assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_models", "document_search",
-                         "problems", "gateway_url", "gateway_ca_sha256"}
+                         "problems", "gateway_url", "gateway_ca_sha256", "members"}
     assert data["gateway_url"] == "https://192.0.2.10:52440"
     assert data["gateway_ca_sha256"] == tls.head_fingerprint() and len(data["gateway_ca_sha256"]) == 95
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
@@ -588,10 +598,51 @@ def test_leave_on_head_removes_everything_but_tokens(cluster_fakes):
     assert "exo itself stays installed" in result.output
 
 
-def test_leave_on_member_keeps_gateway_untouched(cluster_fakes):
+def test_leave_on_member_removes_a_leftover_gateway_too(cluster_fakes):
+    # A former head's gateway may still be registered (it boots itself out when it steps down).
     runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
-    assert cluster_fakes.service_uninstall_calls == 0
+    assert cluster_fakes.service_uninstall_calls == 1
+
+
+def test_init_keeps_the_head_epoch(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    settings.save(dataclasses.replace(settings.load(), head_epoch=5))
+    assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
+    assert settings.load().head_epoch == 5
+
+
+def test_leave_removes_the_served_snapshot(cluster_fakes):
+    from omm.cluster import rag_backup
+    from omm.documents import DocumentStore
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    DocumentStore().create_collection("company")
+    snapshot = rag_backup.snapshot()[0]
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert not snapshot.exists()
+
+
+def test_leave_member_removes_link_and_backup(cluster_fakes):
+    from omm.cluster import rag_backup
+
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    rag_backup.backup_path().parent.mkdir(parents=True)
+    rag_backup.backup_path().write_bytes(b"x")
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert cluster_fakes.member_service_calls == ["install", "uninstall"]
+    assert not rag_backup.backup_path().exists()
+
+
+def test_leave_head_forgets_member_records(cluster_fakes):
+    from datetime import datetime, timezone
+    from omm.cluster import members
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    members.record("n", {"version_state": "same"}, now=datetime.now(timezone.utc))
+    members.start_handover("n", 1, {}, None, now=datetime.now(timezone.utc))
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert members.load() == {} and members.pending_handover() is None
 
 
 def test_non_macos_exits_2(monkeypatch, isolated_omm_home):
@@ -758,11 +809,12 @@ def test_status_flags_idle_sleep(cluster_fakes):
     assert "this Mac sleeps after 1 min idle; run omm cluster init again" in data["problems"]
 
 
-def test_init_lets_exo_and_gateway_through_the_macos_firewall_join_only_exo(cluster_fakes):
+def test_init_and_join_let_exo_and_gateway_through_the_macos_firewall(cluster_fakes):
     assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
     runner.invoke(cli.app, ["cluster", "leave", "--yes"])
     assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"]).exit_code == 0
-    assert cluster_fakes.appfw_allowed == [["exo", "Python"], ["exo"]]
+    # A member is ready to become head without sudo (omm cluster handover).
+    assert cluster_fakes.appfw_allowed == [["exo", "Python"], ["exo", "Python"]]
     assert cluster_fakes.appfw_removes == 1
 
 
@@ -1024,6 +1076,8 @@ def test_autoload_survives_exo_being_down(cluster_fakes, autoload_head):
 def test_gateway_service_runs_the_autoload_thread(monkeypatch, isolated_omm_home):
     from omm.cluster import autoload, gateway
 
+    settings.save(settings.ClusterSettings("head", "omm-" + "a" * 32, 52440))
+
     started = []
 
     class _Server:
@@ -1075,12 +1129,13 @@ def test_engine_security_adds_the_cluster_on_a_cluster_mac(cluster_fakes, no_eng
     assert plain.exit_code == 0 and "Gateway only" in plain.output  # the column wraps the rest
 
 
-def test_engine_security_member_has_no_gateway_port(cluster_fakes, no_engines):
+def test_engine_security_member_gateway_port_is_closed_until_head(cluster_fakes, no_engines):
     runner.invoke(cli.app, ["cluster", "join", "omm-" + "c" * 32])
     no_engines.update({52415: 1, 52416: 1, 52440: 1})
     row = json.loads(_security("cluster").output)[0]
-    assert {l["port"] for l in row["listeners"]} == {52415, 52416}
-    assert "gateway" not in row["reason"]
+    assert {l["port"] for l in row["listeners"]} == {52415, 52416, 52440}
+    assert "closed until this Mac becomes head" in row["reason"]
+    assert "employee token" not in row["reason"]
 
 
 @pytest.mark.parametrize("firewall_state, listening, expected", [
@@ -1621,3 +1676,92 @@ def test_status_on_a_member_mac_skips_document_search(cluster_fakes):
     cluster_fakes.ollama = ("not_installed", None)
     assert _status()["document_search"] is None
     assert "Document search" not in _plain_status()
+
+
+# -- member link in status (version follow, RAG backup) ---------------------
+
+HEAD_V = {"commit": "b" * 40, "branch": "main", "git": True}
+
+
+@pytest.fixture
+def head_with_members(cluster_fakes, monkeypatch):
+    from omm.cluster import commands, version_follow
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    monkeypatch.setattr(version_follow, "local_version", lambda: dict(HEAD_V))
+    nodes = list(cluster_fakes.state["nodeIdentities"])
+    monkeypatch.setattr(commands, "_own_node", lambda raw: nodes[0])
+    return nodes
+
+
+def _member(node, *, seen_ago=5, **fields):
+    from datetime import datetime, timedelta, timezone
+    from omm.cluster import members
+
+    report = {"version": dict(HEAD_V), "version_state": "same", "version_error": None, "rag_marker": None,
+              "prepared": True, "documents_ready": True, **fields}
+    members.record(node, report, now=datetime.now(timezone.utc) - timedelta(seconds=seen_ago))
+
+
+def test_status_lists_member_versions(head_with_members):
+    for node in head_with_members[1:]:
+        _member(node)
+    data = _status()
+    assert len(data["members"]) == 3
+    row = data["members"][0]
+    assert row["version"] == "b" * 7 and row["version_state"] == "same" and row["backup"] == "none"
+    assert row["prepared"] is True and row["seen_seconds_ago"] < 60
+    assert data["problems"] == []
+
+
+def test_status_flags_member_ahead(head_with_members):
+    for node in head_with_members[1:]:
+        _member(node)
+    _member(head_with_members[1], version={"commit": "c" * 40, "branch": "main", "git": True}, version_state="ahead")
+    assert any("newer than the head; run omm update on this Mac" in p for p in _status()["problems"])
+
+
+def test_status_flags_blocked_manual_and_behind(head_with_members):
+    a, b, c = head_with_members[1:]
+    _member(a, version={"commit": "a" * 40, "branch": "main", "git": True}, version_state="blocked",
+            version_error="commit bbbbbbb is not on main")
+    _member(b, version={"commit": None, "branch": "main", "git": False}, version_state="manual")
+    _member(c, version={"commit": "a" * 40, "branch": "main", "git": True}, version_state=None)
+    problems = _status()["problems"]
+    assert any("could not update: commit bbbbbbb is not on main" in p for p in problems)
+    assert any("not a git install; update omm on it by hand" in p for p in problems)
+    assert any("runs omm aaaaaaa but the head runs bbbbbbb" in p for p in problems)
+
+
+def test_status_flags_member_without_link(head_with_members):
+    _member(head_with_members[1])
+    _member(head_with_members[2], seen_ago=11 * 60)
+    problems = _status()["problems"]
+    assert sum("has not checked in; run omm cluster join" in p for p in problems) == 2
+
+
+def test_status_shows_backup_current_or_behind(head_with_members, monkeypatch):
+    from omm.cluster import rag_backup
+
+    monkeypatch.setattr(rag_backup, "store_marker", lambda path=None: "m2")
+    a, b, c = head_with_members[1:]
+    _member(a, rag_marker="m2")
+    _member(b, rag_marker="m1")
+    _member(c)
+    rows = {row["name"]: row["backup"] for row in _status()["members"]}
+    assert sorted(rows.values()) == ["behind", "current", "none"]
+
+
+def test_member_status_flags_a_stopped_member_link(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    cluster_fakes.member_link_running = False
+    problems = _status()["problems"]
+    assert any("the member link is not running" in p for p in problems)
+
+
+def test_status_plain_output_lists_member_macs(head_with_members):
+    for node in head_with_members[1:]:
+        _member(node)
+    result = runner.invoke(cli.app, ["cluster", "status"])
+    assert result.exit_code == 0, result.output
+    assert "Macs following this head:" in result.output and "omm bbbbbbb" in result.output

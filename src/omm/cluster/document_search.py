@@ -54,6 +54,11 @@ def _ollama(model: str, base_url: str) -> tuple[str, bool | None]:
     return ("stopped" if linker.is_ollama_installed() else "not_installed"), None
 
 
+def ready_for(model: str, base_url: str) -> bool:
+    """True when this Mac's Ollama runs at `base_url` and has `model`, so it can answer document questions."""
+    return _ollama(model, base_url) == ("running", True)
+
+
 def _start_command() -> str:
     """How to start Ollama so it also comes back after a reboot or logout."""
     import os
