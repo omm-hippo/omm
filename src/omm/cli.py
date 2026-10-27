@@ -11750,6 +11750,13 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
+    # exo ids are always "org/name"; a cluster model is measured over the cluster's own API.
+    if _cluster_configured():
+        on_cluster = [m for m in models if "/" in m and _cluster_lacks(m) is None]
+        if on_cluster:
+            err_console.print("\n".join(f"{m} is a cluster model; measure it with: omm cluster benchmark {m}"
+                                        for m in on_cluster), markup=False)
+            raise typer.Exit(2)
     engine = _select_benchmark_engine_for_models(models)
     if engine is not None:
         if not json_output:

@@ -1372,3 +1372,11 @@ def test_run_of_a_name_the_cluster_does_not_serve_says_both(isolated_omm_home, m
     result = runner.invoke(cli.app, ["run", "typo-model"])
     assert result.exit_code == 1
     assert "typo-model is not installed via omm" in " ".join(result.output.split())
+
+
+def test_top_level_benchmark_points_a_cluster_model_to_cluster_benchmark(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady")
+    result = runner.invoke(cli.app, ["benchmark", LIVE_MODEL])
+    assert result.exit_code == 2
+    assert f"omm cluster benchmark {LIVE_MODEL}" in " ".join(result.output.split())
