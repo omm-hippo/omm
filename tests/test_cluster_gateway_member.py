@@ -179,3 +179,19 @@ def test_tampered_report_is_refused(server):
     status, *_ = call(server, "POST", "/omm/member/poll", body=json.dumps({**REPORT, "prepared": False}).encode(),
                       signed_body=json.dumps(REPORT).encode())
     assert status == 401 and members.load() == {}
+
+
+def test_gateway_on_a_member_does_not_claim_head(server):
+    current = settings.load()
+    settings.save(settings.ClusterSettings("member", NS, current.gateway_port, head_epoch=current.head_epoch))
+    assert json.loads(poll(server)[1])["head"] is False
+
+
+def test_run_gateway_on_a_member_removes_itself(isolated_omm_home, monkeypatch):
+    from omm.cluster import service
+
+    settings.save(settings.ClusterSettings("member", NS, 52440))
+    removed = []
+    monkeypatch.setattr(service, "uninstall", lambda **k: removed.append(True))
+    monkeypatch.setattr(gateway, "GatewayServer", lambda *a, **k: pytest.fail("a member must not serve"))
+    assert gateway.run_gateway() == 0 and removed == [True]

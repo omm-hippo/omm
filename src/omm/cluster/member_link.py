@@ -24,14 +24,14 @@ import tempfile
 import time
 from typing import NamedTuple
 
-from omm.cluster import exo_client, member_auth, rag_backup, settings
+from omm.cluster import exo_client, member_auth, member_service, rag_backup, settings
 from omm.cluster.errors import ClusterError
 from omm.cluster.gateway import GATEWAY_PORT, MEMBER_POLL_ROUTE, MEMBER_SNAPSHOT_ROUTE
 
 log = logging.getLogger("omm.cluster.member")
 
 POLL_SECONDS = 60
-_EXIT_STATES = frozenset({"updated", "switched", "promoted"})
+_EXIT_STATES = frozenset({"updated", "switched", "promoted", "reloading"})
 
 
 class HeadReply(NamedTuple):
@@ -137,7 +137,8 @@ def find_head(raw_state: dict, key: bytes, own_node: str, *, report: dict) -> He
     best: dict[str, HeadReply] = {}
     for reply in replies:
         best.setdefault(reply.node_id, reply)
-    return max(best.values(), key=lambda reply: reply.epoch, default=None)
+    # Equal epochs (a re-run init, a late takeover) resolve the same way on every Mac.
+    return max(best.values(), key=lambda reply: (reply.epoch, reply.node_id), default=None)
 
 
 def fetch_snapshot(address: str, key: bytes, own_node: str) -> None:
@@ -196,6 +197,9 @@ def run_once(*, first: bool = False) -> str:
 
     handover.finish_step_down()
     if first:
+        # A new omm may run this link differently; launchd only reads the plist at bootstrap.
+        if member_service.refresh():
+            return "reloading"
         # A changed omm may run exo differently; an unchanged plist leaves exo running.
         from omm.cluster import exo_service
 

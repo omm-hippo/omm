@@ -45,6 +45,7 @@ def follow(monkeypatch):
         return follow.result
 
     monkeypatch.setattr(cli, "_perform_update", perform)
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
     follow.result = _done()
     follow.calls = calls
     return follow
@@ -131,3 +132,33 @@ def test_git_update_src_without_target_is_unchanged(monkeypatch, fake_src):
     assert fake_src == [(A, B, True)]
     assert git.calls[-1][-6:] == ["checkout", "-B", "main", "origin/main", "--force", "--quiet"]
     assert not any("merge-base" in call for call in git.calls)
+
+
+@pytest.mark.parametrize("head", [_v("-x" + "b" * 38), _v("B" * 40), _v(B, "feature/x"), _v("bbb")])
+def test_apply_refuses_a_malformed_head_version(follow, head):
+    state, error = version_follow.apply(head)
+    assert state == "blocked" and "invalid" in error and follow.calls == []
+
+
+def test_apply_reinstalls_when_dependencies_are_missing(follow, monkeypatch):
+    monkeypatch.setattr(version_follow, "local_version", lambda: _v(B))
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
+    assert version_follow.apply(_v(B)) == ("updated", None)
+    assert follow.calls == [("main", True, B)]
+
+
+def test_apply_same_with_dependencies_does_nothing(follow, monkeypatch):
+    monkeypatch.setattr(version_follow, "local_version", lambda: _v(B))
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    assert version_follow.apply(_v(B)) == ("same", None) and follow.calls == []
+
+
+def test_apply_reports_an_update_that_raises(follow, monkeypatch):
+    import typer
+
+    def boom(branch, **k):
+        raise typer.Exit(1)
+
+    monkeypatch.setattr(cli, "_perform_update", boom)
+    state, error = version_follow.apply(_v(B))
+    assert state == "blocked" and error

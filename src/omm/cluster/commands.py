@@ -99,7 +99,9 @@ def init(out: Out) -> settings.ClusterSettings:
     # The remembered Macs start over: running init again is how a Mac that
     # left for good stops being reported missing (status says so).
     # The models to serve survive a re-run, which restarts exo and so drops them.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else ())
+    # The epoch survives too: a reset one would tie with a head that took over meanwhile.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else (),
+                                     head_epoch=current.head_epoch if current else 0)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -563,11 +565,11 @@ def head_name(client: ExoClient | None = None) -> str | None:
 def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
-    steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove]
+    # Both agents on either role: a former head's gateway may still be registered.
+    steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove, service.uninstall,
+             member_service.uninstall, rag_backup.delete_backup, rag_backup.delete_snapshot]
     if current is None or current.role == "head":
-        steps += [service.uninstall, members.clear, members.clear_handover]
-    if current is None or current.role == "member":
-        steps += [member_service.uninstall, rag_backup.delete_backup]
+        steps += [members.clear, members.clear_handover]
     steps += [exo_service.uninstall, preflight.remove_runtime]
     # Every step is safe to repeat, so one failure (usually a declined sudo
     # prompt) must not leave the rest of this Mac half dismantled.

@@ -130,6 +130,7 @@ def cycle(isolated_omm_home, monkeypatch):
     seen.result = ("same", None)
     monkeypatch.setattr(member_link, "fetch_snapshot", lambda address, key, own: seen.fetched.append(address))
     monkeypatch.setattr(exo_service, "install", lambda ns, **kw: seen.exo.append((ns, kw)))
+    monkeypatch.setattr(member_service, "refresh", lambda **k: False)
     fake = types.ModuleType("omm.cluster.handover")
     fake.promote = lambda r, own: seen.promoted.append((r, own))
     fake.finish_step_down = lambda: setattr(seen, "finished", seen.finished + 1)
@@ -229,3 +230,50 @@ def test_cluster_member_run_is_internal():
     assert "_cluster-member-run" in cli._SKIP_UPDATE_CHECK_SUBCOMMANDS
     assert "_cluster-member-run" in cli._SKIP_QUEUED_UPLOAD_SUBCOMMANDS
     assert "_cluster-member-run" in cli._INTERNAL_SUBCOMMANDS
+
+
+def test_uninstall_agent_removes_the_plist_before_bootout(tmp_path, monkeypatch):
+    # A job that boots itself out is killed mid-call; its plist must already be gone.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    launchd.install_agent("com.omm.test", {"RunAtLoad": True}, run=_ok)
+    seen = []
+    launchd.uninstall_agent("com.omm.test", run=lambda argv, **k: seen.append(launchd.plist_path("com.omm.test").exists())
+                            or _ok(argv))
+    assert seen == [False]
+
+
+def test_find_head_breaks_epoch_ties_by_node_id(monkeypatch):
+    import json
+
+    raw = _state({"me": ["169.254.0.1"], "aaa": ["169.254.0.2"], "zzz": ["169.254.0.3"]})
+    monkeypatch.setattr(member_link, "request",
+                        lambda address, *a, **k: (200, json.dumps({"head": True, "epoch": 4}).encode(), {}))
+    assert member_link.find_head(raw, KEY, "me", report={}).node_id == "zzz"
+
+
+def test_member_plist_has_a_path_with_pipx(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    member_service.install(run=_ok)
+    data = plistlib.loads((tmp_path / "Library/LaunchAgents/com.omm.cluster-member.plist").read_bytes())
+    path = data["EnvironmentVariables"]["PATH"].split(":")
+    assert str(Path(sys.executable).parent) in path and str(tmp_path / ".local/bin") in path and "/usr/bin" in path
+
+
+def test_member_service_refresh_reloads_only_a_changed_plist(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    spawned = []
+    member_service.install(run=_ok)
+    assert member_service.refresh(spawn=lambda argv: spawned.append(argv)) is False and spawned == []
+    plist = tmp_path / "Library/LaunchAgents/com.omm.cluster-member.plist"
+    plist.write_bytes(plist.read_bytes().replace(b"KeepAlive", b"KeepAlivX"))
+    assert member_service.refresh(spawn=lambda argv: spawned.append(argv)) is True
+    assert b"KeepAlivX" not in plist.read_bytes()
+    assert len(spawned) == 1 and "bootstrap" in " ".join(spawned[0])
+
+
+def test_run_once_refreshes_its_own_plist_on_the_first_cycle(cycle, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(member_service, "refresh", lambda **k: refreshed.append(True) or False)
+    member_link.run_once(first=True)
+    member_link.run_once()
+    assert refreshed == [True]

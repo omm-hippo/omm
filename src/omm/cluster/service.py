@@ -56,8 +56,8 @@ def install(*, run=subprocess.run) -> None:
 
 
 def uninstall(*, run=subprocess.run) -> None:
-    launchd.uninstall_agent(LAUNCHD_LABEL, run=run)
     _wrapper_path().unlink(missing_ok=True)
+    launchd.uninstall_agent(LAUNCHD_LABEL, run=run)
 
 
 def is_installed() -> bool:

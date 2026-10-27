@@ -598,10 +598,29 @@ def test_leave_on_head_removes_everything_but_tokens(cluster_fakes):
     assert "exo itself stays installed" in result.output
 
 
-def test_leave_on_member_keeps_gateway_untouched(cluster_fakes):
+def test_leave_on_member_removes_a_leftover_gateway_too(cluster_fakes):
+    # A former head's gateway may still be registered (it boots itself out when it steps down).
     runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
-    assert cluster_fakes.service_uninstall_calls == 0
+    assert cluster_fakes.service_uninstall_calls == 1
+
+
+def test_init_keeps_the_head_epoch(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    settings.save(dataclasses.replace(settings.load(), head_epoch=5))
+    assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
+    assert settings.load().head_epoch == 5
+
+
+def test_leave_removes_the_served_snapshot(cluster_fakes):
+    from omm.cluster import rag_backup
+    from omm.documents import DocumentStore
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    DocumentStore().create_collection("company")
+    snapshot = rag_backup.snapshot()[0]
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert not snapshot.exists()
 
 
 def test_leave_member_removes_link_and_backup(cluster_fakes):
@@ -1056,6 +1075,8 @@ def test_autoload_survives_exo_being_down(cluster_fakes, autoload_head):
 
 def test_gateway_service_runs_the_autoload_thread(monkeypatch, isolated_omm_home):
     from omm.cluster import autoload, gateway
+
+    settings.save(settings.ClusterSettings("head", "omm-" + "a" * 32, 52440))
 
     started = []
 

@@ -44,8 +44,10 @@ def install_agent(label: str, job: dict, *, run=subprocess.run, sleep=time.sleep
 
 
 def uninstall_agent(label: str, *, run=subprocess.run) -> None:
-    run(["launchctl", "bootout", f"{domain()}/{label}"], capture_output=True, text=True, check=False)
+    # The plist goes first: a job that boots itself out (a head stepping down)
+    # is killed by bootout, and a plist left behind starts it again at login.
     plist_path(label).unlink(missing_ok=True)
+    run(["launchctl", "bootout", f"{domain()}/{label}"], capture_output=True, text=True, check=False)
 
 
 def agent_running(label: str, *, run=subprocess.run) -> bool:

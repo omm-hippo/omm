@@ -515,7 +515,7 @@ class _Handler(BaseHTTPRequestHandler):
         current = settings.load()
         pending = members.pending_handover()
         body = json.dumps({
-            "head": True,
+            "head": current is not None and current.role == "head",
             "epoch": current.head_epoch if current is not None else 0,
             "version": version_follow.local_version(),
             "rag_marker": rag_backup.store_marker(),
@@ -571,8 +571,13 @@ class _Handler(BaseHTTPRequestHandler):
 def run_gateway() -> int:
     import threading
 
-    from omm.cluster import autoload, handover
+    from omm.cluster import autoload, handover, service, settings
 
+    current = settings.load()
+    if current is None or current.role != "head":
+        # Left registered by a head that stepped down: never serve as a member.
+        service.uninstall()
+        return 0
     handler = attach_access_log()
     server = GatewayServer()
     # This service is the head's one always-running process, so it also puts

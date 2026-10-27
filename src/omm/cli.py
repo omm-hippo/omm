@@ -3026,7 +3026,7 @@ def cluster_handover_cmd(
     """Move the cluster head to another Mac in the cluster."""
     from datetime import datetime, timezone
 
-    from omm.cluster import commands as cluster_commands, handover, members
+    from omm.cluster import commands as cluster_commands, handover, members, tokens
 
     _cluster_call(cluster_commands.require_head_for, "handover")
     node, problems = _cluster_call(lambda: handover.preflight(mac, now=datetime.now(timezone.utc)))
@@ -3044,16 +3044,26 @@ def cluster_handover_cmd(
                             "may stop answering for a minute."):
             err_console.print("Cancelled.", markup=False)
             raise typer.Exit(0)
+    # Before anything changes: the names are what the admin issues again on the new head.
+    names = [record.name for record in tokens.list_tokens()]
     epoch = _cluster_call(lambda: handover.start(node, now=datetime.now(timezone.utc)))
-    with console.status(f"Waiting for {mac} to take over...", spinner="dots"):
-        took_over = _cluster_call(lambda: handover.wait_for_new_head(
-            node, epoch, deadline=time.monotonic() + handover.WAIT_SECONDS))
+    try:
+        with console.status(f"Waiting for {mac} to take over...", spinner="dots"):
+            took_over = _cluster_call(lambda: handover.wait_for_new_head(
+                node, epoch, deadline=time.monotonic() + handover.WAIT_SECONDS))
+    except KeyboardInterrupt:
+        took_over = False
     if not took_over:
+        # Called off; the target checks this just before it takes over. One that
+        # had already checked finishes within moments, so look once more.
         members.clear_handover()
+        time.sleep(handover.SETTLE_SECONDS)
+        took_over = _cluster_call(lambda: handover.wait_for_new_head(node, epoch, deadline=time.monotonic()))
+    if not took_over:
         err_console.print(f"{mac} did not take over within 3 minutes; this Mac is still the head. Check omm "
                           f"cluster status, then run omm cluster handover {mac} again.", markup=False)
         raise typer.Exit(1)
-    names = _cluster_call(handover.step_down, epoch)
+    _cluster_call(handover.step_down, epoch)
     address = _cluster_call(handover.lan_address, node) or f"<{mac}'s address>"
     for line in (f"{mac} is now the cluster head. This Mac is a member.",
                  f"Next, on {mac}:",

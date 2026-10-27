@@ -152,6 +152,7 @@ def _reply(rag_marker=None, epoch=3):
 
 def test_promote_adopts_backup_and_becomes_head(head, monkeypatch, tmp_path):
     _as_target(monkeypatch)
+    _confirming(monkeypatch, {"to": "t", "epoch": 3})
     fetched = []
 
     def fetch(address, key, own):
@@ -171,6 +172,7 @@ def test_promote_adopts_backup_and_becomes_head(head, monkeypatch, tmp_path):
 
 def test_promote_refuses_stale_snapshot(head, monkeypatch):
     _as_target(monkeypatch)
+    _confirming(monkeypatch, {"to": "t", "epoch": 3})
 
     def fetch(address, key, own):
         rag_backup._write_meta("m0", "0" * 64)
@@ -184,6 +186,7 @@ def test_promote_refuses_stale_snapshot(head, monkeypatch):
 
 def test_promote_without_documents(head, monkeypatch):
     _as_target(monkeypatch)
+    _confirming(monkeypatch, {"to": "t", "epoch": 3})
     handover.promote(_reply(None), "t")
     assert settings.load().role == "head" and not rag_backup.live_path().exists()
 
@@ -196,8 +199,8 @@ def test_stale_head_steps_down_for_higher_epoch(head, monkeypatch):
     assert head.log == ["member install", "gateway uninstall"]
 
 
-@pytest.mark.parametrize("epoch", [1, 2])
-def test_stale_head_ignores_equal_or_lower_epoch(head, monkeypatch, epoch):
+@pytest.mark.parametrize("epoch", [0, 1])
+def test_stale_head_ignores_a_lower_epoch(head, monkeypatch, epoch):
     monkeypatch.setattr(member_link, "find_head",
                         lambda raw, key, own, *, report: member_link.HeadReply("t", "x:1", epoch, {}))
     assert handover.check_for_newer_head() is False
@@ -235,6 +238,7 @@ def test_cli_handover_prints_preflight_problems(command):
 
 def test_handover_times_out_and_stays_head(command, monkeypatch):
     monkeypatch.setattr(handover, "wait_for_new_head", lambda node, epoch, *, deadline, sleep=None: False)
+    monkeypatch.setattr(handover, "SETTLE_SECONDS", 0)
     result = runner.invoke(cli.app, ["cluster", "handover", "node1", "--yes"])
     assert result.exit_code == 1
     assert "node1 did not take over within 3 minutes; this Mac is still the head" in result.output
@@ -256,3 +260,85 @@ def test_handover_rerun_after_expiry(command, monkeypatch):
 def test_cli_handover_help_lists_yes():
     result = runner.invoke(cli.app, ["cluster", "handover", "--help"])
     assert result.exit_code == 0 and "--yes" in result.output
+
+
+# -- review fixes --------------------------------------------------------------
+
+def test_stale_head_breaks_an_epoch_tie_by_node_id(head, monkeypatch):
+    # Own node is "me"; "t" sorts after it, so "t" wins an equal epoch.
+    monkeypatch.setattr(member_link, "find_head",
+                        lambda raw, key, own, *, report: member_link.HeadReply("t", "x:1", 2, {}))
+    assert handover.check_for_newer_head() is True and settings.load().role == "member"
+
+
+def test_stale_head_keeps_an_epoch_tie_it_wins(head, monkeypatch):
+    monkeypatch.setattr(member_link, "find_head",
+                        lambda raw, key, own, *, report: member_link.HeadReply("a", "x:1", 2, {}))
+    assert handover.check_for_newer_head() is False and settings.load().role == "head"
+
+
+def test_finish_step_down_removes_the_served_snapshot(head):
+    DocumentStore().create_collection("company")
+    rag_backup.snapshot()
+    handover.step_down(3)
+    handover.finish_step_down()
+    assert not (rag_backup.backup_path().parent.parent / "rag-snapshot").exists()
+
+
+def _confirming(monkeypatch, handover_body):
+    import hashlib
+
+    def fake(address, method, path, key, own, *, body=None, timeout=5):
+        return 200, json.dumps({"head": True, "epoch": 2, "handover": handover_body}).encode(), {}
+
+    monkeypatch.setattr(member_link, "request", fake)
+
+
+def test_promote_stops_when_the_handover_was_called_off(head, monkeypatch):
+    _as_target(monkeypatch)
+    _confirming(monkeypatch, None)
+    with pytest.raises(ClusterError, match="called off"):
+        handover.promote(_reply(None), "t")
+    assert settings.load().role == "member" and head.log == []
+
+
+def test_promote_rolls_back_when_the_gateway_does_not_start(head, monkeypatch, tmp_path):
+    _as_target(monkeypatch)
+    _confirming(monkeypatch, {"to": "t", "epoch": 3})
+    DocumentStore().create_collection("mine")
+    own = rag_backup.live_path().read_bytes()
+
+    def fetch(address, key, own_node):
+        rag_backup._write_meta("m1", "0" * 64)
+        rag_backup.backup_path().write_bytes(b"company")
+
+    monkeypatch.setattr(member_link, "fetch_snapshot", fetch)
+
+    def broken(**k):
+        raise ClusterError("launchctl could not start com.omm.cluster-gateway")
+
+    monkeypatch.setattr(service, "install", broken)
+    with pytest.raises(ClusterError, match="could not start"):
+        handover.promote(_reply("m1"), "t")
+    assert settings.load().role == "member"
+    assert rag_backup.live_path().read_bytes() == own
+    assert rag_backup.backup_path().read_bytes() == b"company" and rag_backup.backup_marker() == "m1"
+    assert "member uninstall" not in head.log
+
+
+def test_handover_timeout_hands_over_when_the_target_took_over_late(command, monkeypatch):
+    probes = iter([False, True])
+    monkeypatch.setattr(handover, "wait_for_new_head", lambda node, epoch, *, deadline, sleep=None: next(probes))
+    monkeypatch.setattr(handover, "SETTLE_SECONDS", 0)
+    result = runner.invoke(cli.app, ["cluster", "handover", "node1", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "node1 is now the cluster head" in result.output and settings.load().role == "member"
+
+
+def test_handover_lists_token_names_taken_before_it_started(command, monkeypatch):
+    tokens.add_token("kim")
+    monkeypatch.setattr(handover, "wait_for_new_head", lambda node, epoch, *, deadline, sleep=None: True)
+    monkeypatch.setattr(handover, "step_down", lambda epoch: [])
+    result = runner.invoke(cli.app, ["cluster", "handover", "node1", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "for each employee: kim" in result.output

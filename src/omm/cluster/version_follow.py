@@ -8,8 +8,13 @@ moves backward: when it is ahead, the fix is `omm update` on the head.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Callable
+
+# What a head may send. The commit reaches git's argv, so nothing else gets through.
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_BRANCHES = ("main", "beta")
 
 
 def local_version() -> dict:
@@ -45,14 +50,24 @@ def apply(head: dict) -> tuple[str, str | None]:
     """Follow the head; returns (state, error) with state same|updated|switched|ahead|manual|blocked."""
     from omm import cli, config
 
+    if head.get("git") and head.get("commit") is not None and not (
+            isinstance(head["commit"], str) and _COMMIT_RE.fullmatch(head["commit"]) and head.get("branch") in _BRANCHES):
+        return "blocked", "the head sent an invalid version"
     action = decide(local_version(), head, is_ancestor=_is_ancestor)
+    if action == "same" and not cli._deps_satisfied():
+        # An earlier follow checked out the code but could not install its new
+        # dependencies; this omm would fail to start next time.
+        action = "update"
     if action in ("same", "ahead", "manual"):
         return action, None
     branch, commit = head["branch"], head["commit"]
-    if action == "switch":
-        result: subprocess.CompletedProcess = cli._perform_update(branch, same_branch=False, target_commit=commit)
-    else:
-        result = cli._perform_update(branch, target_commit=commit)
+    try:
+        if action == "switch":
+            result: subprocess.CompletedProcess = cli._perform_update(branch, same_branch=False, target_commit=commit)
+        else:
+            result = cli._perform_update(branch, target_commit=commit)
+    except (Exception, SystemExit) as error:
+        return "blocked", f"omm update failed: {error!r}"
     if result.returncode != 0:
         lines = (result.stderr or "").strip().splitlines()
         return "blocked", lines[0] if lines else "omm update failed"

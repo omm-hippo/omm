@@ -28,6 +28,8 @@ from omm.cluster.errors import ClusterError
 log = logging.getLogger("omm.cluster.handover")
 
 WAIT_SECONDS = 180
+# After calling a handover off: time for a target that already confirmed it to finish.
+SETTLE_SECONDS = 10
 STALE_CHECK_SECONDS = 300
 # A ready target polled within this long; it polls every member_link.POLL_SECONDS.
 FRESH_SECONDS = 120
@@ -146,11 +148,14 @@ def finish_step_down() -> None:
     if not marker.exists():
         return
     rag_backup.demote_live_to_backup()
+    rag_backup.delete_snapshot()
     marker.unlink(missing_ok=True)
 
 
 def promote(reply: member_link.HeadReply, own_node: str) -> None:
     """On the target: take the head's settings and documents and start the gateway."""
+    from omm.cluster.gateway import MEMBER_POLL_ROUTE
+
     instruction = reply.body["handover"]
     current = settings.load()
     key = member_auth.member_key(current.namespace)
@@ -159,16 +164,35 @@ def promote(reply: member_link.HeadReply, own_node: str) -> None:
         member_link.fetch_snapshot(reply.address, key, own_node)
         if rag_backup.backup_marker() != expected:
             raise ClusterError("the head's documents changed during the handover; run omm cluster handover again")
-        aside = rag_backup.adopt_backup_as_live(datetime.now())
-        if aside is not None:
-            log.warning("kept this Mac's own documents at %s", aside, extra={"event": "cluster_handover_aside"})
+    # The fetch can take minutes; the old head may have given up meanwhile and taken writes again.
+    _, data, _ = member_link.request(reply.address, *MEMBER_POLL_ROUTE, key, own_node, body=b"{}")
+    still = json.loads(data).get("handover")
+    if not (isinstance(still, dict) and still.get("to") == own_node and still.get("epoch") == instruction["epoch"]):
+        raise ClusterError("the head called off the handover")
+    meta, aside, adopted = rag_backup.backup_meta(), None, False
     carried = instruction.get("settings") or {}
     kept = tuple(settings.KeptModel(row["model"], row.get("sharding"), row.get("macs"))
                  for row in carried.get("models") or [] if isinstance(row, dict) and row.get("model"))
-    settings.save(settings.ClusterSettings(
-        "head", current.namespace, carried.get("gateway_port") or current.gateway_port,
-        tuple(carried.get("known_nodes") or ()), kept, head_epoch=instruction["epoch"]))
-    service.install()
+    try:
+        if expected:
+            aside = rag_backup.adopt_backup_as_live(datetime.now())
+            adopted = True
+            if aside is not None:
+                log.warning("kept this Mac's own documents at %s", aside, extra={"event": "cluster_handover_aside"})
+        settings.save(settings.ClusterSettings(
+            "head", current.namespace, carried.get("gateway_port") or current.gateway_port,
+            tuple(carried.get("known_nodes") or ()), kept, head_epoch=instruction["epoch"]))
+        service.install()
+    except Exception:
+        # Back to a working member: a head with no gateway would stop polling and never recover.
+        settings.save(current)
+        if adopted:
+            rag_backup.restore_after_failed_adopt(aside, meta)
+        try:
+            service.uninstall()
+        except ClusterError:
+            pass
+        raise
     # Last: this runs inside the member link, and ends it.
     member_service.uninstall()
 
@@ -183,7 +207,8 @@ def check_for_newer_head() -> bool:
     if own is None:
         return False
     found = member_link.find_head(raw, member_auth.member_key(current.namespace), own, report={})
-    if found is None or found.epoch <= current.head_epoch:
+    # The same order every member uses to pick a head (member_link.find_head).
+    if found is None or (found.epoch, found.node_id) <= (current.head_epoch, own):
         return False
     log.warning("another Mac is the head (epoch %s > %s); stepping down", found.epoch, current.head_epoch,
                 extra={"event": "cluster_stale_head"})

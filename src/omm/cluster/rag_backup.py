@@ -232,6 +232,34 @@ def demote_live_to_backup() -> None:
     _write_meta(store_marker(backup) or "", _sha256(backup))
 
 
+def delete_snapshot() -> None:
+    """The copy the head serves to members; a Mac that is no longer head keeps none."""
+    for path in (_snapshot_dir() / "library.sqlite3", _snapshot_dir() / "snapshot.json"):
+        path.unlink(missing_ok=True)
+    try:
+        _snapshot_dir().rmdir()
+    except OSError:
+        pass
+
+
+def restore_after_failed_adopt(aside: Path | None, meta: dict) -> None:
+    """Undo `adopt_backup_as_live`: the backup (with its record) back, and this Mac's own store back."""
+    live, backup = live_path(), backup_path()
+    if live.exists():
+        backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _move_with_sidecars(live, backup)
+        if meta:
+            from omm.atomic import atomic_write_text
+
+            atomic_write_text(_meta_path(), json.dumps(meta))
+    if aside is not None and aside.exists():
+        _move_with_sidecars(aside, live)
+
+
+def backup_meta() -> dict:
+    return _meta()
+
+
 def delete_backup() -> None:
     backup = backup_path()
     for path in (backup, *(backup.with_name(backup.name + s) for s in _SIDECARS), _meta_path()):
