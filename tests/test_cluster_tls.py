@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import ssl
 import threading
@@ -40,6 +41,16 @@ def test_ca_and_server_keys_are_owner_only(tmp_path):
         assert (tmp_path / "ca.key").stat().st_mode & 0o777 == 0o600
         assert (tmp_path / "server.key").stat().st_mode & 0o777 == 0o600
     assert tls.ensure(tmp_path, ["127.0.0.1", "192.0.2.10", "node4.local"]) is False
+
+
+def test_a_long_bonjour_name_still_gets_certificates(tmp_path, monkeypatch):
+    # X.509 caps a common name at 64 characters; a 63-character LocalHostName plus ".local" is 69.
+    from cryptography import x509
+
+    host = "m" * 63 + ".local"
+    monkeypatch.setattr(tls, "_local_hostname", lambda run=None: host)
+    assert tls.ensure(tmp_path, ["127.0.0.1", host]) is True
+    assert host in tls._names_of(x509.load_pem_x509_certificate((tmp_path / "server.pem").read_bytes()))
 
 
 def test_server_certificate_is_reissued_from_the_same_ca_when_addresses_change(tmp_path):
@@ -222,7 +233,7 @@ def test_rag_connect_remote_says_how_the_harness_trusts_the_head(isolated_omm_ho
     rag_remote.save(rag_remote.Remote("https://10.0.0.5:52440", "omm_x"))
     result = runner.invoke(cli.app, ["rag", "connect", "codex", "--remote"])
     assert result.exit_code == 0, result.output
-    assert f"CODEX_CA_CERTIFICATE={rag_remote.ca_path()} codex" in result.output
+    assert f"CODEX_CA_CERTIFICATE={shlex.quote(str(rag_remote.ca_path()))} codex" in result.output
 
 
 def test_fingerprint_is_printed_verbatim_not_as_emoji(head, monkeypatch):

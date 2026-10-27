@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -195,7 +196,7 @@ def test_claude_keeps_a_ca_file_the_user_already_set(home, remote):
 @pytest.mark.parametrize("harness, variable", [("codex", "CODEX_CA_CERTIFICATE"), ("pi", "NODE_EXTRA_CA_CERTS")])
 def test_codex_and_pi_get_the_line_that_starts_them_trusting_the_ca(home, remote, harness, variable):
     metadata = agent_cluster.connect(harness, "mlx-community/Qwen3.5-9B-4bit")
-    assert metadata["launch"] == f"{variable}={rag_remote.ca_path()} {harness}"
+    assert metadata["launch"] == f"{variable}={shlex.quote(str(rag_remote.ca_path()))} {harness}"
     result = CliRunner().invoke(cli.app, ["setting", "agent", "cloud", harness])
     assert result.exit_code == 0
 
@@ -203,7 +204,7 @@ def test_codex_and_pi_get_the_line_that_starts_them_trusting_the_ca(home, remote
 def test_cli_prints_how_to_start_pi(home, remote):
     result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
     assert result.exit_code == 0, result.output
-    assert f"NODE_EXTRA_CA_CERTS={rag_remote.ca_path()} pi" in " ".join(result.output.split())
+    assert f"NODE_EXTRA_CA_CERTS={shlex.quote(str(rag_remote.ca_path()))} pi" in " ".join(result.output.split())
 
 
 def test_a_head_saved_over_plain_http_must_be_set_again(home, isolated_omm_home):

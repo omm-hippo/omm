@@ -9,6 +9,7 @@ import json
 import ssl
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -44,7 +45,8 @@ def _blind():
 def call(srv, method, path, *, node="12D3member", key=KEY, nonce=None, body=None, headers=None, leaf=None,
          signed_body=None):
     """A member's request; returns (status, body, headers, leaf sha256, nonce)."""
-    nonce = nonce or f"n{time.monotonic_ns()}"
+    # Windows' monotonic clock ticks every ~15 ms, so back-to-back calls would repeat a clock-based nonce.
+    nonce = nonce or f"n{uuid.uuid4().hex}"
     conn = http.client.HTTPSConnection("127.0.0.1", srv.server_address[1], timeout=10, context=_blind())
     conn.connect()
     seen = member_auth.leaf_sha256(conn.sock.getpeercert(binary_form=True))

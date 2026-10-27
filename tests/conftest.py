@@ -173,7 +173,10 @@ def _block_unmocked_external_network(monkeypatch):
         # A test that starts a local server on a port refused moments ago
         # must not inherit the cached refusal.
         _REFUSED_LOOPBACK_PORTS.pop(_loopback_port_key(address), None)
-        return original_bind(sock, address)
+        result = original_bind(sock, address)
+        # bind(("127.0.0.1", 0)) asks the OS for a free port, which can be one refused earlier.
+        _REFUSED_LOOPBACK_PORTS.pop(_loopback_port_key(sock.getsockname()), None)
+        return result
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
