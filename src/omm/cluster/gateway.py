@@ -22,8 +22,11 @@ import ssl
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+from datetime import datetime, timezone
+import hashlib
+
 from omm import config
-from omm.cluster import exo_client, tls
+from omm.cluster import exo_client, member_auth, members, tls
 from omm.cluster.tokens import TokenStore
 
 GATEWAY_PORT = 52440
@@ -54,6 +57,12 @@ LOADED_MODELS_ROUTE = ("GET", "/omm/loaded-models")
 # search/info`). None of them downloads, loads or unloads anything, and none
 # names a Mac: status and info give counts only.
 VIEW_ROUTES = frozenset({"/omm/status", "/omm/recommend", "/omm/search", "/omm/info"})
+# Other cluster Macs, never employees (member_auth.py, member_link.py).
+MEMBER_PREFIX = "/omm/member/"
+MEMBER_POLL_ROUTE = ("POST", "/omm/member/poll")
+MEMBER_SNAPSHOT_ROUTE = ("GET", "/omm/member/rag/snapshot")
+MAX_REPORT_BYTES = 64 * 1024
+HANDOVER_MESSAGE = "omm cluster: the head is moving to another Mac; try again in a few minutes"
 _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade", "host", "authorization", "x-api-key", "content-length",
@@ -183,12 +192,20 @@ class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, host: str = "0.0.0.0", port: int = GATEWAY_PORT, *, upstream: str = UPSTREAM,
-                 store: TokenStore | None = None, certificates: tls.HeadCertificates | None = None) -> None:
+                 store: TokenStore | None = None, certificates: tls.HeadCertificates | None = None,
+                 member_key: bytes | None = None) -> None:
         parsed = urlsplit(upstream)
         self.upstream_host = parsed.hostname or "127.0.0.1"
         self.upstream_port = parsed.port or 80
         self.store = store or TokenStore()
         self.certificates = certificates or tls.HeadCertificates()
+        if member_key is None:
+            from omm.cluster import settings
+
+            current = settings.load()
+            member_key = member_auth.member_key(current.namespace) if current is not None else None
+        self.member_key = member_key
+        self.nonces = member_auth.NonceCache()
         super().__init__((host, port), _Handler)
 
     def finish_request(self, request, client_address) -> None:
@@ -288,6 +305,8 @@ class _Handler(BaseHTTPRequestHandler):
             # Public by design: an employee PC fetches it before it has trusted
             # anything, and shows its fingerprint to compare with the head's.
             return self._reply_ca(), None
+        if path.startswith(MEMBER_PREFIX):
+            return self._member(path)
         name = self.server.store.verify(self._presented_token())
         if name is None:
             self._reply_error(401, "authentication_error", "omm cluster: missing or invalid token")
@@ -313,6 +332,10 @@ class _Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_BODY_BYTES:
             self._reply_error(413, "invalid_request_error", "omm cluster: request body is larger than 16 MiB")
             return 413, name
+        if documents and members.pending_handover() is not None:
+            # The store moves to the new head; a write accepted now would be lost.
+            self._reply_error(503, "overloaded_error", HANDOVER_MESSAGE)
+            return 503, name
         body = self.rfile.read(length) if length else None
         if documents:
             from omm import rag_http
@@ -434,6 +457,85 @@ class _Handler(BaseHTTPRequestHandler):
         # "models" stays bare ids for employees on an older omm; "rows" carry the
         # size and Mac count `omm cluster list` shows.
         return self._reply_json({"models": [row["model"] for row in rows], "rows": rows})
+
+    def _member(self, path: str) -> tuple[int, str | None]:
+        key = self.server.member_key
+        node = None if key is None else member_auth.verify_request(
+            key, self.command, path, self.headers, now=time.time(), nonces=self.server.nonces)
+        if node is None:
+            self._reply_error(401, "authentication_error", "omm cluster: this is not a Mac of this cluster")
+            return 401, None
+        caller = f"member:{node}"
+        nonce = self.headers[member_auth.HEADER_NONCE]
+        if (self.command, path) == MEMBER_SNAPSHOT_ROUTE:
+            from omm.cluster import rag_backup
+
+            found = rag_backup.snapshot()
+            if found is None:
+                self._reply_error(404, "not_found_error", "omm cluster: the head has no documents")
+                return 404, caller
+            file, sha, marker = found
+            proof = self._head_proof(nonce, sha)
+            self._replied = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.sqlite3")
+            self.send_header("Content-Length", str(file.stat().st_size))
+            self.send_header("X-Omm-Rag-Sha256", sha)
+            self.send_header("X-Omm-Rag-Marker", marker)
+            self.send_header(member_auth.HEADER_HEAD_PROOF, proof)
+            self.end_headers()
+            with file.open("rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    self.wfile.write(block)
+            self.close_connection = True
+            return 200, caller
+        if (self.command, path) != MEMBER_POLL_ROUTE:
+            self._reply_error(404, "not_found_error", "omm cluster: this path is not served by the gateway")
+            return 404, caller
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_REPORT_BYTES or self.headers.get("Transfer-Encoding"):
+            self._reply_error(413, "invalid_request_error", "omm cluster: member report is too large")
+            return 413, caller
+        try:
+            report = json.loads(self.rfile.read(length) or b"null")
+        except ValueError:
+            report = None
+        if not isinstance(report, dict):
+            self._reply_error(400, "invalid_request_error", "omm cluster: member report must be a JSON object")
+            return 400, caller
+        from omm.cluster import rag_backup, settings, version_follow
+
+        members.record(node, report, now=datetime.now(timezone.utc))
+        current = settings.load()
+        pending = members.pending_handover()
+        body = json.dumps({
+            "head": True,
+            "epoch": current.head_epoch if current is not None else 0,
+            "version": version_follow.local_version(),
+            "rag_marker": rag_backup.store_marker(),
+            "handover": pending if pending is not None and pending.get("to") == node else None,
+        }).encode()
+        # Before the reply starts, so a failure here still reaches the member as a 500.
+        proof = self._head_proof(nonce, hashlib.sha256(body).hexdigest())
+        self._replied = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(member_auth.HEADER_HEAD_PROOF, proof)
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+        return 200, caller
+
+    def _head_proof(self, nonce: str, body_sha256: str) -> str:
+        # server.pem holds the chain; the leaf comes first and is what the member sees.
+        chain = (self.server.certificates.directory / tls.SERVER_FILE).read_text(encoding="ascii")
+        end = "-----END CERTIFICATE-----"
+        leaf = member_auth.leaf_sha256(ssl.PEM_cert_to_DER_cert(chain[:chain.index(end) + len(end)]))
+        return member_auth.head_proof(self.server.member_key, nonce, leaf, body_sha256)
 
     def _reply_ca(self) -> int:
         body = self.server.certificates.ca_pem()
