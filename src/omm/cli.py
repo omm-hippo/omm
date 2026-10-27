@@ -767,13 +767,14 @@ agent_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(agent_app)
+_AGENT_LOCAL_BASE_URL = "http://127.0.0.1:11434"
 
 
 @agent_app.command(name="local")
 def agent_local(
     harness: str = typer.Argument(..., help="claude, codex or pi."),
     model: str = typer.Option(..., "--model", help="Installed tool-capable Ollama model tag (32K+ context)."),
-    base_url: str = typer.Option("http://127.0.0.1:11434", "--base-url", help="Local Ollama HTTP(S) loopback origin."),
+    base_url: str = typer.Option(_AGENT_LOCAL_BASE_URL, "--base-url", help="Local Ollama HTTP(S) loopback origin."),
 ) -> None:
     """Back up settings and connect a harness to a downloaded local Ollama model."""
     from omm import agent_connection
@@ -11059,6 +11060,72 @@ def _upload_channel_menu() -> None:
             pass
 
 
+def _agent_menu() -> None:
+    """Interactive front for `omm setting agent {local,cluster,cloud,status}`,
+    reached from the `omm setting` menu. The agent_* commands are called as
+    plain functions with every argument spelled out (their typer defaults are
+    OptionInfo objects outside a CLI parse). Each is guarded like
+    `_upload_channel_menu`: one that prints its reason and exits 1 returns to
+    this picker instead of ending the `omm setting` session."""
+    import questionary
+    from omm import agent_connection
+
+    harness_labels = {"claude": "Claude Code", "codex": "Codex", "pi": "pi"}
+    while True:
+        action = _ask_select(
+            questionary.select(
+                "Agent connection:",
+                choices=[
+                    questionary.Choice("Connect a harness to local Ollama", value="local"),
+                    questionary.Choice("Connect a harness to the company cluster", value="cluster"),
+                    questionary.Choice("Restore a harness's original settings", value="cloud"),
+                    questionary.Choice("Show connection status", value="status"),
+                    questionary.Choice("← Back", value="back"),
+                ],
+            )
+        )
+        if action is None or action == "back":
+            return
+
+        try:
+            if action == "status":
+                for name in agent_connection.HARNESSES:
+                    agent_status(name)
+                continue
+
+            harness = _ask_select(
+                questionary.select(
+                    "Which harness?",
+                    choices=[
+                        *(questionary.Choice(harness_labels[name], value=name)
+                          for name in agent_connection.HARNESSES),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if harness is None or harness == "back":
+                continue
+
+            if action == "cloud":
+                if _ask_confirm(f"Restore {harness_labels[harness]}'s original settings?"):
+                    agent_cloud(harness)
+                continue
+
+            if action == "local":
+                prompt = "Ollama model tag (tool-capable, 32K+ context; blank to go back):"
+            else:
+                prompt = "Cluster model id (see `omm cluster status` on the head; blank to go back):"
+            model = _ask_text(prompt)
+            if not model or not model.strip():
+                continue
+            if action == "local":
+                agent_local(harness, model.strip(), _AGENT_LOCAL_BASE_URL)
+            else:
+                agent_cluster_cmd(harness, model.strip())
+        except typer.Exit:
+            pass
+
+
 @setting_app.callback(invoke_without_command=True)
 def setting_menu(ctx: typer.Context) -> None:
     """Bare `omm setting` opens an interactive menu; a subcommand skips it."""
@@ -11100,6 +11167,7 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
                         value="auto-import",
                     ),
+                    questionary.Choice("Agent (Claude Code / Codex / pi routing)", value="agent"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -11133,6 +11201,8 @@ def setting_menu(ctx: typer.Context) -> None:
                     auto_import_status()
             elif choice == "upload":
                 _upload_channel_menu()
+            elif choice == "agent":
+                _agent_menu()
             elif choice == "version":
                 action = _ask_select(
                     questionary.select(

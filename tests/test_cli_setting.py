@@ -654,3 +654,110 @@ def test_ask_text_binds_escape_to_cancel(monkeypatch):
 
     assert cli._ask_text("Some message:") == "answer"
     assert calls == ["raw-question"]
+
+
+def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, local=None):
+    """Run bare `omm setting` with scripted menu answers and record agent_* calls."""
+    calls: list = []
+    queue = iter(answers)
+    # `omm setting` itself asks "Change another setting?" after each action, so
+    # a script that needs one specific y/n passes a list: [restore?, another?].
+    confirms = iter(confirm) if isinstance(confirm, list) else iter(lambda: confirm, object())
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(queue))
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: text)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: next(confirms))
+    monkeypatch.setattr(cli, "agent_local", local or (lambda *a: calls.append(("local", *a))))
+    monkeypatch.setattr(cli, "agent_cluster_cmd", lambda *a: calls.append(("cluster", *a)))
+    monkeypatch.setattr(cli, "agent_cloud", lambda *a: calls.append(("cloud", *a)))
+    monkeypatch.setattr(cli, "agent_status", lambda *a: calls.append(("status", *a)))
+    result = runner.invoke(cli.app, ["setting"])
+    assert result.exit_code == 0, result.stdout
+    # Every scripted answer must have been asked for, in order; otherwise the
+    # menu took a different path than the one under test.
+    assert list(queue) == []
+    return calls
+
+
+def test_setting_bare_menu_offers_agent_entry(isolated_omm_home, monkeypatch):
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    choices = captured_choices[0]
+    assert any(choice.value == "agent" for choice in choices)
+    assert choices[-1].title == "← Back"
+
+
+def test_setting_agent_menu_connects_harness_to_local_ollama(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(
+        monkeypatch, ["agent", "local", "codex", "back", None], text="qwen3:8b"
+    )
+
+    assert calls == [("local", "codex", "qwen3:8b", "http://127.0.0.1:11434")]
+
+
+def test_setting_agent_menu_connects_harness_to_cluster(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(
+        monkeypatch, ["agent", "cluster", "claude", "back", None], text="mlx-community/Qwen3"
+    )
+
+    assert calls == [("cluster", "claude", "mlx-community/Qwen3")]
+
+
+@pytest.mark.parametrize("text", [None, ""])
+def test_setting_agent_menu_blank_or_cancelled_model_connects_nothing(
+    isolated_omm_home, monkeypatch, text
+):
+    calls = _drive_agent_menu(
+        monkeypatch,
+        ["agent", "local", "pi", "cluster", "pi", "back", None],
+        text=text,
+    )
+
+    assert calls == []
+
+
+def test_setting_agent_menu_restore_asks_before_restoring(isolated_omm_home, monkeypatch):
+    declined = _drive_agent_menu(
+        monkeypatch, ["agent", "cloud", "pi", "back", None], confirm=[False, True]
+    )
+    assert declined == []
+
+    accepted = _drive_agent_menu(
+        monkeypatch, ["agent", "cloud", "pi", "back", None], confirm=[True, True]
+    )
+    assert accepted == [("cloud", "pi")]
+
+
+def test_setting_agent_menu_status_shows_every_harness(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(monkeypatch, ["agent", "status", "back", None])
+
+    assert calls == [("status", "claude"), ("status", "codex"), ("status", "pi")]
+
+
+def test_setting_agent_menu_harness_back_connects_nothing(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(monkeypatch, ["agent", "local", "back", "back", None])
+
+    assert calls == []
+
+
+def test_setting_agent_menu_survives_a_failed_connect(isolated_omm_home, monkeypatch):
+    import typer
+
+    def failing(*args):
+        raise typer.Exit(1)
+
+    calls = _drive_agent_menu(
+        monkeypatch, ["agent", "local", "claude", "status", "back", None], local=failing
+    )
+
+    assert calls == [("status", "claude"), ("status", "codex"), ("status", "pi")]
