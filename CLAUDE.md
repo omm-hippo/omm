@@ -340,9 +340,10 @@ and `2026-10-22-exo-cluster-spike-findings.md`.
 Member link (`member_link.py`, LaunchAgent `com.omm.cluster-member`, hidden `_cluster-member-run`,
 installed by `join`): every 60 s a member polls the head's `POST /omm/member/poll` (and
 `GET /omm/member/rag/snapshot`) on the gateway port, Thunderbolt addresses first. These routes take no
-employee token: `member_auth.py` signs each request with a key derived from the namespace (never the
-namespace itself) and the head proves each reply over the nonce, the TLS leaf it presented (the first
-block of `tls/server.pem`) and the body, because members do not pin the head's CA. Every Mac with the
+employee token: with a key derived from the namespace (never the namespace itself), `member_auth.py`
+signs each request and each reply over the nonce, the TLS leaf the member saw (the first block of
+`tls/server.pem`) and the body, because members do not pin the head's CA and a relay must not replay a
+request to the head. Every Mac with the
 namespace is trusted equally (spec decision). The member follows the head's exact commit through
 `cli._perform_update(..., target_commit=)` (signed, on the channel branch, never backward: a member ahead
 waits for `omm update` on the head; it switches to the head's channel), then exits for launchd to restart
@@ -355,7 +356,9 @@ the head) needs no sudo: it freezes `/rag/*` and `/mcp` (503), writes `cluster/h
 store (its own store moved aside to `library.sqlite3.before-handover-<ts>`) and starts its gateway; the old
 head then steps down (tokens deleted, TLS CA kept, its store becomes its backup via `stepped-down.json`).
 Tokens and the CA are never moved; employees re-run `omm rag remote set`. A gateway that finds a peer head
-with a higher epoch steps down (`handover.stale_head_loop`). Spec:
+with a higher (epoch, node id) steps down (`handover.stale_head_loop`), and a gateway started on a
+member removes itself. The target re-checks the instruction just before taking over, and a failed
+promote rolls back to a working member. Spec:
 `docs/superpowers/specs/2026-10-27-cluster-handover-version-sync-design.md`.
 
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
