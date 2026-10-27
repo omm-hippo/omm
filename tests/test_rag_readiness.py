@@ -123,7 +123,7 @@ def test_macos_homebrew_ready_without_brew_services_suggests_persistence(ollama,
     assert "brew services start ollama" in result["persistence"] and "ollama serve" in result["persistence"]
     agents = machine["home"] / "Library" / "LaunchAgents"
     agents.mkdir(parents=True)
-    (agents / "homebrew.mxcl.ollama.plist").write_text("<plist/>")
+    (agents / "homebrew.mxcl.ollama.plist").write_text("<plist/>", encoding="utf-8")
     assert _check(ollama.url)["persistence"] is None
 
 
