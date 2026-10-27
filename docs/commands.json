@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.56",
+  "omm_version": "0.4.59",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -864,7 +864,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Show nodes, memory, RDMA, firewall and gateway, and list any problems.",
+      "summary": "Show nodes, memory, RDMA, firewall, gateway and document search, and list any problems.",
       "description": "",
       "usage": "omm cluster status [OPTIONS]",
       "arguments": [],
