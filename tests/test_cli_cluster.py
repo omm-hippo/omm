@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from omm import cli
-from omm.cluster import exo_client, settings, tokens
+from omm.cluster import exo_client, settings, tls, tokens
 
 FIX = Path(__file__).parent / "fixtures" / "exo"
 runner = CliRunner()
@@ -270,10 +270,37 @@ def test_init_on_member_is_refused(cluster_fakes):
     assert result.exit_code == 2 and "omm cluster leave" in result.output
 
 
+def _pin_some_ca():
+    """What `omm rag remote set` leaves on an employee PC."""
+    from omm import config, rag_remote
+
+    tls.ensure(config.OMM_HOME / "head-ca", ["127.0.0.1"])
+    rag_remote.save_ca((config.OMM_HOME / "head-ca" / "ca.pem").read_text(encoding="utf-8"))
+
+
+def test_init_and_token_add_show_employees_the_https_address_and_fingerprint(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0, result.output
+    fingerprint = tls.head_fingerprint()
+    text = " ".join(result.output.split())
+    assert "omm rag remote set https://192.0.2.10:52440" in text and fingerprint in result.output
+    added = runner.invoke(cli.app, ["cluster", "token", "add", "kim"])
+    assert added.exit_code == 0, added.output
+    assert "omm rag remote set https://192.0.2.10:52440" in added.output and fingerprint in added.output
+    status = runner.invoke(cli.app, ["cluster", "status"])
+    assert f"Gateway certificate (SHA-256): {fingerprint}" in status.output
+    # A second init keeps the CA, so employees never confirm a new fingerprint.
+    assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
+    assert tls.head_fingerprint() == fingerprint
+
+
 def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
-    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_model", "problems"}
+    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_model", "problems",
+                         "gateway_url", "gateway_ca_sha256"}
+    assert data["gateway_url"] == "https://192.0.2.10:52440"
+    assert data["gateway_ca_sha256"] == tls.head_fingerprint() and len(data["gateway_ca_sha256"]) == 95
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
     assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
@@ -444,7 +471,7 @@ def test_model_loads_and_prints_gateway_url(cluster_fakes):
     result = runner.invoke(cli.app, ["cluster", "load", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
     assert result.exit_code == 0, result.output
     assert cluster_fakes.created and cluster_fakes.created[0].sharding == "Pipeline"
-    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at http://192.0.2.10:52440" in result.output
+    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at https://192.0.2.10:52440" in result.output
 
 
 def test_model_reports_download_progress_in_five_percent_steps(cluster_fakes):
@@ -815,7 +842,7 @@ def test_model_already_served_waits_for_it_instead_of_starting_a_second_copy(clu
     assert result.exit_code == 0, result.output
     assert cluster_fakes.created == []
     assert "already loaded or loading" in result.output
-    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at http://192.0.2.10:52440" in result.output
+    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at https://192.0.2.10:52440" in result.output
 
 
 def test_leave_deletes_the_staged_exo_runtime(cluster_fakes):
@@ -1286,7 +1313,8 @@ def test_list_on_an_employee_pc_uses_the_gateway_with_a_short_timeout(isolated_o
     from omm import rag_remote
     from omm.cluster import chat, models as cluster_models
 
-    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    rag_remote.save(rag_remote.Remote("https://192.0.2.20:52440", "omm_x"))
+    _pin_some_ca()
     seen = {}
 
     def rows(point, timeout=None):
@@ -1347,7 +1375,8 @@ def test_run_of_an_unknown_name_says_it_is_not_installed_locally(isolated_omm_ho
     from omm import rag_remote
     from omm.cluster import chat
 
-    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    rag_remote.save(rag_remote.Remote("https://192.0.2.20:52440", "omm_x"))
+    _pin_some_ca()
     seen = {}
 
     def unreachable(point, timeout=None):
@@ -1367,7 +1396,8 @@ def test_run_of_a_name_the_cluster_does_not_serve_says_both(isolated_omm_home, m
     from omm import rag_remote
     from omm.cluster import chat
 
-    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    rag_remote.save(rag_remote.Remote("https://192.0.2.20:52440", "omm_x"))
+    _pin_some_ca()
     monkeypatch.setattr(chat, "loaded_rows", lambda point, timeout=None: [])
     result = runner.invoke(cli.app, ["run", "typo-model"])
     assert result.exit_code == 1

@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 
 from omm import cli, config, documents, rag_acl, rag_connect, rag_remote
 from omm.cluster import gateway, tokens
+from tests import _gateway_tls
 from omm.documents import DocumentStore
 
 HR = "연차 휴가는 입사 첫 해에 열하루까지 쓸 수 있습니다.\n연차 휴가 신청은 팀장 승인을 받아야 합니다.\n".encode()
@@ -155,7 +156,7 @@ def head(people):
 
 
 def _call(server, method, path, token=None, body=None, headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    conn = _gateway_tls.connection(server, timeout=30)
     sent = dict(headers or {})
     if token:
         sent["Authorization"] = f"Bearer {token}"
@@ -294,7 +295,7 @@ def _cli(*args, input=None):
 def employee_pc(head, tmp_path, monkeypatch):
     """Head and employee share this test process; the employee's OMM_HOME only holds rag-remote.json."""
     server, t = head
-    url = f"http://127.0.0.1:{server.server_address[1]}"
+    url = _gateway_tls.url(server)
     # The employee's remote file lives in a separate folder; the head's store stays where it is.
     pc_home = tmp_path / "employee-pc"
     pc_home.mkdir()
@@ -304,10 +305,11 @@ def employee_pc(head, tmp_path, monkeypatch):
 
 def test_remote_cli_end_to_end(employee_pc, tmp_path):
     url, t, pc_home = employee_pc
-    bad = _cli("rag", "remote", "set", url, input="omm_wrong\n")
+    bad = _cli("rag", "remote", "set", url, "--yes", input="omm_wrong\n")
     assert bad.exit_code == 1 and "토큰" in bad.output
     assert not (pc_home / "rag-remote.json").exists()
-    ok = _cli("rag", "remote", "set", url, input=t["kim"] + "\n")
+    assert not rag_remote.ca_path().exists()  # nothing is pinned for a refused token
+    ok = _cli("rag", "remote", "set", url, "--yes", input=t["kim"] + "\n")
     assert ok.exit_code == 0, ok.output
     assert "'kim'" in ok.output and t["kim"] not in ok.output
     assert t["kim"] not in _cli("rag", "remote").output
@@ -339,6 +341,7 @@ def test_remote_cli_end_to_end(employee_pc, tmp_path):
     assert _cli("rag", "remove", "인사규정", "hr.txt", "--yes").exit_code == 0
     assert _cli("rag", "remote", "clear").exit_code == 0
     assert not (pc_home / "rag-remote.json").exists()
+    assert not rag_remote.ca_path().exists()
 
 
 def test_head_admin_cli_share_team_and_list(people):
@@ -357,11 +360,13 @@ def test_head_admin_cli_share_team_and_list(people):
 
 
 def test_remote_url_normalization():
-    assert rag_remote.normalize_url("192.168.0.10") == "http://192.168.0.10:52440"
-    assert rag_remote.normalize_url("http://head.local:8000/") == "http://head.local:8000"
-    for bad in ("ftp://x", "http://h/mcp", "http://u:p@h"):
+    assert rag_remote.normalize_url("192.168.0.10") == "https://192.168.0.10:52440"
+    assert rag_remote.normalize_url("https://head.local:8000/") == "https://head.local:8000"
+    for bad in ("ftp://x", "https://h/mcp", "https://u:p@h"):
         with pytest.raises(rag_remote.RemoteError):
             rag_remote.normalize_url(bad)
+    with pytest.raises(rag_remote.RemoteError, match="HTTPS만"):
+        rag_remote.normalize_url("http://head.local:52440")
 
 
 # --------------------------------------------- harness --remote entries --

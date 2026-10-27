@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 from omm import cli, rag_remote
 from omm.cluster import chat, gateway, tokens
+from tests import _gateway_tls
 
 FIX = Path(__file__).parent / "fixtures" / "exo"
 LOADED = "mlx-community/Llama-3.2-1B-Instruct-4bit"
@@ -76,8 +77,9 @@ def employee(isolated_omm_home, monkeypatch):
     exo = _serve(_Exo())
     token = tokens.add_token("kim")
     head = _serve(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{exo.server_address[1]}"))
-    url = f"http://127.0.0.1:{head.server_address[1]}"
+    url = _gateway_tls.url(head)
     rag_remote.save(rag_remote.Remote(url, token))
+    _gateway_tls.pin(head)
     yield url
     head.shutdown()
     exo.shutdown()
@@ -162,10 +164,18 @@ def test_employee_commands_never_need_macos(employee, monkeypatch):
         assert result.exit_code == 0, (args, result.output)
 
 
+def _pem(home) -> str:
+    from omm.cluster import tls
+
+    tls.ensure(home / "ca", ["127.0.0.1"])
+    return (home / "ca" / "ca.pem").read_text(encoding="utf-8")
+
+
 def test_an_older_head_says_to_update_it(isolated_omm_home, monkeypatch):
     from urllib import error as urlerror
 
-    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    rag_remote.save(rag_remote.Remote("https://192.0.2.20:52440", "omm_x"))
+    rag_remote.save_ca(_pem(isolated_omm_home))
 
     def old_head(self, request, timeout=None):
         raise urlerror.HTTPError(request.full_url, 404, "Not Found", {}, None)

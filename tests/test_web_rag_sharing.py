@@ -17,6 +17,7 @@ import requests
 
 from omm import config, rag_acl, rag_connect, rag_remote
 from omm.cluster import gateway, tokens
+from tests import _gateway_tls
 from omm.documents import DocumentStore
 from omm.web import rag_sharing, worker
 from omm.web.server import WebServer
@@ -237,7 +238,8 @@ def head(lexical):
     server = gateway.GatewayServer("127.0.0.1", 0, upstream="http://127.0.0.1:9")
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", people
+    _gateway_tls.pin(server)
+    yield _gateway_tls.url(server), people
     server.shutdown()
     server.server_close()
 
@@ -346,7 +348,7 @@ def test_broken_remote_file_is_reported_and_clearable(employee, browser):
 
 
 def test_unreachable_head_keeps_the_token_out_of_the_error(employee, browser):
-    rag_remote.save(rag_remote.Remote("http://127.0.0.1:9", "omm_secretvalue"))
+    rag_remote.save(rag_remote.Remote("https://127.0.0.1:9", "omm_secretvalue"))
     status, state = browser.get("/api/rag/state")
     assert state["remote"]["name"] is None and "연결하지 못했어요" in state["error"]
     status, body = browser.get("/api/rag/collections")

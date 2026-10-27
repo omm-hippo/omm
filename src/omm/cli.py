@@ -801,15 +801,24 @@ def agent_cluster_cmd(
         raise typer.Exit(1)
     console.print(f"Saved cluster routing settings for {escape(harness)} ({escape(metadata['base_url'])}). Start a new harness session.")
     console.print("The settings file now holds your employee token and is readable only by you.")
+    if metadata.get("launch"):
+        # Codex and pi read the CA variable only from the environment they start in.
+        console.print(f"{escape(harness)} trusts the cluster's certificate only when started like this:")
+        # Unwrapped: a command split over two lines does not paste.
+        console.print(f"  {metadata['launch']}", markup=False, soft_wrap=True)
+    elif metadata.get("ca_conflict"):
+        console.print(f"Your Claude Code settings already set NODE_EXTRA_CA_CERTS ({escape(metadata['ca_conflict'])}); "
+                      "omm left it. Append the cluster certificate to that file:")
+        console.print(f"  cat {metadata['ca_file']} >> {metadata['ca_conflict']}", markup=False, soft_wrap=True)
     console.print("The model must be loaded on the cluster (omm cluster load on the head); tool calling is not verified.")
 
 
 @agent_app.command(name="cloud")
 def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
     """Restore original routing while preserving unrelated settings edits."""
-    from omm import agent_connection
+    from omm import agent_cluster, agent_connection
     try:
-        restored = agent_connection.restore(harness)
+        restored = agent_cluster.restore(harness)
     except (agent_connection.ConnectionError, OSError) as error:
         message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Backup retained."
         err_console.print(f"[error]{escape(message)}[/error]")
@@ -2466,7 +2475,9 @@ def _cluster_call(func, *args):
 
 
 def _cluster_out(line: str) -> None:
-    console.print(line, markup=False)
+    # The terminal wraps long lines itself: rich's hard line breaks split the
+    # commands and the certificate fingerprint these lines carry.
+    console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_app.command(name="init")
@@ -2534,6 +2545,10 @@ def cluster_status_cmd() -> None:
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
     console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
+    if report.get("gateway_ca_sha256"):
+        # What an employee's `omm rag remote set` must show before they accept it.
+        console.print(f"Gateway address: {report['gateway_url']}", markup=False)
+        console.print(f"Gateway certificate (SHA-256): {report['gateway_ca_sha256']}", markup=False, soft_wrap=True, emoji=False)
     if report["problems"]:
         console.print("Problems:", markup=False)
         for problem in report["problems"]:
@@ -2913,6 +2928,8 @@ def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is
     token = _cluster_call(cluster_commands.tokens.add_token, name)
     console.print(f"Token for {name}: {token}", markup=False)
     console.print("Store it now - omm cannot show it again.", markup=False)
+    for line in cluster_commands.employee_setup_lines():
+        console.print(line, markup=False, soft_wrap=True, emoji=False)
 
 
 @cluster_token_app.command(name="list")

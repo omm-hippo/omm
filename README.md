@@ -244,7 +244,7 @@ server; documents and questions never leave this computer. See
 ### Shared company documents (cluster head)
 
 ```sh
-omm rag remote set <head address> [--token TOKEN]  # On an employee PC: use the cluster head's shared collections (token typed hidden when omitted)
+omm rag remote set <head address> [--token TOKEN] [--yes]  # On an employee PC: check the head's certificate fingerprint, then use its shared collections (token typed hidden when omitted)
 omm rag remote  # Show which head `omm rag` uses (the token is never printed)
 omm rag remote clear  # Forget the head and its token; `omm rag` uses this PC again
 omm rag share <collection> <person> | --team <team>  # Let an employee (token name) or a team search a collection (owner or head administrator)
@@ -254,12 +254,13 @@ omm rag team add <team> <person>  # On the head: add an employee (token name) to
 omm rag team remove <team> <person>  # On the head: remove an employee from a team
 omm rag team list  # On the head: list teams and members
 omm rag team delete <team>  # On the head: delete a team and every share made to it
-omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTP, employee token in the harness config)
+omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTPS, employee token in the harness config)
 ```
 
 With a head set, `omm rag collection create|list|delete`, `add`, `remove`, `search`,
 `share` and `unshare` work on the head through the token-checked cluster gateway
-(port 52440). A collection is searchable only by its creator and the head administrator
+(HTTPS, port 52440). The first `omm rag remote set` shows the head certificate's
+fingerprint; accept it only if it matches `omm cluster status` on the head. A collection is searchable only by its creator and the head administrator
 until it is shared. See [document search for coding agents](docs/rag-mcp.md#사내-공유).
 
 ### Local logs and automatic import

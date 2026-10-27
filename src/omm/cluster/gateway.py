@@ -5,6 +5,10 @@ anchor keeps it off the office network. This server sits on the head Mac,
 checks a per-employee token, and forwards only the inference routes to
 exo on loopback. Bodies are streamed straight through and never logged;
 only the model list and exo's "No instance found" answer are rewritten.
+
+It speaks HTTPS only, with a certificate from the head's own CA (tls.py,
+#536): a plain HTTP request is answered with a pointer to https before a
+single byte of it is parsed, so a token sent in the clear is never accepted.
 """
 
 from __future__ import annotations
@@ -13,11 +17,13 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import socket
+import ssl
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 from omm import config
-from omm.cluster import exo_client
+from omm.cluster import exo_client, tls
 from omm.cluster.tokens import TokenStore
 
 GATEWAY_PORT = 52440
@@ -55,6 +61,10 @@ _HOP_BY_HOP = frozenset({
 # send_response() writes these itself; copying exo's as well sent them twice.
 _SET_BY_GATEWAY = frozenset({"date", "server"})
 _ACCESS_FIELDS = ("method", "path", "status", "token_name", "duration_ms")
+# Every TLS connection starts with a handshake record (content type 22).
+_TLS_HANDSHAKE = b"\x16"
+PLAINTEXT_MESSAGE = ("omm cluster: this gateway only accepts HTTPS. On your PC run: "
+                     "omm rag remote set https://<head address>:52440")
 
 log = logging.getLogger("omm.cluster.gateway")
 
@@ -149,16 +159,76 @@ def detach_access_log(handler: logging.Handler) -> None:
     log.propagate = True
 
 
+def _plaintext_reply() -> bytes:
+    body = _error_body("invalid_request_error", PLAINTEXT_MESSAGE)
+    return (b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n%s" % (len(body), body))
+
+
+def _close_after_draining(sock) -> None:
+    """Half-close, discard what the peer still sends (1 s at most), then close."""
+    try:
+        # On a TLS socket this drops TLS first, so the reads below see raw bytes.
+        sock.shutdown(socket.SHUT_WR)
+        sock.settimeout(1)
+        for _ in range(64):
+            if not sock.recv(65536):
+                break
+    except (OSError, ValueError):
+        pass
+    sock.close()
+
+
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, host: str = "0.0.0.0", port: int = GATEWAY_PORT, *, upstream: str = UPSTREAM,
-                 store: TokenStore | None = None) -> None:
+                 store: TokenStore | None = None, certificates: tls.HeadCertificates | None = None) -> None:
         parsed = urlsplit(upstream)
         self.upstream_host = parsed.hostname or "127.0.0.1"
         self.upstream_port = parsed.port or 80
         self.store = store or TokenStore()
+        self.certificates = certificates or tls.HeadCertificates()
         super().__init__((host, port), _Handler)
+
+    def finish_request(self, request, client_address) -> None:
+        # Runs on the connection's own thread, so a slow handshake never holds accept().
+        # The handler's own idle limit also bounds the first byte and the handshake.
+        request.settimeout(self.RequestHandlerClass.timeout)
+        try:
+            first = request.recv(1, socket.MSG_PEEK)
+        except OSError:
+            return
+        if not first:
+            return
+        if first != _TLS_HANDSHAKE:
+            self._refuse_plaintext(request)
+            return
+        try:
+            connection = self.certificates.context().wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            return
+        try:
+            super().finish_request(connection, client_address)
+        except (ConnectionError, ssl.SSLError):
+            # A client that hangs up mid-request (or only checked the
+            # certificate, as `omm rag remote set` does) is not an error.
+            pass
+        finally:
+            # A reply that refuses a request (401, 413, ...) leaves its body
+            # unread; TLS sends it as its own record, so closing at once would
+            # reset the connection before the client reads the answer.
+            _close_after_draining(connection)
+
+    def _refuse_plaintext(self, request) -> None:
+        try:
+            request.sendall(_plaintext_reply())
+        except OSError:
+            pass
+        # What the client sent is dropped unparsed, token included.
+        _close_after_draining(request)
+        log.info("plain HTTP -> 400", extra={"event": "cluster_gateway", "method": "PLAINTEXT", "path": None,
+                                             "status": 400, "token_name": None, "duration_ms": 0})
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -214,6 +284,10 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _dispatch(self, path: str) -> tuple[int, str | None]:
+        if (self.command, path) == ("GET", tls.CA_ROUTE):
+            # Public by design: an employee PC fetches it before it has trusted
+            # anything, and shows its fingerprint to compare with the head's.
+            return self._reply_ca(), None
         name = self.server.store.verify(self._presented_token())
         if name is None:
             self._reply_error(401, "authentication_error", "omm cluster: missing or invalid token")
@@ -360,6 +434,17 @@ class _Handler(BaseHTTPRequestHandler):
         # "models" stays bare ids for employees on an older omm; "rows" carry the
         # size and Mac count `omm cluster list` shows.
         return self._reply_json({"models": [row["model"] for row in rows], "rows": rows})
+
+    def _reply_ca(self) -> int:
+        body = self.server.certificates.ca_pem()
+        self._replied = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-pem-file")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+        return 200
 
     def _reply_json(self, data) -> int:
         body = json.dumps(data).encode()

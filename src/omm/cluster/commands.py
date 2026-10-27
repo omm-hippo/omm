@@ -13,7 +13,7 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import appfw, exo_client, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
+from omm.cluster import appfw, exo_client, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tls, tokens
 from omm.cluster.errors import ClusterError, UsageProblem
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -103,6 +103,9 @@ def init(out: Out) -> settings.ClusterSettings:
     power.keep_awake()
     # Before the gateway (re)starts, so its first connection is not held.
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
+    # The CA is made once and kept (a re-run and leave keep it too), so
+    # employees who already trust it never have to again.
+    tls.ensure()
     service.install()
     out(SCREEN_APPROVAL_HINT)
     out(HIGH_PORTS_HINT)
@@ -111,7 +114,22 @@ def init(out: Out) -> settings.ClusterSettings:
     out("Run this on every other Mac:")
     out(f"  omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
+    for line in employee_setup_lines():
+        out(line)
     return saved
+
+
+def gateway_url() -> str:
+    return f"https://{lan_ipv4()}:{GATEWAY_PORT}"
+
+
+def employee_setup_lines() -> list[str]:
+    """How an employee's PC connects, and the fingerprint they must see when it does."""
+    lines = ["Employees connect with:", f"  omm rag remote set {gateway_url()}"]
+    fingerprint = tls.head_fingerprint()
+    if fingerprint:
+        lines += ["It shows the gateway certificate's fingerprint; it must be exactly:", f"  {fingerprint}"]
+    return lines
 
 
 def join(namespace: str, out: Out) -> settings.ClusterSettings:
@@ -237,8 +255,11 @@ def status() -> dict:
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
+    head = current is not None and current.role == "head"
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway,
+            "gateway_url": gateway_url() if head else None,
+            "gateway_ca_sha256": tls.head_fingerprint() if head else None,
             "kept_model": current.model if current is not None and current.role == "head" else None,
             "problems": problems}
 
@@ -367,7 +388,7 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
         return f"Serving {model_id}; employees reach it through the head Mac's gateway"
     if current.model != model_id:
         settings.save(dataclasses.replace(current, model=model_id))
-    return f"Serving {model_id} at http://{lan_ipv4()}:{current.gateway_port}"
+    return f"Serving {model_id} at https://{lan_ipv4()}:{current.gateway_port}"
 
 
 def unload_model(model_id: str, client: ExoClient | None = None) -> int:
@@ -421,11 +442,17 @@ HEAD_PROBE_TIMEOUT = 1.5
 
 def _is_gateway(address: str, port: int) -> bool:
     """True when an omm cluster gateway answers there (it refuses a request without a token)."""
+    import ssl
     from urllib import error as urlerror, request as urlrequest
 
-    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+    # Only asks who serves there and sends nothing secret, so the
+    # certificate is not checked (a member Mac has not pinned the head's CA).
+    blind = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    blind.check_hostname = False
+    blind.verify_mode = ssl.CERT_NONE
+    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}), urlrequest.HTTPSHandler(context=blind))
     try:
-        opener.open(f"http://{address}:{port}/omm/status", timeout=HEAD_PROBE_TIMEOUT).close()
+        opener.open(f"https://{address}:{port}/omm/status", timeout=HEAD_PROBE_TIMEOUT).close()
     except urlerror.HTTPError as error:
         try:
             return error.code == 401 and b"omm cluster:" in error.read()
