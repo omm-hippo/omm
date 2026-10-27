@@ -207,7 +207,7 @@ def run_once(*, first: bool = False) -> str:
         return "no_head"
     instruction = head.body.get("handover")
     if isinstance(instruction, dict) and instruction.get("to") == own:
-        handover.promote(head)
+        handover.promote(head, own)
         return "promoted"
     state, error = version_follow.apply(head.body.get("version") or {})
     _last.update(version_state=state, version_error=error)

@@ -3017,6 +3017,53 @@ def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to
     console.print(f"Revoked the token for {name}.", markup=False)
 
 
+@cluster_app.command(name="handover")
+@global_flags
+def cluster_handover_cmd(
+    mac: str = typer.Argument(..., help="The Mac to become head, as omm cluster status names it"),
+) -> None:
+    """Move the cluster head to another Mac in the cluster."""
+    from datetime import datetime, timezone
+
+    from omm.cluster import commands as cluster_commands, handover, members
+
+    _cluster_call(cluster_commands.require_head_for, "handover")
+    node, problems = _cluster_call(lambda: handover.preflight(mac, now=datetime.now(timezone.utc)))
+    if problems:
+        err_console.print(f"Cannot hand over to {mac}:", markup=False)
+        for problem in problems:
+            err_console.print(f"  - {problem}", markup=False)
+        raise typer.Exit(1)
+    if not _global_opts().yes:
+        if not _stdin_is_tty():
+            err_console.print("Pass --yes to move the cluster head.", markup=False)
+            raise typer.Exit(1)
+        if not _ask_confirm(f"Move the cluster head to {mac}? Employee tokens are not moved: you will issue new "
+                            f"ones on {mac}, and every employee runs omm rag remote set again. Cluster models "
+                            "may stop answering for a minute."):
+            err_console.print("Cancelled.", markup=False)
+            raise typer.Exit(0)
+    epoch = _cluster_call(lambda: handover.start(node, now=datetime.now(timezone.utc)))
+    with console.status(f"Waiting for {mac} to take over...", spinner="dots"):
+        took_over = _cluster_call(lambda: handover.wait_for_new_head(
+            node, epoch, deadline=time.monotonic() + handover.WAIT_SECONDS))
+    if not took_over:
+        members.clear_handover()
+        err_console.print(f"{mac} did not take over within 3 minutes; this Mac is still the head. Check omm "
+                          f"cluster status, then run omm cluster handover {mac} again.", markup=False)
+        raise typer.Exit(1)
+    names = _cluster_call(handover.step_down, epoch)
+    address = _cluster_call(handover.lan_address, node) or f"<{mac}'s address>"
+    for line in (f"{mac} is now the cluster head. This Mac is a member.",
+                 f"Next, on {mac}:",
+                 f"  omm cluster token add <name>      for each employee: {', '.join(names) or '(none yet)'}",
+                 "  (use the same names: document ownership and shares follow the name)",
+                 "Then each employee runs:",
+                 f"  omm rag remote set https://{address}:52440",
+                 "  omm setting agent cluster          (only if they used it before)"):
+        _cluster_out(line)
+
+
 @cluster_app.command(name="leave")
 @global_flags
 def cluster_leave_cmd() -> None:

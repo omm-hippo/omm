@@ -131,7 +131,7 @@ def cycle(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(member_link, "fetch_snapshot", lambda address, key, own: seen.fetched.append(address))
     monkeypatch.setattr(exo_service, "install", lambda ns, **kw: seen.exo.append((ns, kw)))
     fake = types.ModuleType("omm.cluster.handover")
-    fake.promote = lambda r: seen.promoted.append(r)
+    fake.promote = lambda r, own: seen.promoted.append((r, own))
     fake.finish_step_down = lambda: setattr(seen, "finished", seen.finished + 1)
     monkeypatch.setitem(sys.modules, "omm.cluster.handover", fake)
     import omm.cluster as package
@@ -161,7 +161,7 @@ def test_run_once_skips_snapshot_when_marker_same(cycle, monkeypatch):
 def test_run_once_promotes_on_instruction(cycle):
     cycle.reply.body["handover"] = {"to": "me", "epoch": 3}
     assert member_link.run_once() == "promoted"
-    assert cycle.promoted == [cycle.reply] and cycle.applied == []
+    assert cycle.promoted == [(cycle.reply, "me")] and cycle.applied == []
 
 
 def test_run_once_waits_without_a_head(cycle):
