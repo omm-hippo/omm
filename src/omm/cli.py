@@ -3342,6 +3342,11 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    # Same reason as in _SKIP_ONBOARDING_SUBCOMMANDS: cluster Macs are set up
+    # over SSH, exo owns their models, and the scan printed its "No
+    # externally-managed .gguf files" line into `omm cluster join` (or would
+    # stop it on an import prompt). The one-time flag stays unset for later.
+    "cluster",
 }
 
 # Hidden background children/services are not a user-issued command, so they
