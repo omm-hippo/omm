@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.61",
+  "omm_version": "0.4.62",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -2809,13 +2809,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Point `omm rag` at the cluster head after checking the employee token.",
+      "summary": "Point `omm rag` at the cluster head after checking its certificate and the employee token.",
       "description": "",
       "usage": "omm rag remote set [OPTIONS] {url}",
       "arguments": [
         {
           "name": "url",
-          "help": "Cluster head address, e.g. 192.168.0.10 or http://head.local:52440.",
+          "help": "Cluster head address, e.g. 192.168.0.10 or https://head.local:52440.",
           "required": true
         }
       ],
@@ -2829,6 +2829,17 @@
           "help": "Employee token. Omit it to type the token hidden (or pipe it on stdin) so it stays out of shell history.",
           "default": null,
           "global": false
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Trust the head's certificate without asking (needed when the token comes on stdin). Compare the printed fingerprint with omm cluster status on the head yourself.",
+          "default": null,
+          "global": true
         }
       ],
       "docs_url": "https://omm.run/commands/rag#remote"

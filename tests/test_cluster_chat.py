@@ -14,6 +14,7 @@ from omm import cli, rag_remote
 from omm.cluster import chat, gateway, settings, tokens
 from omm.cluster.commands import UsageProblem
 from omm.cluster.errors import ClusterError
+from tests import _gateway_tls
 
 FIXTURES = Path(__file__).parent / "fixtures" / "exo"
 LOADED = "mlx-community/Llama-3.2-1B-Instruct-4bit"
@@ -79,7 +80,7 @@ def exo():
 def head(exo, isolated_omm_home):
     token = tokens.add_token("kim")
     server = _start(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{exo.server_address[1]}"))
-    yield chat.Endpoint(f"http://127.0.0.1:{server.server_address[1]}", token)
+    yield chat.Endpoint(_gateway_tls.url(server), token, _gateway_tls.pin(server))
     server.shutdown()
     server.server_close()
 
@@ -90,7 +91,7 @@ def test_gateway_lists_only_loaded_model_ids(head):
 
 def test_gateway_loaded_models_needs_a_token(head):
     with pytest.raises(ClusterError, match="rejected your token"):
-        chat.loaded_models(chat.Endpoint(head.url, "omm_wrong"))
+        chat.loaded_models(chat.Endpoint(head.url, "omm_wrong", head.cafile))
 
 
 def test_gateway_loaded_models_is_502_when_exo_is_down(isolated_omm_home):
@@ -103,7 +104,7 @@ def test_gateway_loaded_models_is_502_when_exo_is_down(isolated_omm_home):
     server = _start(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{dead}"))
     try:
         with pytest.raises(ClusterError, match="exo is not running"):
-            chat.loaded_models(chat.Endpoint(f"http://127.0.0.1:{server.server_address[1]}", token))
+            chat.loaded_models(chat.Endpoint(_gateway_tls.url(server), token, _gateway_tls.pin(server)))
     finally:
         server.shutdown()
         server.server_close()
@@ -147,9 +148,30 @@ def test_endpoint_on_a_cluster_mac_is_local_exo(isolated_omm_home):
     assert chat.endpoint() == chat.Endpoint(chat.LOCAL_EXO, None)
 
 
-def test_endpoint_uses_the_saved_head(isolated_omm_home):
+def test_endpoint_uses_the_saved_head_and_its_pinned_certificate(isolated_omm_home):
+    rag_remote.save(rag_remote.Remote("https://10.0.0.4:52440", "omm_tok"))
+    with pytest.raises(UsageProblem, match="has not checked the cluster head's certificate"):
+        chat.endpoint()
+    from omm.cluster import tls
+
+    tls.ensure(isolated_omm_home / "ca", ["127.0.0.1"])
+    rag_remote.save_ca((isolated_omm_home / "ca" / "ca.pem").read_text(encoding="utf-8"))
+    assert chat.endpoint() == chat.Endpoint("https://10.0.0.4:52440", "omm_tok", str(rag_remote.ca_path()))
+
+
+def test_endpoint_saved_over_plain_http_says_to_set_it_again(isolated_omm_home):
     rag_remote.save(rag_remote.Remote("http://10.0.0.4:52440", "omm_tok"))
-    assert chat.endpoint() == chat.Endpoint("http://10.0.0.4:52440", "omm_tok")
+    with pytest.raises(UsageProblem, match="HTTPS only. Run: omm rag remote set https://"):
+        chat.endpoint()
+
+
+def test_a_head_with_another_certificate_is_refused(head, isolated_omm_home):
+    from omm.cluster import tls
+
+    tls.ensure(isolated_omm_home / "other", ["127.0.0.1"])
+    impostor = chat.Endpoint(head.url, head.token, str(isolated_omm_home / "other" / "ca.pem"))
+    with pytest.raises(ClusterError, match="did not show the certificate pinned"):
+        chat.loaded_models(impostor)
 
 
 def test_endpoint_without_a_head_points_to_rag_remote_set(isolated_omm_home):
@@ -241,7 +263,11 @@ def test_gateway_keeps_bare_ids_for_older_employee_clients(head):
     import urllib.request
 
     req = urllib.request.Request(head.url + chat.LOADED_MODELS_PATH, headers={"Authorization": f"Bearer {head.token}"})
-    body = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5).read())
+    from omm.cluster import tls
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                         urllib.request.HTTPSHandler(context=tls.client_context(head.cafile)))
+    body = json.loads(opener.open(req, timeout=5).read())
     assert body["models"] == [LOADED]
     assert body["rows"][0]["model"] == LOADED and set(body["rows"][0]) == {
         "model", "size_bytes", "nodes_installed", "nodes_total", "state"}

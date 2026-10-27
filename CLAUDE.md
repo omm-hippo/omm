@@ -296,7 +296,17 @@ bridge by editing preferences.plist (order matters, see its docstring). `power.p
 adds exo (and the gateway's real Python binary on the head) to the macOS Application Firewall:
 with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The
 head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
-`_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
+`_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It serves HTTPS only (#536,
+`cluster/tls.py`): the head makes its own CA once (`OMM_HOME/cluster/tls/`, kept by re-init and
+`leave`) and the gateway re-issues the server certificate from it when the Mac's LAN IPv4/`.local`
+names change; a plaintext request gets a 400 pointing to https before any byte of it is parsed.
+`GET /omm/ca.pem` is the one route without a token: `omm rag remote set` fetches it, proves the
+leaf chains to it, shows its SHA-256 fingerprint (TOFU, `--yes` when stdin is not a tty) and pins
+it as `OMM_HOME/rag-remote-ca.pem`; every employee-side caller (`rag_remote.Client`, `chat._open`,
+`agent_cluster`, web `shared_ai`) trusts only that file. Harnesses: Claude Code gets
+`env.NODE_EXTRA_CA_CERTS` in settings.json (applied but not in the journal's field list, so
+`agent_cluster.restore` drops it after a merged restore); Codex (`CODEX_CA_CERTIFICATE`) and pi
+(`NODE_EXTRA_CA_CERTS`) only read it from their launch environment, so omm prints the launch line. It verifies hashed
 tokens from `tokens.py` (fail closed) and forwards four inference routes; it answers
 `GET /omm/loaded-models` itself (exo's `/v1/models` lists every known model, not the loaded
 ones), which `omm cluster run` (`chat.py`) uses on an employee PC. It also folds

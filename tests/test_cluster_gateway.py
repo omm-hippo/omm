@@ -8,11 +8,12 @@ import json
 import logging
 from pathlib import Path
 import socket
+import ssl
 import threading
 
 import pytest
 
-from omm.cluster import gateway, tokens
+from omm.cluster import gateway, tls, tokens
 
 SSE_BYTES = b"event: a\ndata: 1\n\n" + b"event: b\ndata: 2\n\n" + b"event: c\ndata: 3\n\n"
 
@@ -91,8 +92,14 @@ def gateway_without_upstream(token):
     server.server_close()
 
 
+def connect(server):
+    """HTTPS that trusts only this gateway's CA, as an employee PC that pinned it."""
+    context = tls.client_context(cadata=server.certificates.ca_pem().decode())
+    return http.client.HTTPSConnection("127.0.0.1", server.server_address[1], timeout=10, context=context)
+
+
 def request(server, method, path, headers=None, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+    conn = connect(server)
     conn.request(method, path, body=body, headers=headers or {})
     return conn.getresponse()
 
@@ -155,7 +162,7 @@ def test_admin_paths_are_404_even_with_a_valid_token(gateway_server, upstream, t
 
 
 def test_oversized_body_is_413(gateway_server, upstream, token):
-    conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
+    conn = connect(gateway_server)
     conn.putrequest("POST", "/v1/messages")
     conn.putheader("Authorization", f"Bearer {token}")
     conn.putheader("Content-Length", str(16 * 1024 * 1024 + 1))
@@ -265,7 +272,7 @@ def test_absolute_form_target_is_forwarded_as_the_checked_path(gateway_server, u
 def test_chunked_request_body_is_411_and_never_reaches_upstream(gateway_server, upstream, token):
     # Headers only: the gateway answers and closes without reading a chunked
     # body, so a client still writing chunks gets a broken pipe (Linux CI).
-    conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
+    conn = connect(gateway_server)
     conn.putrequest("POST", "/v1/messages")
     conn.putheader("Authorization", f"Bearer {token}")
     conn.putheader("Transfer-Encoding", "chunked")

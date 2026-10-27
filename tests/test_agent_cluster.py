@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from omm import agent_cluster, agent_connection as agent, cli, rag_remote
+from omm.cluster import tls
 
 TOKEN = "omm_employee-secret"
 
@@ -27,8 +28,10 @@ def home(tmp_path, monkeypatch, isolated_omm_home):
 
 
 @pytest.fixture
-def gateway():
-    """A stand-in for the head's gateway: token check plus exo's /v1/models shape."""
+def gateway(isolated_omm_home, tmp_path):
+    """A stand-in for the head's gateway over HTTPS: token check plus exo's /v1/models shape.
+
+    Its CA is pinned the way `omm rag remote set` leaves it."""
     seen = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -51,9 +54,12 @@ def gateway():
             self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    certificates = tls.HeadCertificates(tmp_path / "head-tls", names=lambda: ["127.0.0.1"])
+    server.socket = certificates.context().wrap_socket(server.socket, server_side=True)
+    rag_remote.save_ca(certificates.ca_pem().decode())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", seen
+    yield f"https://127.0.0.1:{server.server_address[1]}", seen
     server.shutdown()
     server.server_close()
 
@@ -83,7 +89,7 @@ def test_cluster_connection_restores_with_agent_cloud(harness, home, remote):
     if os.name != "nt":  # POSIX file permissions
         assert all(p.stat().st_mode & 0o777 == 0o600 for p in paths)
     assert agent.status(harness)["state"] == "local"
-    assert agent.restore(harness)
+    assert agent_cluster.restore(harness)
     assert [p.read_bytes() for p in paths] == original
     if os.name != "nt":
         assert all(p.stat().st_mode & 0o777 == 0o644 for p in paths)
@@ -134,8 +140,8 @@ def test_rejected_token_tells_how_to_fix_it(home, gateway):
     assert "omm_revoked" not in str(caught.value)
 
 
-def test_unreachable_head_is_reported(home, isolated_omm_home):
-    rag_remote.save(rag_remote.Remote("http://127.0.0.1:9", TOKEN))
+def test_unreachable_head_is_reported(home, gateway):
+    rag_remote.save(rag_remote.Remote("https://127.0.0.1:9", TOKEN))
     with pytest.raises(agent.ConnectionError, match="Could not reach"):
         agent_cluster.connect("claude", "mlx-community/Qwen3.5-9B-4bit")
 
@@ -159,3 +165,57 @@ def test_cli_error_exit_code(home):
     result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "claude", "--model", "m"])
     assert result.exit_code == 1
     assert "omm rag remote set" in result.output
+
+
+def test_claude_trusts_only_the_pinned_ca_and_restore_removes_it(home, remote):
+    metadata = agent_cluster.connect("claude", "mlx-community/Qwen3.5-9B-4bit")
+    path = agent._paths("claude")[0]
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    assert settings["env"]["NODE_EXTRA_CA_CERTS"] == str(rag_remote.ca_path()) == metadata["ca_file"]
+    assert "launch" not in metadata
+    # Claude Code rewrote an unrelated setting since, so restore has to merge.
+    settings["theme"] = "dark"
+    path.write_text(json.dumps(settings), encoding="utf-8")
+    assert agent_cluster.restore("claude")
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after == {"theme": "dark"}
+
+
+def test_claude_keeps_a_ca_file_the_user_already_set(home, remote):
+    path = agent._paths("claude")[0]
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": "/corp/proxy.pem"}}), encoding="utf-8")
+    metadata = agent_cluster.connect("claude", "mlx-community/Qwen3.5-9B-4bit")
+    assert metadata["ca_conflict"] == "/corp/proxy.pem"
+    assert json.loads(path.read_text(encoding="utf-8"))["env"]["NODE_EXTRA_CA_CERTS"] == "/corp/proxy.pem"
+    assert agent_cluster.restore("claude")
+    assert json.loads(path.read_text(encoding="utf-8")) == {"env": {"NODE_EXTRA_CA_CERTS": "/corp/proxy.pem"}}
+
+
+@pytest.mark.parametrize("harness, variable", [("codex", "CODEX_CA_CERTIFICATE"), ("pi", "NODE_EXTRA_CA_CERTS")])
+def test_codex_and_pi_get_the_line_that_starts_them_trusting_the_ca(home, remote, harness, variable):
+    metadata = agent_cluster.connect(harness, "mlx-community/Qwen3.5-9B-4bit")
+    assert metadata["launch"] == f"{variable}={rag_remote.ca_path()} {harness}"
+    result = CliRunner().invoke(cli.app, ["setting", "agent", "cloud", harness])
+    assert result.exit_code == 0
+
+
+def test_cli_prints_how_to_start_pi(home, remote):
+    result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
+    assert result.exit_code == 0, result.output
+    assert f"NODE_EXTRA_CA_CERTS={rag_remote.ca_path()} pi" in " ".join(result.output.split())
+
+
+def test_a_head_saved_over_plain_http_must_be_set_again(home, isolated_omm_home):
+    rag_remote.save(rag_remote.Remote("http://127.0.0.1:9", TOKEN))
+    with pytest.raises(agent.ConnectionError, match="https://"):
+        agent_cluster.connect("claude", "mlx-community/Qwen3.5-9B-4bit")
+    assert not agent._journal("claude").exists()
+
+
+def test_a_head_with_another_certificate_is_refused(home, remote, tmp_path):
+    other = tmp_path / "other-ca"
+    tls.ensure(other, ["127.0.0.1"])
+    rag_remote.save_ca((other / "ca.pem").read_text(encoding="utf-8"))
+    with pytest.raises(agent.ConnectionError, match="did not show the certificate pinned"):
+        agent_cluster.connect("claude", "mlx-community/Qwen3.5-9B-4bit")
