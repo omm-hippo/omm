@@ -670,7 +670,22 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
     """Adds the `More about omm ...: https://omm.run/commands/...` footer to
     every subcommand's `--help`, at the single place Click resolves a name
     to a command object - so a new command gets its documentation link
-    without touching its decorator."""
+    without touching its decorator.
+
+    A group that has no default action of its own (`omm cluster`, `omm rag`,
+    `omm engine`, ...) prints its help and exits 0 when typed bare, the way
+    `git remote` or `docker image` do. Click would otherwise answer
+    `Error: Missing command.` with exit 2, which reads like a mistyped
+    command. Groups that take an action (`omm setting`, `omm upload`) set
+    `invoke_without_command` and keep their own behaviour. Not
+    `no_args_is_help`: since Click 8.2 that exits 2."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # resilient_parsing is how `omm help` renders a group's help without running it.
+        if not args and not self.invoke_without_command and not ctx.resilient_parsing:
+            click.echo(ctx.get_help(), color=ctx.color)
+            ctx.exit(0)
+        return super().parse_args(ctx, args)
 
     def get_command(self, ctx: click.Context, cmd_name: str):
         command = super().get_command(ctx, cmd_name)
@@ -3327,6 +3342,11 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    # Same reason as in _SKIP_ONBOARDING_SUBCOMMANDS: cluster Macs are set up
+    # over SSH, exo owns their models, and the scan printed its "No
+    # externally-managed .gguf files" line into `omm cluster join` (or would
+    # stop it on an import prompt). The one-time flag stays unset for later.
+    "cluster",
 }
 
 # Hidden background children/services are not a user-issued command, so they

@@ -203,6 +203,49 @@ def test_help_with_command_name_shows_that_commands_help():
     assert "Download a model" in result.stdout
 
 
+def _groups_without_default_action():
+    """(path, group) for every visible nested group that does nothing bare."""
+
+    def walk(group, path):
+        for name, sub in sorted(group.commands.items()):
+            if sub.hidden or not hasattr(sub, "commands"):
+                continue
+            if not sub.invoke_without_command:
+                yield (*path, name), sub
+            yield from walk(sub, (*path, name))
+
+    yield from walk(typer.main.get_command(cli.app), ())
+
+
+def test_bare_group_prints_its_help_and_exits_zero():
+    groups = dict(_groups_without_default_action())
+    # a walk that found nothing would pass vacuously
+    assert {("cluster",), ("cluster", "token"), ("rag", "collection")} <= set(groups)
+
+    for path in groups:
+        result = runner.invoke(cli.app, list(path))
+
+        assert result.exit_code == 0, (path, result.output)
+        assert "Missing command" not in result.output, path
+        assert f"omm {' '.join(path)} [OPTIONS] COMMAND" in result.output, path
+
+
+def test_bare_group_with_default_action_keeps_its_own_behaviour(isolated_omm_home, monkeypatch):
+    import questionary
+
+    called = []
+    monkeypatch.setattr(cli, "_ask_select", lambda question: called.append(question) or None)
+    # questionary.select builds its prompt_toolkit Application eagerly, which
+    # fails under CliRunner on Windows CI (no console); the stub never uses it.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.output
+    assert called, "bare `omm setting` should still open its menu"
+    assert "COMMAND [ARGS]" not in result.output
+
+
 def test_help_with_unknown_command_errors():
     result = runner.invoke(cli.app, ["help", "no-such-command"])
 

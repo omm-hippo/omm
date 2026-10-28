@@ -219,7 +219,8 @@ def test_stale_head_loop_stops(head, monkeypatch):
 @pytest.fixture
 def command(head, monkeypatch):
     monkeypatch.setattr(commands, "require_macos", lambda: None)
-    _record()
+    # The command checks freshness against the real clock, so the check-in must be "just now", not NOW.
+    _record(seen=datetime.now(timezone.utc))
     monkeypatch.setattr(handover, "WAIT_SECONDS", 0)
     return head
 

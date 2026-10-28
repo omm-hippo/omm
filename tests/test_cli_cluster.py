@@ -40,6 +40,7 @@ class _Fakes:
         self.firewall_state = "active"
         self.gateway_running = True
         self.exo_up = True
+        self.exo_agent_running = True  # what launchd says about exo's agent
         self.rdma = "enabled"
         self.state = json.loads((FIX / "state.json").read_text(encoding="utf-8"))
         self.previews = json.loads((FIX / "previews.json").read_text(encoding="utf-8"))
@@ -67,6 +68,12 @@ class _Fakes:
 
     def exo_down(self):
         self.exo_up = False
+        self.exo_agent_running = False
+
+    def exo_held(self):
+        """launchd runs exo but its API never answers (Gatekeeper prompt pending)."""
+        self.exo_up = False
+        self.exo_agent_running = True
 
     def previews_all_error(self):
         for row in self.previews["previews"]:
@@ -149,6 +156,7 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(exo_service, "install", lambda namespace, **k: fakes.exo_service_installs.append(namespace))
     monkeypatch.setattr(exo_service, "uninstall", lambda **k: setattr(fakes, "exo_service_uninstalls", fakes.exo_service_uninstalls + 1))
     monkeypatch.setattr(exo_service, "restart", lambda **k: setattr(fakes, "exo_restarts", fakes.exo_restarts + 1))
+    monkeypatch.setattr(exo_service, "is_running", lambda **k: fakes.exo_agent_running)
     monkeypatch.setattr(firewall, "apply", lambda *, gateway_port, **k: fakes.firewall_apply_calls.append(gateway_port))
     monkeypatch.setattr(firewall, "remove", lambda **k: setattr(fakes, "firewall_removed", fakes.firewall_removed + 1))
     monkeypatch.setattr(firewall, "status", lambda *, gateway_port, **k: fakes.firewall_state)
@@ -230,12 +238,56 @@ def test_join_prepares_gateway_port_and_member_service(cluster_fakes):
 def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fakes):
     head = runner.invoke(cli.app, ["cluster", "init"])
     assert head.exit_code == 0, head.output
-    assert "click Allow" in head.output
     left = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
     assert left.exit_code == 0, left.output
     member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert member.exit_code == 0, member.output
-    assert "click Allow" in member.output
+    for result in (head, member):
+        text = " ".join(result.output.split())
+        assert "Click Allow (or Open) on both" in text
+        assert "find devices on the local network" in text
+        assert "exo is running on this Mac" in text
+
+
+def test_init_says_what_to_do_when_exo_does_not_answer(cluster_fakes, monkeypatch):
+    from omm.cluster import commands
+
+    monkeypatch.setattr(commands, "_exo_answers", lambda out: False)
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    assert "exo is running on this Mac" not in text
+    assert ("exo has not answered for 60 seconds. macOS may be holding exo until someone approves it on this "
+            "Mac's screen") in text
+    assert "then run omm cluster restart." in text
+
+
+def test_exo_answers_waits_for_exo_to_start(cluster_fakes):
+    from omm.cluster import commands
+
+    lines, clock = [], [0.0]
+    cluster_fakes.exo_held()
+
+    def sleep(seconds):
+        clock[0] += seconds
+        if clock[0] >= 6:
+            cluster_fakes.exo_up = True
+
+    assert commands._exo_answers(lines.append, sleep=sleep, clock=lambda: clock[0]) is True
+    assert lines == ["Waiting for exo to start..."]
+
+
+def test_exo_answers_gives_up_after_the_timeout(cluster_fakes):
+    from omm.cluster import commands
+
+    clock = [0.0]
+    cluster_fakes.exo_held()
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    assert commands._exo_answers(lambda line: None, sleep=sleep, clock=lambda: clock[0]) is False
+    assert clock[0] == commands.EXO_START_SECONDS
 
 
 def test_init_and_join_say_other_servers_on_high_ports_are_blocked_too(cluster_fakes):
@@ -377,6 +429,54 @@ def test_status_when_exo_is_down_has_same_shape(cluster_fakes):
     assert "exo is not running on this Mac" in data["problems"]
 
 
+def test_status_says_exo_waits_for_on_screen_approval_when_launchd_runs_it(cluster_fakes):
+    # Real Mac mini 2026-10-27: a quarantined exo sat at _dyld_start waiting
+    # for an Allow click; launchd showed a pid, but nothing listened on 52415.
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.exo_held()
+    problems = _status()["problems"]
+    assert "exo is not running on this Mac" not in problems
+    assert ("exo is running but does not answer. If that lasts more than a minute, macOS may be holding exo "
+            "until someone approves it on this Mac's screen: click Allow or Open there (or System Settings > "
+            "Privacy & Security > Open Anyway), then run omm cluster restart.") in problems
+
+
+def test_status_says_not_running_when_launchd_does_not_run_exo(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.exo_down()
+    problems = _status()["problems"]
+    assert "exo is not running on this Mac" in problems
+    assert not any("does not answer" in p for p in problems)
+
+
+def _alone(fakes):
+    fakes.state = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+
+
+def test_head_status_warns_when_exo_sees_no_other_mac(cluster_fakes):
+    # Real 3 Mac minis 2026-10-27: a pending Local Network prompt kept the
+    # head's exo alone for 30+ minutes while status said "No problems found".
+    runner.invoke(cli.app, ["cluster", "init"])
+    _alone(cluster_fakes)
+    problems = _status()["problems"]
+    assert ("exo on this Mac sees no other Mac. If other Macs already ran omm cluster join: on each Mac's "
+            "screen, this one included, allow exo under System Settings > Privacy & Security > Local Network, "
+            "then run omm cluster restart on that Mac.") in problems
+
+
+def test_member_status_warns_when_exo_sees_no_other_mac(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    _alone(cluster_fakes)
+    problems = _status()["problems"]
+    assert ("exo on this Mac sees no other Mac. On this Mac's screen, allow exo under System Settings > "
+            "Privacy & Security > Local Network, then run omm cluster restart.") in problems
+
+
+def test_status_does_not_warn_about_local_network_when_other_macs_show(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    assert not any("sees no other Mac" in p for p in _status()["problems"])
+
+
 def test_status_without_cluster(cluster_fakes):
     data = _status()
     assert data["role"] is None and data["gateway"] == "not_head"
@@ -416,6 +516,7 @@ def _plain_status():
 def test_status_reads_exo_state_once(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     _place_live_model(cluster_fakes, "RunnerReady")
+    cluster_fakes.raw_state_calls = 0  # init's own check that exo answers
     _status()
     assert cluster_fakes.raw_state_calls == 1
 
@@ -1733,11 +1834,47 @@ def test_status_flags_blocked_manual_and_behind(head_with_members):
     assert any("runs omm aaaaaaa but the head runs bbbbbbb" in p for p in problems)
 
 
+def _silent_for(nodes, seconds):
+    from datetime import datetime, timedelta, timezone
+    from omm.cluster import members
+
+    # A Mac's clock is kept once started; forget it first to set an older one.
+    members.silent_since([], now=datetime.now(timezone.utc))
+    members.silent_since(nodes, now=datetime.now(timezone.utc) - timedelta(seconds=seconds))
+
+
 def test_status_flags_member_without_link(head_with_members):
     _member(head_with_members[1])
     _member(head_with_members[2], seen_ago=11 * 60)
+    _silent_for(head_with_members[2:], 4 * 60)
     problems = _status()["problems"]
     assert sum("has not checked in; run omm cluster join" in p for p in problems) == 2
+
+
+def test_status_waits_for_the_first_check_in_of_a_mac_exo_just_found(head_with_members):
+    # Real 3 Mac minis 2026-10-27: the members appeared once the head's exo
+    # could see them, and checked in on their next poll without a re-join.
+    _member(head_with_members[1])
+    _member(head_with_members[2], seen_ago=11 * 60)
+    problems = _status()["problems"]
+    assert not any("has not checked in" in p for p in problems)
+    assert "waiting for mac-c's next check-in (members check in every 60 s)" in problems
+    assert "waiting for mac-d's first check-in (members check in every 60 s)" in problems
+    # Still silent a few minutes later: now the re-join advice is right.
+    _silent_for(head_with_members[2:], 4 * 60)
+    assert sum("has not checked in; run omm cluster join" in p for p in _status()["problems"]) == 2
+
+
+def test_status_forgets_the_silent_clock_once_a_mac_checks_in(head_with_members):
+    from datetime import datetime, timezone
+    from omm.cluster import members
+
+    _silent_for(head_with_members[1:], 4 * 60)
+    for node in head_with_members[1:]:
+        _member(node)
+    assert _status()["problems"] == []
+    assert members.silent_since([], now=datetime.now(timezone.utc)) == {}
+    assert not (members._silent_path()).exists()
 
 
 def test_status_shows_backup_current_or_behind(head_with_members, monkeypatch):
