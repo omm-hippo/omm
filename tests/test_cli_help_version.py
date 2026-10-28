@@ -231,8 +231,13 @@ def test_bare_group_prints_its_help_and_exits_zero():
 
 
 def test_bare_group_with_default_action_keeps_its_own_behaviour(isolated_omm_home, monkeypatch):
+    import questionary
+
     called = []
     monkeypatch.setattr(cli, "_ask_select", lambda question: called.append(question) or None)
+    # questionary.select builds its prompt_toolkit Application eagerly, which
+    # fails under CliRunner on Windows CI (no console); the stub never uses it.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
 
     result = runner.invoke(cli.app, ["setting"])
 
