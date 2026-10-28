@@ -583,9 +583,18 @@ def test_find_supported_python_considers_versioned_and_homebrew_interpreters(tmp
             _fake_python(directory / filename, version)
         return directory
 
+    # The runner's real /usr/bin may hold a valid python/python3.N (ubuntu has
+    # 3.12), which would win over the fakes; expose only the non-Python tools.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for system_dir in ("/usr/bin", "/bin"):
+        for entry in Path(system_dir).iterdir():
+            if not entry.name.startswith("python") and not (tools / entry.name).exists():
+                (tools / entry.name).symlink_to(entry)
+
     def find(path_dirs: list[str], brew_dirs: list[Path], function: str = "find_supported_python"):
         harness = f"""
-PATH={shlex.quote(":".join(path_dirs + ["/usr/bin", "/bin"]))}
+PATH={shlex.quote(":".join(path_dirs + [str(tools)]))}
 BREW_BIN_DIRS={shlex.quote(" ".join(str(d) for d in brew_dirs))}
 is_macos_clt_stub() {{ return 1; }}
 . {shlex.quote(str(script_path))}
