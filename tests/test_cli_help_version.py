@@ -220,7 +220,7 @@ def _groups_without_default_action():
 def test_bare_group_prints_its_help_and_exits_zero():
     groups = dict(_groups_without_default_action())
     # a walk that found nothing would pass vacuously
-    assert {("cluster",), ("cluster", "token"), ("rag", "collection")} <= set(groups)
+    assert {("cluster", "token"), ("rag", "collection")} <= set(groups)
 
     for path in groups:
         result = runner.invoke(cli.app, list(path))

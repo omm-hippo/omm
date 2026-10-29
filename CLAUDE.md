@@ -317,8 +317,9 @@ answers those with 422. exo keeps instances only in memory, so the gateway proce
 single `model` string still loads; `unload`/`uninstall` and Memory Guard victims drop their entry), one at
 a time and never unloading anything, after waiting up to 10 min for every known Mac.
 `load --sharding tensor|pipeline --macs N` filters exo's `/instance/previews` (RDMA `MlxJaccl` first, then
-least memory per Mac); exo offers exactly one node set per sharding/backend/count, so Macs cannot be
-named. Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
+least memory per Mac); exo offers exactly one node set per sharding/backend/count, so those flags cannot name Macs.
+`load --on MAC` (one Mac, Pipeline) takes exo's own single-Mac ring preview and swaps in that Mac's node id
+(`recommend.place_on`; `cluster.json` keeps the Mac's name, since node ids change on every exo restart). Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
 `info` shows every preview as a table (`recommend.placement_rows`; Mac names only on the head).
 Model verbs mirror top-level omm (`cluster/models.py`): `install` downloads to every Mac with exo's
 `/download/start` (each Mac's Pending entry carries the whole-model shard) without loading, `uninstall`
@@ -333,6 +334,16 @@ On the head, `status` also reports document search (RAG) readiness (`cluster/doc
 Ollama installed/running and the `omm rag embedding-model` pulled, with the fix command as a problem only
 once the head has documents or its own collections. It never installs, starts or pulls anything.
 Spec: `docs/superpowers/specs/2026-10-26-cluster-cli-redesign-design.md`.
+Bare `omm cluster` (`cluster/guide.py`, the `cluster_app` callback) is the guided setup: a Mac in no
+cluster checks macOS/RDMA, then asks join (pasted name) or init and walks cables -> restart; head and
+member turn `status()`'s problems into steps and run a narrow fix after a yes (never a whole init/join,
+which restarts exo). Problems are `problems.Problem` (a `str` carrying kind run/manual/wait/tell, `where`,
+`fix`), so `status` and the guide never disagree; non-tty and `--json` only print. A new Mac on a
+long-lived cluster replays exo's whole event log first (hours for 1.67M events) and its `/state` lacks
+itself meanwhile, so the member link gets its id from exo `GET /node_id`, tries `cluster/last-head.txt`,
+and reports `catching_up` + `event_index`; the head shows progress/ETA (`members.json` `event_rate`)
+instead of advising a re-join. The head warns when its LAN address left `cluster.json`
+`employee_addresses` (DHCP). Spec: `docs/superpowers/specs/2026-10-29-cluster-guided-next-step-design.md`.
 Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
 list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`

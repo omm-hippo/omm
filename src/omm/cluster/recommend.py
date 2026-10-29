@@ -7,10 +7,12 @@ point of a cluster is running a model no single Mac can hold.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from omm.cluster.exo_client import ClusterState, ExoModel, Placement
+from omm.cluster.errors import PlacementError
+from omm.cluster.exo_client import ClusterNode, ClusterState, ExoModel, Placement
 
 HEADROOM = 0.85
 
@@ -85,12 +87,54 @@ def choose_placement(placements: Sequence[Placement], *, sharding: str | None = 
     return min(usable, key=lambda p: (_backend(p) != RDMA_BACKEND, _peak(p)), default=None)
 
 
+def resolve_node(state: ClusterState, text: str) -> ClusterNode:
+    """The Mac whose name is `text` (exactly, else as a part of it, ignoring case)."""
+    wanted = text.strip().lower()
+    nodes = list(state.nodes)
+    found = [n for n in nodes if n.name.lower() == wanted] or [n for n in nodes if wanted in n.name.lower()]
+    if len(found) == 1:
+        return found[0]
+    names = ", ".join(n.name for n in nodes) or "none found"
+    if not found:
+        raise PlacementError(f"No Mac on this cluster matches {text!r}. Macs: {names}")
+    raise PlacementError(f"{text!r} matches more than one Mac: {', '.join(n.name for n in found)}. Use more of the name")
+
+
+def place_on(placements: Sequence[Placement], state: ClusterState, text: str) -> Placement:
+    """One Pipeline copy of the model on the Mac named `text`.
+
+    exo offers one set of Macs per sharding, backend and Mac count, and never
+    lets a caller name them (/place_instance has no node argument), so omm
+    takes exo's own single-Mac ring placement and moves it to that Mac. The
+    ring on one Mac uses no network, so only the Mac's id changes.
+    """
+    node = resolve_node(state, text)
+    template = next((p for p in placements if p.error is None and p.sharding == "Pipeline"
+                     and p.instance_meta == "MlxRing" and _node_count(p) == 1), None)
+    if template is None:
+        raise PlacementError("exo offers no single-Mac placement for this model right now")
+    need = _peak(template)
+    if node.memory_available_bytes is not None and node.memory_available_bytes < need:
+        gib = 1024 ** 3
+        raise PlacementError(f"{node.name} has {node.memory_available_bytes / gib:.1f} GiB free; "
+                             f"{template.model_id} needs {need / gib:.1f} GiB")
+    instance = copy.deepcopy(template.instance)
+    body = next(iter(instance.values()))
+    (old,) = body["shardAssignments"]["nodeToRunner"]
+    for table in (body["shardAssignments"]["nodeToRunner"], body.get("hostsByNode") or {}):
+        if old in table:
+            table[node.node_id] = table.pop(old)
+    return Placement(template.model_id, "Pipeline", instance, {node.node_id: need}, None, template.instance_meta)
+
+
 def _macs_text(count: int) -> str:
     return f"{count} Mac" if count == 1 else f"{count} Macs"
 
 
-def describe(sharding: str | None, macs: int | None) -> str:
-    """The admin's choice in words: "Tensor on 2 Macs", "Pipeline", "3 Macs", "automatic"."""
+def describe(sharding: str | None, macs: int | None, on: str | None = None) -> str:
+    """The admin's choice in words: "Tensor on 2 Macs", "Pipeline", "3 Macs", "on Node3", "automatic"."""
+    if on:
+        return f"on {on}"
     if sharding and macs:
         return f"{sharding} on {_macs_text(macs)}"
     return sharding or (_macs_text(macs) if macs else "automatic")

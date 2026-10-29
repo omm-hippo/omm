@@ -116,6 +116,7 @@ omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio (and this Mac's omm cluster) accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
+omm cluster  # Show this Mac's next cluster step (new Mac, head or member) and run it after a yes
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
 omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
 omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, document search (head), and any problems (employee PCs: Macs connected, memory, loaded models)
@@ -126,7 +127,7 @@ omm cluster install MODEL  # Download a model to every Mac without loading it (h
 omm cluster uninstall MODEL [--yes]  # Delete a model from every Mac, unloading it first (head Mac)
 omm cluster list [--json]  # Models on the cluster and whether each is loaded (employee PCs: loaded ones)
 omm cluster info MODEL [--json]  # A model's details, which Macs have it, and every way it can be placed now (also from employee PCs)
-omm cluster load MODEL [--sharding tensor|pipeline] [--macs N]  # Load a model into memory for employees, optionally placed your way; obeys omm setting memory-guard (head Mac)
+omm cluster load MODEL [--sharding tensor|pipeline] [--macs N | --on MAC]  # Load a model into memory for employees, optionally placed your way (--on: one named Mac); obeys omm setting memory-guard (head Mac)
 omm cluster unload MODEL  # Free a loaded model's memory; its files stay (head Mac)
 omm cluster run [MODEL]  # Chat in the terminal, loading an installed model first (any PC with omm rag remote set)
 omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer on the cluster (employee PCs: loaded models; never uploaded)
@@ -207,10 +208,11 @@ network. See [command notes](docs/command-notes.md#omm-verify) for what each che
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
-omm setting agent local <claude|codex|pi> --model <tag> [--base-url <origin>]  # Back up harness settings and route to local Ollama
-omm setting agent cluster <claude|codex|pi> --model <exo-model-id>  # Back up harness settings and route to the company cluster gateway
-omm setting agent cloud <claude|codex|pi>  # Restore original routing and preserve unrelated settings edits
-omm setting agent status <claude|codex|pi>  # Inspect saved routing state without loading a model
+omm setting agent  # Pick connect/restore/status, the harness and the model interactively
+omm setting agent local [claude|codex|pi] [--model <tag>] [--base-url <origin>]  # Back up harness settings and route to local Ollama (asks for what is missing)
+omm setting agent cluster [claude|codex|pi] [--model <exo-model-id>]  # Back up harness settings and route to the company cluster gateway (asks for what is missing)
+omm setting agent cloud [claude|codex|pi]  # Restore original routing and preserve unrelated settings edits
+omm setting agent status [claude|codex|pi]  # Inspect saved routing state without loading a model
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload  # Show all four outbound-data policies (benchmark / usage / crash / votes); see PRIVACY.md

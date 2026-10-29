@@ -399,13 +399,36 @@ class ExoClient:
     def state(self) -> ClusterState:
         return parse_state(self.raw_state())
 
+    def node_id(self, timeout: float = 5) -> str | None:
+        """This Mac's own exo node id, or None when exo does not say.
+
+        `/state` can lack this Mac entirely while exo replays the cluster's
+        event log (a new Mac on a long-lived cluster, 2026-10-29), but
+        `/node_id` answers at once. It is a bare JSON string, which the JSON
+        client rejects, so this reads it directly.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"{self._base_url}/node_id", timeout=timeout) as response:
+                value = json.loads(response.read())
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+        return value if isinstance(value, str) and value else None
+
     def models(self) -> list[ExoModel]:
         return parse_models(self._get("/models"))
 
-    def previews(self, model_id: str) -> list[Placement]:
+    def previews(self, model_id: str, on: str | None = None) -> list[Placement]:
+        """exo's placements; with `on` (a Mac's name) only the one that puts the model on that Mac."""
         from urllib.parse import quote
 
-        return parse_previews(self._get(f"/instance/previews?model_id={quote(model_id, safe='')}", timeout=60))
+        from omm.cluster import recommend
+
+        placements = parse_previews(self._get(f"/instance/previews?model_id={quote(model_id, safe='')}", timeout=60))
+        return [recommend.place_on(placements, self.state(), on)] if on else placements
 
     def create_instance(self, placement: Placement) -> str:
         data = self._call("POST", "/instance", payload={"instance": placement.instance}, timeout=60)

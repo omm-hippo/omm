@@ -354,3 +354,25 @@ def test_await_instance_reports_nothing_before_exo_places_the_instance(monkeypat
     assert client.await_instance("mlx-community/Llama-3.2-1B-Instruct-4bit", 30, on_progress=seen.append,
                                  sleep=lambda s: None) is True
     assert seen == []
+
+
+def test_node_id_reads_the_bare_json_string(monkeypatch):
+    import io
+    import urllib.request
+
+    class Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    urls = []
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda url, timeout: urls.append(url) or Reply(b'"12D3KooWExample"'))
+    assert exo_client.ExoClient().node_id() == "12D3KooWExample"
+    assert urls == ["http://127.0.0.1:52415/node_id"]
+
+
+def test_node_id_none_when_exo_does_not_answer():
+    assert exo_client.ExoClient("http://127.0.0.1:9").node_id(timeout=1) is None

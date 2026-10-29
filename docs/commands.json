@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.78",
+  "omm_version": "0.4.86",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -315,7 +315,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+      "summary": "Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+). Bare omm cluster shows this Mac's next step and runs it after a yes.",
       "description": "",
       "usage": "omm cluster [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -727,6 +727,16 @@
           "metavar": "<int range>",
           "is_flag": false,
           "help": "How many Macs to spread it over; omit to let omm pick",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--on"
+          ],
+          "metavar": "MAC",
+          "is_flag": false,
+          "help": "Load it on this one Mac (part of its name, e.g. node3), not --sharding or --macs",
           "default": null,
           "global": false
         },
@@ -3621,12 +3631,12 @@
       "aliases": [],
       "summary": "Restore original routing while preserving unrelated settings edits.",
       "description": "",
-      "usage": "omm setting agent cloud [OPTIONS] {harness}",
+      "usage": "omm setting agent cloud [OPTIONS] [harness]",
       "arguments": [
         {
           "name": "harness",
-          "help": "claude, codex or pi.",
-          "required": true
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
         }
       ],
       "options": [],
@@ -3642,12 +3652,12 @@
       "aliases": [],
       "summary": "Back up settings and connect a harness to the company cluster gateway.",
       "description": "",
-      "usage": "omm setting agent cluster [OPTIONS] {harness}",
+      "usage": "omm setting agent cluster [OPTIONS] [harness]",
       "arguments": [
         {
           "name": "harness",
-          "help": "claude, codex or pi.",
-          "required": true
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
         }
       ],
       "options": [
@@ -3657,7 +3667,7 @@
           ],
           "metavar": "<str>",
           "is_flag": false,
-          "help": "exo model id the cluster serves (omm cluster status on the head).",
+          "help": "exo model id the cluster serves (omm cluster status on the head). Asked for on a terminal when omitted.",
           "default": null,
           "global": false
         }
@@ -3674,12 +3684,12 @@
       "aliases": [],
       "summary": "Back up settings and connect a harness to a downloaded local Ollama model.",
       "description": "",
-      "usage": "omm setting agent local [OPTIONS] {harness}",
+      "usage": "omm setting agent local [OPTIONS] [harness]",
       "arguments": [
         {
           "name": "harness",
-          "help": "claude, codex or pi.",
-          "required": true
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
         }
       ],
       "options": [
@@ -3689,7 +3699,7 @@
           ],
           "metavar": "<str>",
           "is_flag": false,
-          "help": "Installed tool-capable Ollama model tag (32K+ context).",
+          "help": "Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted.",
           "default": null,
           "global": false
         },
@@ -3716,12 +3726,12 @@
       "aliases": [],
       "summary": "Show saved connection state without loading a model or exposing credentials.",
       "description": "",
-      "usage": "omm setting agent status [OPTIONS] {harness}",
+      "usage": "omm setting agent status [OPTIONS] [harness]",
       "arguments": [
         {
           "name": "harness",
-          "help": "claude, codex or pi.",
-          "required": true
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
         }
       ],
       "options": [],

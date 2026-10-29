@@ -45,6 +45,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .nav-count{margin-left:auto;background:var(--accent-soft);color:var(--accent);font-size:11px;border-radius:4px;padding:0 5px}
 .workspace-footer{margin-top:auto;padding-top:36px}
 .workspace-footer>label{display:block;font-size:11px;color:var(--muted);margin:0 8px 7px}
+.workspace-footer select+label{margin-top:14px}
 .workspace-footer select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);font-size:12px}
 .workspace .local-note{margin:13px 0 0;padding:0 7px;font-size:11px;gap:7px;color:var(--muted)}
 .workspace .local-note span{width:6px;height:6px}

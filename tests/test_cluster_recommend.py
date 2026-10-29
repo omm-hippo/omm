@@ -196,3 +196,48 @@ def test_possible_and_describe_texts():
     assert recommend.describe(None, 3) == "3 Macs"
     assert recommend.describe("Tensor", None) == "Tensor"
     assert recommend.describe(None, None) == "automatic"
+
+
+def _state_of(*pairs, free=None):
+    nodes = tuple(ClusterNode(node_id=i, name=name, memory_total_bytes=64 * GiB,
+                              memory_available_bytes=free if free is not None else 40 * GiB,
+                              rdma="enabled", os_version="26.7") for i, name in pairs)
+    return ClusterState(master_id=pairs[0][0], nodes=nodes, links=(), instances=())
+
+
+def test_place_on_moves_the_single_mac_ring_placement_to_the_named_mac():
+    import pytest
+    from omm.cluster.errors import PlacementError
+
+    state = _state_of((N4, "Node4 Mac mini"), (N3, "Node3 Mac mini"), (N1, "Node1 Mac mini"))
+    placed = recommend.place_on(three_macs(), state, "node3")
+    body = next(iter(placed.instance.values()))
+    assert placed.sharding == "Pipeline" and recommend.link(placed) == "none"
+    assert list(body["shardAssignments"]["nodeToRunner"]) == [N3]
+    assert list(body["hostsByNode"]) == [N3]
+    assert list(placed.memory_delta_by_node) == [N3]
+    # The preview exo gave is left as it was.
+    assert N3 not in {n for p in three_macs() for n in p.memory_delta_by_node if p.sharding == "Pipeline" and len(p.memory_delta_by_node) == 1}
+    with pytest.raises(PlacementError):
+        recommend.place_on(three_macs(), state, "node9")
+
+
+def test_place_on_names_must_match_one_mac_and_the_mac_must_have_room():
+    import pytest
+    from omm.cluster.errors import PlacementError
+
+    state = _state_of((N4, "Node4 Mac mini"), (N3, "Node3 Mac mini"))
+    with pytest.raises(PlacementError, match="more than one Mac"):
+        recommend.place_on(three_macs(), state, "mac mini")
+    with pytest.raises(PlacementError, match="No Mac on this cluster matches 'node9'"):
+        recommend.place_on(three_macs(), state, "node9")
+    # An exact name wins over a longer name that merely contains it.
+    both = _state_of((N4, "Node4"), (N3, "Node4 spare"))
+    assert list(recommend.place_on(three_macs(), both, "Node4").memory_delta_by_node) == [N4]
+    tight = _state_of((N4, "Node4 Mac mini"), free=1 * GiB)
+    with pytest.raises(PlacementError, match="Node4 Mac mini has 1.0 GiB free"):
+        recommend.place_on(three_macs(), tight, "node4")
+
+
+def test_describe_names_the_mac():
+    assert recommend.describe(None, None, "node3") == "on node3"

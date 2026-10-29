@@ -133,8 +133,8 @@ def _install_hint() -> tuple[str, str | None]:
     return "https://ollama.com/download/linux 의 공식 설치 방법으로 Ollama를 설치해 주세요.", None
 
 
-def _persistence_hint(info: dict) -> str | None:
-    """How to keep Ollama on after a reboot, only when it visibly is not set up to."""
+def _persistence_code(info: dict) -> str | None:
+    """Which way to keep Ollama on after a reboot, only when it visibly is not set up to."""
     if not info["installed"]:
         return None
     system = _system()
@@ -143,18 +143,43 @@ def _persistence_hint(info: dict) -> str | None:
             return None  # Ollama.app adds its own login item; other setups are unknown.
         if (Path.home() / "Library" / "LaunchAgents" / "homebrew.mxcl.ollama.plist").exists():
             return None
-        return ("재부팅 뒤에도 켜지게 하려면 `brew services start ollama`를 실행해 주세요"
-                "(손으로 켠 `ollama serve`가 있으면 먼저 꺼 주세요).")
+        return "brew"
     if system == "Windows":
-        if _windows_startup_shortcut():
-            return None
-        return "재부팅 뒤에도 켜지게 하려면 설정 > 앱 > 시작 프로그램에서 Ollama를 켜 주세요."
+        return None if _windows_startup_shortcut() else "windows"
     unit, enabled, user = _linux_units()
     if unit:
-        return None if enabled else "재부팅 뒤에도 켜지게 하려면 `sudo systemctl enable ollama`를 실행해 주세요."
+        return None if enabled else "systemctl"
     if user:
         return None
-    return "재부팅 뒤에도 켜지게 하려면 Ollama를 systemd 서비스로 등록해 주세요(공식 설치 스크립트가 만들어 줘요)."
+    return "systemd-service"
+
+
+_PERSISTENCE = {
+    "brew": ("재부팅 뒤에도 켜지게 하려면 `brew services start ollama`를 실행해 주세요"
+             "(손으로 켠 `ollama serve`가 있으면 먼저 꺼 주세요).",
+             "To keep Ollama on after a reboot, run `brew services start ollama` "
+             "(stop any hand-started `ollama serve` first)."),
+    "windows": ("재부팅 뒤에도 켜지게 하려면 설정 > 앱 > 시작 프로그램에서 Ollama를 켜 주세요.",
+                "To keep Ollama on after a reboot, turn it on in Settings > Apps > Startup."),
+    "systemctl": ("재부팅 뒤에도 켜지게 하려면 `sudo systemctl enable ollama`를 실행해 주세요.",
+                  "To keep Ollama on after a reboot, run `sudo systemctl enable ollama`."),
+    "systemd-service": ("재부팅 뒤에도 켜지게 하려면 Ollama를 systemd 서비스로 등록해 주세요(공식 설치 스크립트가 만들어 줘요).",
+                        "To keep Ollama on after a reboot, register it as a systemd service "
+                        "(the official install script does this)."),
+}
+
+
+def _persistence_hint(info: dict) -> str | None:
+    code = _persistence_code(info)
+    return _PERSISTENCE[code][0] if code else None
+
+
+def persistence_line_en(result: dict) -> str | None:
+    """English twin of result["persistence"] for the CLI; None when that is None."""
+    if not result.get("persistence"):
+        return None
+    code = _persistence_code(install_info())
+    return _PERSISTENCE[code][1] if code else None
 
 
 def check(model: str | None = None, base_url: str | None = None) -> dict:
@@ -198,6 +223,31 @@ def line(result: dict) -> str:
     return f"의미 검색: {LABELS.get(result['state'], LABELS[ERROR])} - {result['message']} {WORDS_ONLY}"
 
 
+_REASONS_EN = {MODEL_MISSING: "embedding model missing", NOT_RUNNING: "Ollama not running",
+               NOT_INSTALLED: "Ollama not installed", ERROR: "Ollama did not respond"}
+WORDS_ONLY_EN = "Word search only for now."
+
+
+def line_en(result: dict) -> str:
+    """English twin of line() for the CLI: the same state, the same fix, from
+    the structured fields instead of the Korean message."""
+    model, command = result["model"], result.get("command")
+    if result["ready"]:
+        return f"Semantic search: ready ({result['message']})"
+    state = result["state"]
+    reason = _REASONS_EN.get(state, _REASONS_EN[ERROR])
+    if state == MODEL_MISSING:
+        detail = f"Embedding model {model} is not pulled. Run `{command}`."
+    elif state == NOT_RUNNING:
+        detail = f"Ollama is installed but not running. Run `{command}`."
+    elif state == NOT_INSTALLED:
+        step = f"Run `{command}`" if command else "Install it from https://ollama.com/download"
+        detail = f"Ollama was not found. {step}, then `ollama pull {model}`."
+    else:
+        detail = f"Ollama ({result['base_url']}) did not respond. Restart Ollama."
+    return f"Semantic search: off ({reason}) - {detail} {WORDS_ONLY_EN}"
+
+
 def public(result: dict) -> dict:
     """What the head tells employees: the state and model only, no paths or commands."""
     return {"state": result["state"], "model": result["model"]}
@@ -213,6 +263,18 @@ def remote_line(view: dict | None) -> str:
     if state == UNSUPPORTED:
         return "회사 head의 의미 검색 상태를 알 수 없어요. head의 omm이 이 확인을 지원하지 않아요(업데이트 필요)."
     return "회사 head의 의미 검색 상태를 확인하지 못했어요. head에 연결되는지 확인해 주세요."
+
+
+def remote_line_en(view: dict | None) -> str:
+    """English twin of remote_line() for the CLI."""
+    state = (view or {}).get("state")
+    if state == READY:
+        return f"Company head semantic search: ready ({view.get('model')})"
+    if state in _REASONS_EN:
+        return f"Company head semantic search is off ({_REASONS_EN[state]}) - tell the admin. {WORDS_ONLY_EN}"
+    if state == UNSUPPORTED:
+        return "Company head semantic search status is unknown: its omm does not support this check (update needed)."
+    return "Could not check the company head's semantic search. Check that the head is reachable."
 
 
 def remote_view(client) -> dict:

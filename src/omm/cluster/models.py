@@ -270,36 +270,39 @@ def _not_offered(model_id: str, choice: str, previews) -> ClusterError:
 
 
 def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], bool] | None,
-                  client: ExoClient | None = None, sharding: str | None = None, macs: int | None = None) -> str:
+                  client: ExoClient | None = None, sharding: str | None = None, macs: int | None = None,
+                  on: str | None = None) -> str:
     """Load `model_id` unless it is loaded, applying `omm setting memory-guard`.
 
     exo builds its placements from each Mac's free memory, which already
     leaves out loaded models, and marks every row of a model that does not
     fit with NO_MEMORY. `confirm` is None without a terminal to ask on.
-    `sharding`/`macs` are the admin's placement choice (None: omm picks).
+    `sharding`/`macs`/`on` are the admin's placement choice (None: omm picks);
+    `on` names the one Mac to load it on.
     """
     from omm.memory_guard import GuardPolicy
 
     commands.require_head_for("Loading a model")
     client = client or ExoClient()
-    choice = dict(sharding=sharding, macs=macs)
-    chosen = sharding is not None or macs is not None
+    choice = dict(sharding=sharding, macs=macs, on=on)
+    chosen = sharding is not None or macs is not None or on is not None
     state = client.state()
     instance = next((i for i in state.instances if i.model_id == model_id), None)
     if instance is not None:
+        elsewhere = on and instance.node_ids != (recommend.resolve_node(state, on).node_id,)
         if ((sharding and instance.sharding.lower() != sharding.lower())
-                or (macs and len(instance.node_ids) != macs)):
+                or (macs and len(instance.node_ids) != macs) or elsewhere):
             now = recommend.describe(instance.sharding, len(instance.node_ids))
             raise ClusterError(f"{model_id} is already loaded as {now}. To load it as "
-                               f"{recommend.describe(sharding, macs)}, unload it first: omm cluster unload {model_id}")
+                               f"{recommend.describe(sharding, macs, on)}, unload it first: omm cluster unload {model_id}")
         return commands.load_model(model_id, out, client, **choice)
-    previews = client.previews(model_id)
-    placement = recommend.choose_placement(previews, **choice)
+    previews = client.previews(model_id, on=on)
+    placement = recommend.choose_placement(previews, sharding=sharding, macs=macs)
     if placement is not None:
         return commands.load_model(model_id, out, client, placement, **choice)
     if chosen and any(row.error is None for row in previews):
         # It fits, just not the way the admin asked.
-        raise _not_offered(model_id, recommend.describe(sharding, macs), previews)
+        raise _not_offered(model_id, recommend.describe(sharding, macs, on), previews)
     loaded = list(dict.fromkeys(instance.model_id for instance in state.instances))
     if not loaded or not any(exo_client.NO_MEMORY in (row.error or "") for row in previews):
         raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
@@ -326,11 +329,11 @@ def ensure_loaded(model_id: str, out: Out, *, policy, confirm: Callable[[str], b
         commands.unload_model(name, client)
         out(f"Unloaded {name}.")
     try:
-        previews = client.previews(model_id)
-        placement = recommend.choose_placement(previews, **choice)
+        previews = client.previews(model_id, on=on)
+        placement = recommend.choose_placement(previews, sharding=sharding, macs=macs)
         if placement is None:
             if chosen and any(row.error is None for row in previews):
-                raise _not_offered(model_id, recommend.describe(sharding, macs), previews)
+                raise _not_offered(model_id, recommend.describe(sharding, macs, on), previews)
             raise ClusterError(f"{model_id} still does not fit after unloading {names}.")
         return commands.load_model(model_id, out, client, placement, **choice)
     except ClusterError as error:
@@ -361,8 +364,9 @@ def _restore(model_id: str, victims: list[str], kept, out: Out, client: ExoClien
         entry = kept.kept(name) if kept is not None else None
         try:
             # The way the admin placed it, else omm's pick so the cluster is not left without it.
-            placement = (recommend.choose_placement(client.previews(name), sharding=entry.sharding, macs=entry.macs)
-                         if entry is not None and (entry.sharding or entry.macs) else None)
+            placement = (recommend.choose_placement(client.previews(name, on=entry.on), sharding=entry.sharding,
+                                                    macs=entry.macs)
+                         if entry is not None and (entry.sharding or entry.macs or entry.on) else None)
             commands.load_model(name, out, client, placement)
         except ClusterError:
             failed.append(name)
