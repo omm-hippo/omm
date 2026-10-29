@@ -43,6 +43,9 @@ class ClusterSettings:
     # Goes up by one on every head handover; a head that sees a peer head with
     # a higher epoch steps down (cluster/handover.py).
     head_epoch: int = 0
+    # The head's office-network addresses employees were last told (`omm cluster`
+    # warns when the router hands out a new one; empty until first seen).
+    employee_addresses: tuple[str, ...] = ()
 
     def kept(self, model_id: str) -> KeptModel | None:
         return next((entry for entry in self.models if entry.model == model_id), None)
@@ -82,10 +85,12 @@ def load() -> ClusterSettings | None:
         return None
     nodes = data.get("known_nodes") or []
     epoch = data.get("head_epoch")
+    addresses = data.get("employee_addresses") or []
     return ClusterSettings(data["role"], namespace, port,
                            tuple(n for n in nodes if isinstance(n, str)) if isinstance(nodes, list) else (),
                            _kept_models(data),
-                           epoch if isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0 else 0)
+                           epoch if isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0 else 0,
+                           tuple(a for a in addresses if isinstance(a, str)) if isinstance(addresses, list) else ())
 
 
 def _kept_models(data: dict) -> tuple[KeptModel, ...]:
@@ -111,6 +116,7 @@ def save(value: ClusterSettings) -> None:
     data = asdict(value)
     data["known_nodes"] = list(value.known_nodes)
     data["models"] = [asdict(entry) for entry in value.models]
+    data["employee_addresses"] = list(value.employee_addresses)
     atomic_write_text(settings_path(), json.dumps({"version": 2, **data}, ensure_ascii=False, indent=2) + "\n")
 
 

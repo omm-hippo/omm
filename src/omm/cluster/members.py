@@ -40,8 +40,27 @@ def record(node_id: str, report: dict, *, now: datetime) -> None:
 
     with locked(_members_path()):
         rows = load()
-        rows[node_id] = {**report, "seen_at": now.isoformat()}
+        row = {**report, "seen_at": now.isoformat()}
+        rate = _event_rate(rows.get(node_id), report, now)
+        if rate is not None:
+            row["event_rate"] = rate
+        rows[node_id] = row
         atomic_write_text(_members_path(), json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
+
+
+def _event_rate(previous: dict | None, report: dict, now: datetime) -> float | None:
+    """Events per second a catching-up member replayed since its last report, for the head's ETA."""
+    index = report.get("event_index")
+    if not report.get("catching_up") or not isinstance(index, int) or not isinstance(previous, dict):
+        return None
+    before = previous.get("event_index")
+    try:
+        seconds = (now - datetime.fromisoformat(previous["seen_at"])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isinstance(before, int) or index <= before or seconds <= 0:
+        return previous.get("event_rate") if index == before else None
+    return (index - before) / seconds
 
 
 def _silent_path() -> Path:

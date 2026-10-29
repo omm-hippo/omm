@@ -89,6 +89,11 @@ def _lan_ipv4s(run=subprocess.run) -> list[str]:
     return found
 
 
+def lan_ipv4s(run=subprocess.run) -> list[str]:
+    """The same addresses, sorted and without repeats (what `omm cluster` remembers for employees)."""
+    return sorted(set(_lan_ipv4s(run)))
+
+
 def _local_hostname(run=subprocess.run) -> str | None:
     """The Bonjour name (`node4.local`) other Macs and PCs on the office network resolve."""
     try:
