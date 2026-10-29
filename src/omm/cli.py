@@ -578,7 +578,7 @@ def marks_command_body_ran(func):
 # [bracketed]); `help --flags` walks the lowercase prefix to find the command
 # whose options it expands, so keep entries spelled the way Click knows them.
 _ROOT_HELP_SECTIONS: list[tuple[str, list[str]]] = [
-    ("Example usage", ["search TEXT", "install MODEL", "list", "recommend", "uninstall MODEL"]),
+    ("Example usage", ["search TEXT", "install MODEL", "list", "recommend", "uninstall MODEL", "code [HARNESS]"]),
     ("Tuning & quality", ["tune MODEL", "benchmark MODEL...", "contribute"]),
     (
         "Maintenance",
@@ -696,6 +696,15 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
         return command
 
 
+def _root_owned_args(args: list[str]) -> list[str]:
+    """`omm code` hands everything after it to the harness (`codex exec
+    --json`), so the root must not read those tokens as its own flags."""
+    for index, token in enumerate(args):
+        if not token.startswith("-"):
+            return args[:index] if token == "code" else args
+    return args
+
+
 def _local_read_only_args(args: list[str]) -> bool:
     before = args[:args.index("--")] if "--" in args else args
     commands = [token for token in before if not token.startswith("-")]
@@ -716,7 +725,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta["omm_raw_args"] = list(args)
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
-        ctx.meta["omm_json_requested"] = option_requested(args, "--json")
+        ctx.meta["omm_json_requested"] = option_requested(_root_owned_args(args), "--json")
         ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
         ctx.meta["omm_local_read_only"] = _local_read_only_args(args)
         try:
@@ -800,23 +809,22 @@ def agent_menu_entry(ctx: typer.Context) -> None:
     _agent_menu()
 
 
-def _agent_pick_harness(harness: str | None) -> str:
+def _agent_pick_harness(harness: str | None, choices: tuple[str, ...] = ("claude", "codex", "pi")) -> str:
     """Return the harness given on the command line, else ask for it. A
     missing value off a terminal is a usage error; Escape/Back exits quietly."""
     if harness:
         return harness
     if not (_stdin_is_tty() and _stdout_is_tty()):
-        err_console.print("[error]Missing harness: claude, codex or pi.[/error]")
+        err_console.print(f"[error]Missing harness: {', '.join(choices[:-1])} or {choices[-1]}.[/error]")
         raise typer.Exit(2)
     import questionary
-    from omm import agent_connection
 
     picked = _ask_select(
         questionary.select(
             "Which harness?",
             choices=[
                 *(questionary.Choice(_AGENT_HARNESS_LABELS[name], value=name)
-                  for name in agent_connection.HARNESSES),
+                  for name in choices),
                 questionary.Choice("← Back", value="back"),
             ],
         )
@@ -826,9 +834,12 @@ def _agent_pick_harness(harness: str | None) -> str:
     return picked
 
 
-def _agent_pick_model(model: str | None, *, local: bool, base_url: str = _AGENT_LOCAL_BASE_URL) -> str:
+def _agent_pick_model(
+    model: str | None, *, local: bool, base_url: str = _AGENT_LOCAL_BASE_URL, default: str | None = None,
+) -> str:
     """Return --model if given, else ask: a list of installed Ollama tags for
-    local routing (with a typed fallback), a typed id for the cluster."""
+    local routing (with a typed fallback), a typed id for the cluster.
+    `default` puts the list cursor on that tag when it is installed."""
     if model:
         return model
     if not (_stdin_is_tty() and _stdout_is_tty()):
@@ -848,6 +859,7 @@ def _agent_pick_model(model: str | None, *, local: bool, base_url: str = _AGENT_
                         questionary.Choice("Type a tag…", value="\0type"),
                         questionary.Choice("← Back", value="back"),
                     ],
+                    default=default if default in tags else None,
                 )
             )
             if picked is None or picked == "back":
@@ -939,6 +951,39 @@ def agent_status(harness: str = typer.Argument(None, help="claude, codex or pi. 
         err_console.print(f"[error]{escape(message)}[/error]")
         raise typer.Exit(1)
     console.print(f"{escape(harness)}: {result['state']}; installed: {result['installed']}")
+
+
+@app.command(name="code", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def code_cmd(
+    ctx: typer.Context,
+    harness: str = typer.Argument(None, help="claude or codex. Asked for on a terminal when omitted."),
+    model: str = typer.Option(None, "--model", help="Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted, starting at the last one used."),
+    base_url: str = typer.Option(_AGENT_LOCAL_BASE_URL, "--base-url", help="Local Ollama HTTP(S) loopback origin."),
+) -> None:
+    """Start Claude Code or Codex on a local Ollama model in this terminal only.
+
+    No settings file changes, so the desktop apps and later sessions keep
+    their normal model; quitting the harness is the way back. Arguments
+    after the harness (or after --) go to the harness unchanged.
+    """
+    from omm import agent_connection, agent_launch
+    harness = _agent_pick_harness(harness, agent_launch.HARNESSES)
+    last = config_mod.load_config().get("agent_code_model")
+    if model is None and isinstance(last, str) and not (_stdin_is_tty() and _stdout_is_tty()):
+        model = last
+    model = _agent_pick_model(model, local=True, base_url=base_url,
+                              default=last if isinstance(last, str) else None)
+    try:
+        metadata = agent_connection.preflight(model, base_url)
+        argv, env = agent_launch.command(harness, metadata, ctx.args)
+    except (agent_connection.ConnectionError, agent_launch.LaunchError) as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1)
+    config_mod.update_config(agent_code_model=model)
+    label = _AGENT_HARNESS_LABELS[harness]
+    console.print(f"Starting {label} on {escape(model)} (local Ollama) for this session only. Settings files are unchanged.")
+    console.print("[muted]Tool calling was checked from model metadata only. 64K+ Ollama runtime context is recommended.[/muted]")
+    raise typer.Exit(agent_launch.run(argv, env))
 
 
 rag_app = typer.Typer(
@@ -1610,7 +1655,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Core", ["search", "install", "run", "code", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
     ("Documents", ["rag"]),
     ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (

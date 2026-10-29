@@ -1,5 +1,38 @@
 # Local agent connections
 
+## One session only: `omm code`
+
+```sh
+omm code codex                  # pick an installed Ollama model, start Codex on it
+omm code claude --model TAG     # same for Claude Code, model given up front
+omm code codex exec "fix the failing test"   # arguments after the harness go to it
+```
+
+`omm code` starts the harness in the current terminal with local-Ollama
+routing passed on its command line (Codex `-c` overrides) or in its process
+environment (Claude Code), so no settings file is written. The Codex and
+Claude desktop apps, other terminals, and later sessions keep their normal
+model; quitting the harness is the way back. The model picker starts at the
+last model used, and off a terminal that model is reused without asking.
+The same tool-calling and context checks as `agent local` run first.
+
+For Codex it also sets `model_context_window` and
+`model_auto_compact_token_limit` to the local model's context, so a
+cloud-sized value in `config.toml` does not stop auto-compaction, and turns
+off `features.multi_agent` and `web_search`. Ollama's Responses API (checked
+with 0.30.10) rejects every request that lists a non-function tool, and Codex
+0.165.0 sends sub-agent (`namespace`) and `web_search` tools by default.
+`agent local codex` below does not change those two settings, so with Codex
+0.165+ against Ollama it fails with repeated reconnect errors; prefer
+`omm code codex`. pi is not supported by `omm code` yet.
+
+Checked on 2026-10-29 with Codex CLI 0.165.0, Claude Code 2.1.310 and Ollama
+0.30.10: both harnesses answered through local Ollama, and Codex with
+`gpt-oss-20b` ran a shell tool call that wrote a file. `qwen3:4b-instruct`
+answered but replied with a code block instead of calling the tool.
+
+## Saved connection: `omm setting agent`
+
 Related issue: #502, local Ollama phase. Install Claude Code, Codex CLI or pi
 separately, then install a local Ollama model with tool support and at least
 32K context capacity. 64K+ is recommended. OMM does not install the harness or
@@ -35,7 +68,10 @@ itself have pointed at a different local server.
 
 If nothing changed after connection, restoration reproduces the exact original
 file bytes. If unrelated preferences changed, OMM restores only routing fields
-and keeps those preferences. If a routing field was manually changed, restoration
+and keeps those preferences. A model picked later in the harness (`model`, or
+pi's `defaultModel`; the Codex app writes `model` when you switch models) is
+kept as the newer choice while the provider and server fields are restored.
+If any other routing field was manually changed, restoration
 stops before writing any file. Preserve the backup and reconcile the routing
 edit yourself; OMM provides no forced overwrite switch. Malformed files,
 duplicate JSON keys and symlinked paths are rejected.

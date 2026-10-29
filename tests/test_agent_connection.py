@@ -98,13 +98,39 @@ def test_new_files_removed_and_new_unrelated_fields_kept(harness, home, availabl
 
 
 @pytest.mark.parametrize("harness", agent.HARNESSES)
+def test_model_picked_after_connection_is_kept_and_routing_restored(harness, home, available):
+    paths = seed(harness)
+    agent.connect(harness, "local-model")
+    path = paths[-1]
+    is_toml = path.suffix == ".toml"
+    key = "defaultModel" if harness == "pi" else "model"
+    data = agent._parse(path.read_bytes(), is_toml)
+    data[key] = "picked-in-the-app"
+    path.write_bytes(agent._dump(data, is_toml))
+    assert agent.restore(harness)
+    restored = [agent._parse(p.read_bytes(), p.suffix == ".toml") for p in paths]
+    assert restored[-1][key] == "picked-in-the-app"
+    assert all("omm-local" not in str(document) for document in restored)
+    if harness == "codex":
+        assert restored[0]["model_provider"] == "openai"
+    if harness == "claude":
+        assert restored[0]["env"] == {"UNRELATED": "keep"}
+    assert not agent._journal(harness).exists()
+
+
+@pytest.mark.parametrize("harness", agent.HARNESSES)
 def test_conflicting_routing_edits_are_never_overwritten(harness, home, available):
     paths = seed(harness)
     agent.connect(harness, "local-model")
     path = paths[-1]
     is_toml = path.suffix == ".toml"
     data = agent._parse(path.read_bytes(), is_toml)
-    data["defaultModel" if harness == "pi" else "model"] = "manual-selection"
+    if harness == "pi":
+        data["defaultProvider"] = "manual-selection"
+    elif harness == "codex":
+        data["model_provider"] = "manual-selection"
+    else:
+        data["env"]["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:9999"
     path.write_bytes(agent._dump(data, is_toml))
     before = [p.read_bytes() for p in paths]
     with pytest.raises(agent.ConnectionError, match="routing field was edited"):

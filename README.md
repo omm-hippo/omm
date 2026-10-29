@@ -208,6 +208,7 @@ network. See [command notes](docs/command-notes.md#omm-verify) for what each che
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
+omm code [claude|codex] [--model <tag>] [-- harness args]  # Start Claude Code or Codex on a local Ollama model in this terminal only; no settings file or desktop app changes
 omm setting agent  # Pick connect/restore/status, the harness and the model interactively
 omm setting agent local [claude|codex|pi] [--model <tag>] [--base-url <origin>]  # Back up harness settings and route to local Ollama (asks for what is missing)
 omm setting agent cluster [claude|codex|pi] [--model <exo-model-id>]  # Back up harness settings and route to the company cluster gateway (asks for what is missing)

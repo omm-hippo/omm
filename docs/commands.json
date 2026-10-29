@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.86",
+  "omm_version": "0.4.89",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1217,6 +1217,46 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#unload"
+    },
+    {
+      "path": [
+        "code"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Start Claude Code or Codex on a local Ollama model in this terminal only.",
+      "description": "No settings file changes, so the desktop apps and later sessions keep their normal model; quitting the harness is the way back. Arguments after the harness (or after --) go to the harness unchanged.",
+      "usage": "omm code [OPTIONS] [harness]",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude or codex. Asked for on a terminal when omitted.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--model"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted, starting at the last one used.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--base-url"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Local Ollama HTTP(S) loopback origin.",
+          "default": "http://127.0.0.1:11434",
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/code"
     },
     {
       "path": [

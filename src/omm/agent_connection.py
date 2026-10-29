@@ -14,6 +14,9 @@ from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
 
 HARNESSES = ("claude", "codex", "pi")
 MAX_BYTES = 2 * 1024 * 1024
+# Routing fields that only name the model. Restore keeps a later edit of
+# these instead of refusing; provider and server fields still must match.
+_MODEL_CHOICE_FIELDS = {("model",), ("defaultModel",)}
 
 
 class ConnectionError(ValueError):
@@ -104,20 +107,28 @@ def _set(document, keys, present, value):
         current.pop(keys[-1], None)
 
 
+def claude_env(model, base_url):
+    """Claude Code environment that routes every model tier to local Ollama."""
+    return {
+        "ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": "ollama",
+        "ANTHROPIC_API_KEY": "", "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        "CLAUDE_CODE_SUBAGENT_MODEL": model,
+    }
+
+
+def codex_provider(base_url):
+    """Codex `model_providers.omm-local` table for local Ollama."""
+    return {"name": "OMM local Ollama", "base_url": base_url + "/v1",
+            "wire_api": "responses", "requires_openai_auth": False}
+
+
 def _patches(harness, model, base_url, context):
     if harness == "claude":
-        return [[(("model",), model), *(( ("env", key), value) for key, value in {
-            "ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": "ollama",
-            "ANTHROPIC_API_KEY": "", "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
-            "CLAUDE_CODE_SUBAGENT_MODEL": model,
-        }.items())]]
+        return [[(("model",), model), *((("env", key), value) for key, value in claude_env(model, base_url).items())]]
     if harness == "codex":
         return [[(("model",), model), (("model_provider",), "omm-local"),
-                 (("model_providers", "omm-local"), {
-                     "name": "OMM local Ollama", "base_url": base_url + "/v1",
-                     "wire_api": "responses", "requires_openai_auth": False,
-                 })]]
+                 (("model_providers", "omm-local"), codex_provider(base_url))]]
     return [[(("providers", "omm-local"), {
         "baseUrl": base_url + "/v1", "api": "openai-completions", "apiKey": "ollama",
         "models": [{"id": model, "name": model, "contextWindow": context,
@@ -296,6 +307,10 @@ def restore(harness):
                 for keys in entry["fields"]:
                     value = _lookup(document, keys)
                     if value not in (_lookup(local, keys), _lookup(original, keys)):
+                        # A model picked later in the harness (the Codex app
+                        # writes `model`) is the user's newer choice: keep it.
+                        if tuple(keys) in _MODEL_CHOICE_FIELDS:
+                            continue
                         raise ConnectionError("A routing field was edited after connection. No files restored; reconcile it with the private backup first.")
                     present, value = _lookup(original, keys)
                     _set(document, keys, present, deepcopy(value))
