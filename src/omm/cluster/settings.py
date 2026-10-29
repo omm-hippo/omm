@@ -28,6 +28,8 @@ class KeptModel:
     # `omm cluster load --sharding/--macs`; None means omm picked (recommend.choose_placement).
     sharding: str | None = None
     macs: int | None = None
+    # `omm cluster load --on`: the Mac's name, not its exo node id (that changes on every exo restart).
+    on: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,11 +99,12 @@ def _kept_models(data: dict) -> tuple[KeptModel, ...]:
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("model"), str) or not row["model"]:
             continue
-        sharding, macs = row.get("sharding"), row.get("macs")
+        sharding, macs, on = row.get("sharding"), row.get("macs"), row.get("on")
         kept.setdefault(row["model"], KeptModel(
             row["model"],
             sharding if sharding in ("Tensor", "Pipeline") else None,
-            macs if isinstance(macs, int) and not isinstance(macs, bool) and macs > 0 else None))
+            macs if isinstance(macs, int) and not isinstance(macs, bool) and macs > 0 else None,
+            on if isinstance(on, str) and on else None))
     return tuple(kept.values())
 
 

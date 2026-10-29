@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.85",
+  "omm_version": "0.4.86",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -727,6 +727,16 @@
           "metavar": "<int range>",
           "is_flag": false,
           "help": "How many Macs to spread it over; omit to let omm pick",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--on"
+          ],
+          "metavar": "MAC",
+          "is_flag": false,
+          "help": "Load it on this one Mac (part of its name, e.g. node3), not --sharding or --macs",
           "default": null,
           "global": false
         },

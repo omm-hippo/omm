@@ -126,7 +126,7 @@ omm cluster install MODEL  # Download a model to every Mac without loading it (h
 omm cluster uninstall MODEL [--yes]  # Delete a model from every Mac, unloading it first (head Mac)
 omm cluster list [--json]  # Models on the cluster and whether each is loaded (employee PCs: loaded ones)
 omm cluster info MODEL [--json]  # A model's details, which Macs have it, and every way it can be placed now (also from employee PCs)
-omm cluster load MODEL [--sharding tensor|pipeline] [--macs N]  # Load a model into memory for employees, optionally placed your way; obeys omm setting memory-guard (head Mac)
+omm cluster load MODEL [--sharding tensor|pipeline] [--macs N | --on MAC]  # Load a model into memory for employees, optionally placed your way (--on: one named Mac); obeys omm setting memory-guard (head Mac)
 omm cluster unload MODEL  # Free a loaded model's memory; its files stay (head Mac)
 omm cluster run [MODEL]  # Chat in the terminal, loading an installed model first (any PC with omm rag remote set)
 omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer on the cluster (employee PCs: loaded models; never uploaded)

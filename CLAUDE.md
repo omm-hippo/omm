@@ -317,8 +317,9 @@ answers those with 422. exo keeps instances only in memory, so the gateway proce
 single `model` string still loads; `unload`/`uninstall` and Memory Guard victims drop their entry), one at
 a time and never unloading anything, after waiting up to 10 min for every known Mac.
 `load --sharding tensor|pipeline --macs N` filters exo's `/instance/previews` (RDMA `MlxJaccl` first, then
-least memory per Mac); exo offers exactly one node set per sharding/backend/count, so Macs cannot be
-named. Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
+least memory per Mac); exo offers exactly one node set per sharding/backend/count, so those flags cannot name Macs.
+`load --on MAC` (one Mac, Pipeline) takes exo's own single-Mac ring preview and swaps in that Mac's node id
+(`recommend.place_on`; `cluster.json` keeps the Mac's name, since node ids change on every exo restart). Without flags `recommend.choose_placement` picks (Tensor over RDMA when it fits).
 `info` shows every preview as a table (`recommend.placement_rows`; Mac names only on the head).
 Model verbs mirror top-level omm (`cluster/models.py`): `install` downloads to every Mac with exo's
 `/download/start` (each Mac's Pending entry carries the whole-model shard) without loading, `uninstall`
