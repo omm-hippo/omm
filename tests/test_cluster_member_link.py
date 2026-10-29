@@ -125,7 +125,7 @@ def cycle(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(member_link, "_raw_state", lambda: _state({"me": ["169.254.0.1"], "head": ["169.254.0.2"]}))
     monkeypatch.setattr(member_link, "local_ipv4s", lambda run=None: ["169.254.0.1"])
     monkeypatch.setattr(member_link, "report", lambda: {"version_state": "same"})
-    monkeypatch.setattr(member_link, "find_head", lambda raw, key, own, *, report: seen.reply)
+    monkeypatch.setattr(member_link, "find_head", lambda raw, key, own, *, report, extra=(): seen.reply)
     monkeypatch.setattr(version_follow, "apply", lambda v: seen.applied.append(v) or seen.result)
     seen.result = ("same", None)
     monkeypatch.setattr(member_link, "fetch_snapshot", lambda address, key, own: seen.fetched.append(address))
@@ -277,3 +277,60 @@ def test_run_once_refreshes_its_own_plist_on_the_first_cycle(cycle, monkeypatch)
     member_link.run_once(first=True)
     member_link.run_once()
     assert refreshed == [True]
+
+
+def test_catching_up_when_exo_state_lacks_this_mac():
+    assert member_link.catching_up(_state({"a": ["1.1.1.1"], "b": ["1.1.1.2"]}), "me") is True
+    assert member_link.catching_up(_state({"me": ["1.1.1.1"], "b": ["1.1.1.2"]}), "me") is False
+    assert member_link.catching_up({}, "me") is False
+
+
+def test_find_head_tries_the_saved_head_address(monkeypatch):
+    import json
+
+    asked = []
+
+    def fake(address, method, path, key, own_node, *, body=None, timeout=5):
+        asked.append(address)
+        if address != "192.0.2.9:52440":
+            raise ClusterError("no gateway")
+        return 200, json.dumps({"head": True, "epoch": 1, "node_id": "head"}).encode(), {}
+
+    monkeypatch.setattr(member_link, "request", fake)
+    found = member_link.find_head(_state({"old": ["192.0.2.1"]}), KEY, "me", report={}, extra=["192.0.2.9:52440"])
+    assert (found.node_id, found.address) == ("head", "192.0.2.9:52440")
+    assert sorted(asked) == ["192.0.2.1:52440", "192.0.2.9:52440"]
+
+
+def _behind(cycle, monkeypatch):
+    # Node2 on 2026-10-29: exo's state is an old view without this Mac in it.
+    monkeypatch.setattr(member_link, "_raw_state",
+                        lambda: {**_state({"head": ["169.254.0.2"]}), "lastEventAppliedIdx": 14529})
+    monkeypatch.setattr(member_link.exo_client.ExoClient, "node_id", lambda self, timeout=5: "me")
+    sent = []
+    monkeypatch.setattr(member_link, "find_head",
+                        lambda raw, key, own, *, report, extra=(): sent.append((own, report, list(extra))) or cycle.reply)
+    return sent
+
+
+def test_run_once_reports_catching_up_and_waits(cycle, monkeypatch):
+    sent = _behind(cycle, monkeypatch)
+    cycle.reply.body["rag_marker"] = "m2"
+    assert member_link.run_once() == "catching_up"
+    own, report, _ = sent[0]
+    assert own == "me" and report["catching_up"] is True and report["event_index"] == 14529
+    assert cycle.applied == [] and cycle.fetched == []
+
+
+def test_run_once_remembers_and_reuses_the_head_address(cycle, monkeypatch):
+    sent = _behind(cycle, monkeypatch)
+    member_link.run_once()
+    member_link.run_once()
+    assert member_link.last_head_path().read_text(encoding="utf-8").strip() == "169.254.0.2:52440"
+    assert sent[1][2] == ["169.254.0.2:52440"]
+
+
+def test_run_once_without_any_node_id_stays_no_node(cycle, monkeypatch):
+    monkeypatch.setattr(member_link, "local_ipv4s", lambda run=None: ["10.9.9.9"])
+    monkeypatch.setattr(member_link.exo_client.ExoClient, "node_id", lambda self, timeout=5: None)
+    assert member_link.run_once() == "no_node"

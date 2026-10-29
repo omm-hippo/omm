@@ -315,7 +315,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+      "summary": "Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+). Bare omm cluster shows this Mac's next step and runs it after a yes.",
       "description": "",
       "usage": "omm cluster [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],

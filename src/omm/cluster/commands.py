@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 
 from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, member_service, members, netconfig,
                          power, preflight, rag_backup, recommend, service, settings, tls, tokens)
+from omm.cluster import problems as problems_mod
 from omm.cluster.errors import ClusterError, UsageProblem
+from omm.cluster.problems import Problem
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
 
@@ -64,7 +66,7 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
     netconfig.apply()
     netconfig.wait_for_addresses(out)
     exo_service.install(namespace)
-    if _exo_answers(out):
+    if exo_answers(out):
         out(f"exo is running on this Mac (cluster {namespace}).")
     else:
         out(f"exo has not answered for {EXO_START_SECONDS} seconds. {EXO_HELD_FIX}")
@@ -99,7 +101,7 @@ EXO_START_SECONDS = 60
 EXO_START_POLL = 2
 
 
-def _exo_answers(out: Out, *, timeout: float = EXO_START_SECONDS, sleep=time.sleep, clock=time.monotonic) -> bool:
+def exo_answers(out: Out, *, timeout: float = EXO_START_SECONDS, sleep=time.sleep, clock=time.monotonic) -> bool:
     deadline = clock() + timeout
     told = False
     while True:
@@ -141,7 +143,8 @@ def init(out: Out) -> settings.ClusterSettings:
     # The models to serve survive a re-run, which restarts exo and so drops them.
     # The epoch survives too: a reset one would tie with a head that took over meanwhile.
     saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, models=current.models if current else (),
-                                     head_epoch=current.head_epoch if current else 0)
+                                     head_epoch=current.head_epoch if current else 0,
+                                     employee_addresses=tuple(tls.lan_ipv4s()))
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -161,6 +164,7 @@ def init(out: Out) -> settings.ClusterSettings:
     out("Then give each employee a token: omm cluster token add <name>")
     for line in employee_setup_lines():
         out(line)
+    out(DHCP_HINT)
     return saved
 
 
@@ -218,7 +222,7 @@ def _instance_load(raw: dict, model_id: str) -> dict:
 def status() -> dict:
     require_macos()
     current = settings.load()
-    problems: list[str] = []
+    problems: list[Problem] = []
     exo = {"reachable": False, "nodes": [], "instances": [], "links": []}
     try:
         raw = ExoClient().raw_state()
@@ -226,28 +230,42 @@ def status() -> dict:
         # launchd has it running but nothing listens: held before its first
         # instruction, or (for a few seconds) still starting.
         if current is not None and exo_service.is_running():
-            problems.append(f"exo is running but does not answer. If that lasts more than a minute, {EXO_HELD_FIX}")
+            problems.append(Problem(f"exo is running but does not answer. If that lasts more than a minute, "
+                                    f"{EXO_HELD_FIX}", "manual", after="restart"))
         else:
-            problems.append(str(error))
+            problems.append(Problem(str(error), "run" if current is not None else "manual",
+                                    fix="restart" if current is not None else None))
         raw = None
     except ClusterError as error:
-        problems.append(str(error))
+        problems.append(Problem(str(error)))
         raw = None
     state = None if raw is None else exo_client.parse_state(raw)
+    own = None if raw is None else (_own_node(raw) or ExoClient().node_id())
+    # Until exo has replayed the cluster's history its state is an old view
+    # (no entry for this Mac, old ids and addresses): nothing in it is worth
+    # acting on (Node2, 2026-10-29).
+    behind = (state is not None and own is not None and current is not None and current.role == "member"
+              and member_link_catching_up(raw, own))
+    own_name = next((n.name for n in state.nodes if n.node_id == own), None) if state is not None else None
     member_rows: list[dict] = []
     if state is not None and current is not None and current.role == "head":
         member_rows, found = _member_rows(raw, state)
         problems += found
-    if state is not None:
+    if behind:
+        index = raw.get("lastEventAppliedIdx")
+        problems.append(Problem(f"exo on this Mac is still catching up on the cluster's history (event "
+                                f"{index if isinstance(index, int) else '?'}); wait, nothing to fix. The head "
+                                "shows how far it is.", "wait"))
+    if state is not None and not behind:
         instances = []
         for i in state.instances:
             load = _instance_load(raw, i.model_id)
             instances.append({"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids), **load})
             if load["state"] == "failed":
-                problems.append(
+                problems.append(Problem(
                     f"{load['failed_on']} could not download {i.model_id}; exo does not try a failed download "
                     f"again until it restarts. Fix the cause, run omm cluster restart on {load['failed_on']}, "
-                    f"then run omm cluster load {i.model_id} again.")
+                    f"then run omm cluster load {i.model_id} again.", "tell", where=load["failed_on"]))
         exo = {
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
@@ -264,44 +282,45 @@ def status() -> dict:
         for index, first in enumerate(ordered):
             for second in ordered[index + 1:]:
                 if frozenset((first.node_id, second.node_id)) not in linked:
-                    problems.append(f"no Thunderbolt link between {first.name} and {second.name}")
+                    problems.append(Problem(f"no Thunderbolt link between {first.name} and {second.name}",
+                                            "manual", after="restart"))
         if len(state.nodes) > 1:
-            problems += [f"Thunderbolt Bridge is on for {n.name}; run omm cluster init (head) or join on it again"
+            problems += [_on_mac(n.name, own_name, f"Thunderbolt Bridge is on for {n.name}; run omm cluster on it",
+                                 fix="netconfig")
                          for n in state.nodes if n.thunderbolt_bridge]
         # exo computes these from Bridge-enabled nodes and their Thunderbolt
         # links; a 2-node "cycle" is just one cable seen from both ends.
         for cycle in state.bridge_cycles:
             if len(cycle) > 2:
                 members = ", ".join(sorted(names.get(node_id, node_id) for node_id in cycle))
-                problems.append(f"Thunderbolt Bridge loop between {members} (packet storm); unplug one of "
-                                "those cables or run omm cluster init/join again on each of them")
+                problems.append(Problem(f"Thunderbolt Bridge loop between {members} (packet storm); unplug one of "
+                                        "those cables or run omm cluster on each of them", "manual"))
         if current is not None and len(state.nodes) == 1:
             # A pending Local Network prompt leaves exo up but alone: no peer
             # is ever dialed and nothing else looks wrong (node4, 2026-10-27).
             if current.role == "member":
-                problems.append(f"exo on this Mac sees no other Mac. On this Mac's screen, {LOCAL_NETWORK_FIX}, "
-                                "then run omm cluster restart.")
+                problems.append(Problem(f"exo on this Mac sees no other Mac. On this Mac's screen, "
+                                        f"{LOCAL_NETWORK_FIX}, then run omm cluster restart.", "manual",
+                                        after="restart"))
             else:
-                problems.append("exo on this Mac sees no other Mac. If other Macs already ran omm cluster join: "
-                                f"on each Mac's screen, this one included, {LOCAL_NETWORK_FIX}, then run "
-                                "omm cluster restart on that Mac.")
+                problems.append(Problem("exo on this Mac sees no other Mac. If other Macs already ran omm cluster "
+                                        f"join: on each Mac's screen, this one included, {LOCAL_NETWORK_FIX}, then "
+                                        "run omm cluster restart on that Mac.", "manual", after="restart"))
         seen = [n.name for n in state.nodes]
         if current is not None:
             missing = [name for name in current.known_nodes if name not in seen]
-            problems += [f"node {name} missing (seen before)" for name in missing]
+            problems += [Problem(f"node {name} missing (seen before)", "tell", where=name) for name in missing]
             if missing:
                 # After a cable is pulled, exo can stop seeing Macs that are still
                 # connected until it is restarted (seen once on 3 Mac minis, 2026-10-24).
-                problems.append("if those Macs are on, run omm cluster restart on each of them and on this Mac")
+                problems.append(Problem("if those Macs are on, run omm cluster restart on each of them and on "
+                                        "this Mac", "tell"))
                 again = "init" if current.role == "head" else f"join {current.namespace}"
-                problems.append(f"if a Mac left the cluster for good, run omm cluster {again} again on this Mac to forget it")
-        # RDMA needs the exact same build, not just the same version number
-        # (a 26.5 beta and 26.5 share "26.5").
-        versions = {n.name: f"{n.os_version} ({n.os_build})" if n.os_build else n.os_version
-                    for n in state.nodes if n.os_version}
-        if len(set(versions.values())) > 1:
-            problems.append("macOS versions differ: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
-        problems += [f"RDMA disabled on {n.name}" for n in state.nodes if n.rdma == "disabled"]
+                problems.append(Problem(f"if a Mac left the cluster for good, run omm cluster {again} again on "
+                                        "this Mac to forget it", "tell"))
+        problems += _macos_problems(state.nodes, own_name)
+        problems += [_on_mac(n.name, own_name, f"RDMA disabled on {n.name}")
+                     for n in state.nodes if n.rdma == "disabled"]
         if current is not None:
             merged = tuple(dict.fromkeys([*current.known_nodes, *seen]))
             if merged != current.known_nodes:
@@ -310,35 +329,107 @@ def status() -> dict:
     gateway = "not_head"
     documents = None
     if current is not None and settings.is_legacy(current.namespace):
-        problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
-                        "on the head Mac and omm cluster join <new name> on every other Mac")
+        problems.append(Problem("the cluster name is too short to protect exo's network port; run omm cluster "
+                                "init on the head Mac and omm cluster join <new name> on every other Mac"))
     if current is not None:
         fw = firewall.status(gateway_port=current.gateway_port)
         if fw not in ("active", "unchecked"):
-            problems.append(f"firewall rules are {fw}; run omm cluster {'init' if current.role == 'head' else 'join'} again")
+            problems.append(Problem(f"firewall rules are {fw}; {FIX_HERE}", "run", fix="firewall"))
         idle = power.current_idle_sleep_minutes()
         if idle:
-            problems.append(f"this Mac sleeps after {idle} min idle; run omm cluster "
-                            f"{'init' if current.role == 'head' else 'join'} again")
-        problems += [f"the macOS firewall holds incoming connections to {path}; run omm cluster "
-                     f"{'init' if current.role == 'head' else 'join ' + current.namespace} again"
+            problems.append(Problem(f"this Mac sleeps after {idle} min idle; {FIX_HERE}", "run", fix="keep_awake"))
+        problems += [Problem(f"the macOS firewall holds incoming connections to {path}; {FIX_HERE}", "run",
+                             fix="appfw")
                      for path in appfw.not_allowed([appfw.gateway_binary()])]
         if current.role == "member" and not member_service.is_running():
-            problems.append(f"the member link is not running; run omm cluster join {current.namespace} again")
+            problems.append(Problem(f"the member link is not running; {FIX_HERE}", "run", fix="member_link"))
         if current.role == "head":
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
-                problems.append("gateway is not running")
+                problems.append(Problem(f"gateway is not running; {FIX_HERE}", "run", fix="gateway"))
             # The head answers employees' document questions (#534).
             documents, found = document_search.check()
-            problems += found
+            problems += [problems_mod.of(text) for text in found]
+            problems += _address_problems()
     head = current is not None and current.role == "head"
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway,
             "gateway_url": gateway_url() if head else None,
             "gateway_ca_sha256": tls.head_fingerprint() if head else None,
             "kept_models": [dataclasses.asdict(entry) for entry in current.models] if head else [],
-            "document_search": documents, "members": member_rows, "problems": problems}
+            "document_search": documents, "members": member_rows, "problems": problems,
+            "catching_up": behind}
+
+
+# What a problem omm can fix itself tells the user (the fix is narrow, never a whole init/join).
+FIX_HERE = "run omm cluster on this Mac to fix it"
+
+
+def member_link_catching_up(raw: dict, own: str) -> bool:
+    from omm.cluster import member_link
+
+    return member_link.catching_up(raw, own)
+
+
+def _on_mac(name: str, own_name: str | None, text: str, *, fix: str | None = None) -> Problem:
+    """A problem on the named Mac: this Mac's own (run or manual) or another Mac's (tell)."""
+    if name == own_name:
+        return Problem(text, "run" if fix else "manual", fix=fix)
+    return Problem(text, "tell", where=name)
+
+
+def _build_key(version: str, build: str | None) -> tuple:
+    parts = tuple(int(p) if p.isdigit() else 0 for p in version.split("."))
+    return parts, build or ""
+
+
+def _macos_problems(nodes, own_name: str | None) -> list[Problem]:
+    # RDMA needs the exact same build, not just the same version number
+    # (a 26.5 beta and 26.5 share "26.5").
+    versions = {n.name: (n.os_version, n.os_build) for n in nodes if n.os_version}
+    if len({v for v in versions.values()}) <= 1:
+        return []
+    label = {name: f"{v} ({b})" if b else v for name, (v, b) in versions.items()}
+    newest = max(versions.values(), key=lambda pair: _build_key(*pair))
+    behind = sorted(name for name, pair in versions.items() if pair != newest)
+    target = f"{newest[0]} ({newest[1]})" if newest[1] else newest[0]
+    # A Mac cannot go back to an older macOS, so the others catch up.
+    text = ("macOS versions differ: " + ", ".join(f"{k}={v}" for k, v in sorted(label.items()))
+            + f". Update macOS to {target} on {', '.join(behind)}, one Mac at a time")
+    return [Problem(text, "manual" if own_name in behind and len(behind) == 1 else "tell",
+                    where=None if own_name in behind and len(behind) == 1 else ", ".join(behind))]
+
+
+def _address_problems() -> list[Problem]:
+    """The head's office-network address changed since employees were told it (DHCP, 2026-10-29)."""
+    # Loaded again: status may have just saved newly seen Macs.
+    current = settings.load()
+    now = tuple(tls.lan_ipv4s())
+    if current is None:
+        return []
+    if not now:
+        return []
+    if not current.employee_addresses:
+        settings.save(dataclasses.replace(current, employee_addresses=now))
+        return []
+    if set(now) & set(current.employee_addresses):
+        return []
+    old = ", ".join(current.employee_addresses)
+    return [Problem(f"the head's address changed from {old} to {now[0]}; on each employee PC run omm rag remote set "
+                    f"https://{now[0]}:{GATEWAY_PORT} . {DHCP_HINT}", "tell", where="employee PCs",
+                    fix="addresses_seen")]
+
+
+# omm cannot reserve an address; the office router can (2026-10-29: 10.80.119.212 -> 10.80.117.117 overnight).
+DHCP_HINT = ("The address comes from the office router (DHCP) and can change again; ask the network admin to "
+             "reserve one for this Mac.")
+
+
+def acknowledge_addresses() -> None:
+    """The admin says every employee PC uses the current address."""
+    current = settings.load()
+    if current is not None:
+        settings.save(dataclasses.replace(current, employee_addresses=tuple(tls.lan_ipv4s())))
 
 
 # A member polls every minute; this long without a poll means its link is not running.
@@ -355,7 +446,17 @@ def _own_node(raw: dict) -> str | None:
     return member_link.own_node_id(raw, member_link.local_ipv4s())
 
 
-def _member_rows(raw: dict, state) -> tuple[list[dict], list[str]]:
+def _catching_up_text(name: str, record: dict, head_index) -> str:
+    index, rate = record.get("event_index"), record.get("event_rate")
+    if not isinstance(index, int) or not isinstance(head_index, int) or head_index <= 0:
+        return f"{name} is catching up on the cluster's history; wait, it checks in when done"
+    text = f"{name} is catching up on the cluster's history: {index:,} of {head_index:,} events ({index * 100 // head_index}%)"
+    if isinstance(rate, (int, float)) and rate > 0 and head_index > index:
+        text += f", about {max(1, round((head_index - index) / rate / 60))} min left"
+    return text + "; wait, nothing to fix"
+
+
+def _member_rows(raw: dict, state) -> tuple[list[dict], list[Problem]]:
     """Each other Mac's omm version and backup, as its member link last reported them."""
     from omm.cluster import version_follow
 
@@ -378,16 +479,23 @@ def _member_rows(raw: dict, state) -> tuple[list[dict], list[str]]:
     silent = members.silent_since([node_id for node_id, ago in ages.items()
                                    if ago is None or ago > MEMBER_SILENT_SECONDS], now=now)
     rows, problems = [], []
+    head_index = raw.get("lastEventAppliedIdx")
     for node in others:
         record = records.get(node.node_id)
         ago = ages[node.node_id]
+        if record is not None and record.get("catching_up") and ago is not None and ago <= MEMBER_SILENT_SECONDS:
+            problems.append(Problem(_catching_up_text(node.name, record, head_index), "wait", where=node.name))
+            continue
         if node.node_id in silent:
             if (now - silent[node.node_id]).total_seconds() < MEMBER_CHECKIN_GRACE_SECONDS:
                 which = "first" if record is None else "next"
-                problems.append(f"waiting for {node.name}'s {which} check-in (members check in every 60 s)")
+                problems.append(Problem(f"waiting for {node.name}'s {which} check-in (members check in every 60 s)",
+                                        "wait", where=node.name))
             else:
-                namespace = settings.load().namespace
-                problems.append(f"{node.name} has not checked in; run omm cluster join {namespace} again on it")
+                # Its own `omm cluster` says why: a stopped link, a screen
+                # prompt, or an old omm that cannot report catching up.
+                problems.append(Problem(f"{node.name} has not checked in; run omm cluster on it to see why",
+                                        "tell", where=node.name))
             if record is None:
                 continue
         version = record.get("version") if isinstance(record.get("version"), dict) else {}
@@ -398,14 +506,17 @@ def _member_rows(raw: dict, state) -> tuple[list[dict], list[str]]:
                      "backup": "none" if not backup else "current" if backup == marker else "behind",
                      "prepared": bool(record.get("prepared")), "seen_seconds_ago": None if ago is None else int(ago)})
         if state_name == "ahead":
-            problems.append(f"{node.name} is newer than the head; run omm update on this Mac")
+            problems.append(Problem(f"{node.name} is newer than the head; run omm update on this Mac", "run",
+                                    fix="update"))
         elif state_name == "blocked":
-            problems.append(f"{node.name} could not update: {record.get('version_error') or 'unknown error'}")
+            problems.append(Problem(f"{node.name} could not update: {record.get('version_error') or 'unknown error'}",
+                                    "tell", where=node.name))
         elif state_name == "manual" or not version.get("git"):
-            problems.append(f"{node.name} is not a git install; update omm on it by hand")
+            problems.append(Problem(f"{node.name} is not a git install; update omm on it by hand", "tell",
+                                    where=node.name))
         elif head_commit and commit != head_commit:
-            problems.append(f"{node.name} runs omm {(commit or '?')[:7]} but the head runs {head_commit[:7]}; "
-                            "it updates itself within a few minutes")
+            problems.append(Problem(f"{node.name} runs omm {(commit or '?')[:7]} but the head runs {head_commit[:7]}; "
+                                    "it updates itself within a few minutes", "wait", where=node.name))
     return rows, problems
 
 

@@ -399,6 +399,25 @@ class ExoClient:
     def state(self) -> ClusterState:
         return parse_state(self.raw_state())
 
+    def node_id(self, timeout: float = 5) -> str | None:
+        """This Mac's own exo node id, or None when exo does not say.
+
+        `/state` can lack this Mac entirely while exo replays the cluster's
+        event log (a new Mac on a long-lived cluster, 2026-10-29), but
+        `/node_id` answers at once. It is a bare JSON string, which the JSON
+        client rejects, so this reads it directly.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"{self._base_url}/node_id", timeout=timeout) as response:
+                value = json.loads(response.read())
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+        return value if isinstance(value, str) and value else None
+
     def models(self) -> list[ExoModel]:
         return parse_models(self._get("/models"))
 
