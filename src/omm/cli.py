@@ -782,16 +782,97 @@ agent_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(agent_app)
+_AGENT_LOCAL_BASE_URL = "http://127.0.0.1:11434"
+
+
+_AGENT_HARNESS_LABELS = {"claude": "Claude Code", "codex": "Codex", "pi": "pi"}
+
+
+@agent_app.callback(invoke_without_command=True)
+def agent_menu_entry(ctx: typer.Context) -> None:
+    """Bare `omm setting agent` opens the same picker as `omm setting` > Agent;
+    a subcommand skips it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not (_stdin_is_tty() and _stdout_is_tty()):
+        console.print(ctx.get_help(), markup=False)
+        return
+    _agent_menu()
+
+
+def _agent_pick_harness(harness: str | None) -> str:
+    """Return the harness given on the command line, else ask for it. A
+    missing value off a terminal is a usage error; Escape/Back exits quietly."""
+    if harness:
+        return harness
+    if not (_stdin_is_tty() and _stdout_is_tty()):
+        err_console.print("[error]Missing harness: claude, codex or pi.[/error]")
+        raise typer.Exit(2)
+    import questionary
+    from omm import agent_connection
+
+    picked = _ask_select(
+        questionary.select(
+            "Which harness?",
+            choices=[
+                *(questionary.Choice(_AGENT_HARNESS_LABELS[name], value=name)
+                  for name in agent_connection.HARNESSES),
+                questionary.Choice("← Back", value="back"),
+            ],
+        )
+    )
+    if picked is None or picked == "back":
+        raise typer.Exit(0)
+    return picked
+
+
+def _agent_pick_model(model: str | None, *, local: bool, base_url: str = _AGENT_LOCAL_BASE_URL) -> str:
+    """Return --model if given, else ask: a list of installed Ollama tags for
+    local routing (with a typed fallback), a typed id for the cluster."""
+    if model:
+        return model
+    if not (_stdin_is_tty() and _stdout_is_tty()):
+        err_console.print("[error]Missing --model.[/error]")
+        raise typer.Exit(2)
+    import questionary
+    from omm import agent_connection
+
+    if local:
+        tags = agent_connection.installed_models(base_url)
+        if tags:
+            picked = _ask_select(
+                questionary.select(
+                    "Which Ollama model? (tool-capable, 32K+ context)",
+                    choices=[
+                        *(questionary.Choice(tag, value=tag) for tag in tags),
+                        questionary.Choice("Type a tag…", value="\0type"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if picked is None or picked == "back":
+                raise typer.Exit(0)
+            if picked != "\0type":
+                return picked
+        prompt = "Ollama model tag (tool-capable, 32K+ context; blank to go back):"
+    else:
+        prompt = "Cluster model id (see `omm cluster status` on the head; blank to go back):"
+    typed = _ask_text(prompt)
+    if not typed or not typed.strip():
+        raise typer.Exit(0)
+    return typed.strip()
 
 
 @agent_app.command(name="local")
 def agent_local(
-    harness: str = typer.Argument(..., help="claude, codex or pi."),
-    model: str = typer.Option(..., "--model", help="Installed tool-capable Ollama model tag (32K+ context)."),
-    base_url: str = typer.Option("http://127.0.0.1:11434", "--base-url", help="Local Ollama HTTP(S) loopback origin."),
+    harness: str = typer.Argument(None, help="claude, codex or pi. Asked for on a terminal when omitted."),
+    model: str = typer.Option(None, "--model", help="Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted."),
+    base_url: str = typer.Option(_AGENT_LOCAL_BASE_URL, "--base-url", help="Local Ollama HTTP(S) loopback origin."),
 ) -> None:
     """Back up settings and connect a harness to a downloaded local Ollama model."""
     from omm import agent_connection
+    harness = _agent_pick_harness(harness)
+    model = _agent_pick_model(model, local=True, base_url=base_url)
     try:
         agent_connection.connect(harness, model, base_url=base_url)
     except (agent_connection.ConnectionError, OSError) as error:
@@ -805,11 +886,13 @@ def agent_local(
 
 @agent_app.command(name="cluster")
 def agent_cluster_cmd(
-    harness: str = typer.Argument(..., help="claude, codex or pi."),
-    model: str = typer.Option(..., "--model", help="exo model id the cluster serves (omm cluster status on the head)."),
+    harness: str = typer.Argument(None, help="claude, codex or pi. Asked for on a terminal when omitted."),
+    model: str = typer.Option(None, "--model", help="exo model id the cluster serves (omm cluster status on the head). Asked for on a terminal when omitted."),
 ) -> None:
     """Back up settings and connect a harness to the company cluster gateway."""
     from omm import agent_cluster
+    harness = _agent_pick_harness(harness)
+    model = _agent_pick_model(model, local=False)
     try:
         metadata = agent_cluster.connect(harness, model)
     except (agent_cluster.ConnectionError, OSError) as error:
@@ -831,9 +914,10 @@ def agent_cluster_cmd(
 
 
 @agent_app.command(name="cloud")
-def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+def agent_cloud(harness: str = typer.Argument(None, help="claude, codex or pi. Asked for on a terminal when omitted.")) -> None:
     """Restore original routing while preserving unrelated settings edits."""
     from omm import agent_cluster, agent_connection
+    harness = _agent_pick_harness(harness)
     try:
         restored = agent_cluster.restore(harness)
     except (agent_connection.ConnectionError, OSError) as error:
@@ -844,9 +928,10 @@ def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi."))
 
 
 @agent_app.command(name="status")
-def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+def agent_status(harness: str = typer.Argument(None, help="claude, codex or pi. Asked for on a terminal when omitted.")) -> None:
     """Show saved connection state without loading a model or exposing credentials."""
     from omm import agent_connection
+    harness = _agent_pick_harness(harness)
     try:
         result = agent_connection.status(harness)
     except (agent_connection.ConnectionError, OSError) as error:
@@ -880,8 +965,8 @@ rag_embedding_app = typer.Typer(
 rag_app.add_typer(rag_embedding_app)
 
 _RAG_METHOD_LABEL = {"hybrid": "의미+단어", "lexical": "단어만"}
-_RAG_SEMANTIC_LABEL = {"ready": "의미 색인 있음", "missing": "의미 색인 없음 (재색인 필요)",
-                       "stale": "임베딩 모델 바뀜 (재색인 필요)", "reregister": "원본 다시 등록 필요"}
+_RAG_SEMANTIC_LABEL = {"ready": "semantic index ready", "missing": "no semantic index (reindex needed)",
+                       "stale": "embedding model changed (reindex needed)", "reregister": "re-register the original"}
 
 
 def _rag_fail(error: Exception) -> None:
@@ -946,25 +1031,27 @@ def rag_status_cmd() -> None:
         _print_json(data=data)
         return
     if client:
-        console.print(f"원격 헤드: {escape(client.remote.url)}")
-        console.print(escape(rag_readiness.remote_line(head)))
-        console.print("아래는 이 PC에 저장된 문서예요.")
+        console.print(f"Remote head: {escape(client.remote.url)}")
+        console.print(escape(rag_readiness.remote_line_en(head)))
+        console.print("Below are the documents stored on this PC.")
         console.print()
-    state = "사용 가능" if embedding["available"] else "사용 불가"
-    console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
-                  f"메모리 유지 {escape(_rag_keep_alive_label(embedding['keep_alive']))}")
-    console.print(escape(rag_readiness.line(readiness)))
-    if readiness["persistence"]:
-        console.print(f"  {escape(readiness['persistence'])}")
-    console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
-                  f"재색인 필요 {result['reindex_needed']}개 · 원본 다시 등록 필요 {result['reregister_needed']}개")
+    state = "available" if embedding["available"] else "unavailable"
+    keep_alive = "none (unloads immediately)" if str(embedding["keep_alive"]) == "0" else str(embedding["keep_alive"])
+    console.print(f"Embedding model: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
+                  f"keep-alive {escape(keep_alive)}")
+    console.print(escape(rag_readiness.line_en(readiness)))
+    persistence = rag_readiness.persistence_line_en(readiness)
+    if persistence:
+        console.print(f"  {escape(persistence)}")
+    console.print(f"Documents: {result['documents']} · semantic index ready: {result['semantic_ready']} · "
+                  f"need reindex: {result['reindex_needed']} · need re-registration: {result['reregister_needed']}")
     for collection in result["collections"]:
-        console.print(f"\n[{escape(collection['name'])}] 문서 {collection['documents']}개")
+        console.print(f"\n[{escape(collection['name'])}] {collection['documents']} documents")
         for document in (d for d in documents if d["collection_id"] == collection["id"]):
-            console.print(f"  - {escape(document['name'])} · {document['pages']}쪽 · 구간 {document['chunks']}개 · "
+            console.print(f"  - {escape(document['name'])} · {document['pages']} pages · {document['chunks']} chunks · "
                           f"{_RAG_SEMANTIC_LABEL[document['semantic']]}")
     if result["reindex_needed"]:
-        console.print("\n`omm rag reindex`로 의미 색인을 다시 만들 수 있어요.")
+        console.print("\nRun `omm rag reindex` to rebuild the semantic index.")
 
 
 @rag_collection_app.command(name="create")
@@ -11092,6 +11179,51 @@ def _upload_channel_menu() -> None:
             pass
 
 
+def _agent_menu() -> None:
+    """Interactive front for `omm setting agent {local,cluster,cloud,status}`,
+    reached from bare `omm setting agent` and the `omm setting` menu. The
+    agent_* commands are called as plain functions with every argument spelled
+    out (their typer defaults are OptionInfo objects outside a CLI parse). The
+    harness/model pickers exit with typer.Exit(0) on Back or Escape; like a
+    command that prints its reason and exits 1, that returns to this picker
+    instead of ending the session."""
+    import questionary
+    from omm import agent_connection
+
+    while True:
+        action = _ask_select(
+            questionary.select(
+                "Agent connection:",
+                choices=[
+                    questionary.Choice("Connect a harness to local Ollama", value="local"),
+                    questionary.Choice("Connect a harness to the company cluster", value="cluster"),
+                    questionary.Choice("Restore a harness's original settings", value="cloud"),
+                    questionary.Choice("Show connection status", value="status"),
+                    questionary.Choice("← Back", value="back"),
+                ],
+            )
+        )
+        if action is None or action == "back":
+            return
+
+        try:
+            if action == "status":
+                for name in agent_connection.HARNESSES:
+                    agent_status(name)
+                continue
+
+            harness = _agent_pick_harness(None)
+            if action == "cloud":
+                if _ask_confirm(f"Restore {_AGENT_HARNESS_LABELS[harness]}'s original settings?"):
+                    agent_cloud(harness)
+            elif action == "local":
+                agent_local(harness, _agent_pick_model(None, local=True), _AGENT_LOCAL_BASE_URL)
+            else:
+                agent_cluster_cmd(harness, _agent_pick_model(None, local=False))
+        except typer.Exit:
+            pass
+
+
 @setting_app.callback(invoke_without_command=True)
 def setting_menu(ctx: typer.Context) -> None:
     """Bare `omm setting` opens an interactive menu; a subcommand skips it."""
@@ -11133,6 +11265,7 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
                         value="auto-import",
                     ),
+                    questionary.Choice("Agent (Claude Code / Codex / pi routing)", value="agent"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -11166,6 +11299,8 @@ def setting_menu(ctx: typer.Context) -> None:
                     auto_import_status()
             elif choice == "upload":
                 _upload_channel_menu()
+            elif choice == "agent":
+                _agent_menu()
             elif choice == "version":
                 action = _ask_select(
                     questionary.select(
