@@ -80,6 +80,16 @@ def test_ready_instance_detection_reads_runner_state():
     assert exo_client.instance_ready(data, "mlx-community/Llama-3.2-1B-Instruct-4bit") is False
 
 
+def test_raw_state_is_the_unparsed_state_that_state_parses(monkeypatch):
+    client = exo_client.ExoClient()
+    data = _load("state-1node.json")
+    paths = []
+    monkeypatch.setattr(client, "_get", lambda path, **k: paths.append(path) or data)
+    assert client.raw_state() is data
+    assert client.state() == exo_client.parse_state(data)
+    assert paths == ["/state", "/state"]
+
+
 def test_client_raises_exo_unavailable_when_nothing_listens():
     client = exo_client.ExoClient("http://127.0.0.1:9")
     with pytest.raises(exo_client.ExoUnavailable, match="exo is not running on this Mac"):
@@ -202,7 +212,10 @@ def test_await_instance_keeps_waiting_while_the_download_advances(monkeypatch):
     client = exo_client.ExoClient()
     ready = _load("state-1node.json")
     llama = "mlx-community/Llama-3.2-1B-Instruct-4bit"
-    steps = [{"downloads": {"a": [_ongoing("a", n * GIB, 100 * GIB, llama)]}} for n in range(1, 11)]
+    placed = {"i1": {"MlxRingInstance": {"instanceId": "i1", "shardAssignments": {
+        "modelId": llama, "nodeToRunner": {"a": "r1"}, "runnerToShard": {"r1": {"PipelineShardMetadata": {}}}}}}}
+    steps = [{"downloads": {"a": [_ongoing("a", n * GIB, 100 * GIB, llama)]}, "instances": placed}
+             for n in range(1, 11)]
     states = iter([*steps, ready])
     monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
     clock = iter(range(0, 10_000, 20))  # 11 polls, 20 s apart: far beyond a 30 s stall window
@@ -248,3 +261,96 @@ def test_node_in_topology_but_not_yet_in_node_memory_has_unknown_memory():
     (node,) = exo_client.parse_state(data).nodes
     assert node.memory_total_bytes is None
     assert node.memory_available_bytes is None
+
+
+def test_parse_downloads_reads_every_kind():
+    rows = exo_client.parse_downloads(_load("downloads-mixed.json"))
+    by_model = {row.model_id: row for row in rows}
+    done = by_model["mlx-community/Llama-3.2-1B-Instruct-4bit"]
+    assert done.kind == "Completed"
+    assert done.done_bytes == done.total_bytes == 712593855
+    pending = by_model["mlx-community/Qwen3-0.6B-4bit"]
+    assert pending.kind == "Pending"
+    assert pending.node_id.startswith("12D3KooWNode")
+    assert pending.shard_metadata["PipelineShardMetadata"]["startLayer"] == 0
+    assert pending.shard_metadata["PipelineShardMetadata"]["endLayer"] == 28
+
+
+def test_parse_downloads_reads_ongoing_progress():
+    ongoing = _load("downloads-live.json")["ongoing"]
+    rows = exo_client.parse_downloads({"downloads": {"n1": [ongoing]}})
+    assert [(r.kind, r.done_bytes > 0, r.total_bytes > 0) for r in rows] == [("Ongoing", True, True)]
+
+
+def test_parse_search_reads_ids_downloads_and_tags():
+    hits = exo_client.parse_search(_load("search.json"))
+    assert hits[1].model_id == "mlx-community/Qwen3-0.6B-8bit"
+    assert hits[1].downloads > 0
+    assert "text-generation" in hits[1].tags
+
+
+def _recording_client(monkeypatch, reply=None):
+    client = exo_client.ExoClient()
+    calls = []
+
+    def call(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("payload")))
+        return reply if reply is not None else {}
+
+    monkeypatch.setattr(client, "_call", call)
+    return client, calls
+
+
+def test_start_download_posts_target_node_and_shard(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.start_download("n1", {"PipelineShardMetadata": {"startLayer": 0}})
+    assert calls == [("POST", "/download/start",
+                      {"targetNodeId": "n1", "shardMetadata": {"PipelineShardMetadata": {"startLayer": 0}}})]
+
+
+def test_delete_download_quotes_the_model_id(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.delete_download("n1", "mlx-community/Llama-3.2-1B-Instruct-4bit")
+    assert calls == [("DELETE", "/download/n1/mlx-community%2FLlama-3.2-1B-Instruct-4bit", None)]
+
+
+def test_add_model_posts_the_id(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.add_model("someone/Some-Model-4bit")
+    assert calls == [("POST", "/models/add", {"model_id": "someone/Some-Model-4bit"})]
+
+
+def test_parse_models_keeps_the_raw_card():
+    models = exo_client.parse_models(_load("models.json"))
+    assert models[0].card["quantization"] == "4bit"
+
+
+def test_no_memory_text_matches_the_live_refusal():
+    rows = exo_client.parse_previews(_load("previews-nomem.json"))
+    assert rows and all(exo_client.NO_MEMORY in row.error for row in rows)
+
+
+def test_load_progress_skips_a_mac_the_instance_does_not_use():
+    # Tensor on a and b; c keeps the Pending entry `omm cluster install` left and never fetches.
+    data = {
+        "downloads": {"a": [_download("DownloadCompleted", "a", total=_memory(GIB))],
+                      "b": [_download("DownloadCompleted", "b", total=_memory(GIB))],
+                      "c": [_download("DownloadPending", "c", downloaded=_memory(0), total=_memory(GIB))]},
+        "instances": {"i1": {"MlxJacclInstance": {"instanceId": "i1", "shardAssignments": {
+            "modelId": MODEL, "nodeToRunner": {"a": "r1", "b": "r2"},
+            "runnerToShard": {"r1": {"TensorShardMetadata": {}}, "r2": {"TensorShardMetadata": {}}}}}}},
+    }
+    assert exo_client.load_progress(data, MODEL).phase == "loading"
+    del data["instances"]
+    assert exo_client.load_progress(data, MODEL).phase == "downloading"
+
+
+def test_await_instance_reports_nothing_before_exo_places_the_instance(monkeypatch):
+    client = exo_client.ExoClient()
+    pending = {"downloads": {"a": [_download("DownloadPending", "a", downloaded=_memory(0), total=_memory(GIB))]}}
+    states = iter([pending, pending, _load("state-1node.json")])
+    monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
+    seen = []
+    assert client.await_instance("mlx-community/Llama-3.2-1B-Instruct-4bit", 30, on_progress=seen.append,
+                                 sleep=lambda s: None) is True
+    assert seen == []

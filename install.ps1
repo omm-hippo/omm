@@ -769,8 +769,12 @@ $ExpectedVersion = $versionMatch.Matches[0].Groups[1].Value
 # Install NVML only when the machine actually exposes an NVIDIA driver.
 # [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
 # a `pip install` typed later lands in whatever Python is on PATH, not in
-# this pipx venv, so it goes in at install time.
+# this pipx venv, so it goes in at install time. watchdog is the one
+# dependency that may have to be compiled (no wheel yet for a brand-new
+# Python), so $NoWatchInstallSpec is the fallback when that build fails.
 $InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia,watch]" } else { "$SrcDir[watch]" }
+$NoWatchInstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { "$SrcDir" }
+$WatchExtraSkipped = $false
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
 # pipx names the new environment after the distribution (`omm-model`)
@@ -848,7 +852,22 @@ function Invoke-PipxInstallWithRepair {
     Remove-Item -LiteralPath $shared -Recurse -Force -ErrorAction SilentlyContinue
     return (Invoke-PipxStatus -Arguments $installArguments)
 }
-if (-not (Invoke-PipxInstallWithRepair)) {
+# The [watch] extra only powers `omm setting auto-import`. When installing
+# with it fails even after the repair above - typically watchdog compiling
+# from source against a broken compiler toolchain - install the same verified
+# checkout once without it, and every later repair below uses those
+# arguments too. Same fallback as pipx_install_without_watch in install.sh.
+$pipxInstallSucceeded = Invoke-PipxInstallWithRepair
+if (-not $pipxInstallSucceeded) {
+    Write-Warning "Installing omm with auto-import support (the [watch] extra) failed; retrying once without it..."
+    $noWatchInstallArguments = @("install", "--force", "--editable", "--python", $PythonExecutable, $NoWatchInstallSpec)
+    if (Invoke-PipxStatus -Arguments $noWatchInstallArguments) {
+        $installArguments = $noWatchInstallArguments
+        $WatchExtraSkipped = $true
+        $pipxInstallSucceeded = $true
+    }
+}
+if (-not $pipxInstallSucceeded) {
     $rollbackState = Restore-PipxAfterFailedInstall
     Write-FailedInstallRecovery "pipx install failed; the legacy environment was not removed." $rollbackState
     Remove-UnreferencedNewSource
@@ -902,6 +921,14 @@ Write-Host "Done. If 'omm' isn't found, open a new PowerShell window (pipx just 
 Write-Host "Try:  omm scan"
 Write-Host 'Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)'
 Write-Host 'Click launchers:     omm web --create-launchers "$HOME\Desktop"   (then double-click Open-OMM.cmd)'
+if ($WatchExtraSkipped) {
+    Write-Host ""
+    Write-Warning "omm was installed WITHOUT auto-import support; 'omm setting auto-import' will not work yet."
+    Write-Warning "Installing its watchdog package failed for $PythonExecutable - usually because no prebuilt watchdog exists for this Python version and building it from source failed."
+    Write-Warning "To fix it later: install the Microsoft C++ Build Tools (or use a Python version watchdog ships a wheel for), then run:"
+    Write-Warning "  & `"$PythonExecutable`" -m pipx inject $PipxEnvironment watchdog plyer"
+    Write-Warning "or rerun this installer."
+}
 
 # Opt-in only: the double-click entry (packaging/web-launchers/Install-OMM.cmd)
 # sets OMM_INSTALL_OPEN_WEB=1 so a beginner lands in the browser manager right

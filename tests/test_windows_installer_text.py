@@ -176,13 +176,40 @@ def test_installers_retry_pipx_install_once_after_rebuilding_shared_venv():
     retry exactly once instead of giving up."""
     ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "function Invoke-PipxInstallWithRepair" in ps1
-    assert "if (-not (Invoke-PipxInstallWithRepair))" in ps1
+    assert "$pipxInstallSucceeded = Invoke-PipxInstallWithRepair" in ps1
     assert ps1.count("Invoke-PipxStatus -Arguments $installArguments") >= 3  # first try + retry + later verify paths
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "pipx_install_with_repair() {" in sh
-    assert "if ! pipx_install_with_repair; then" in sh
+    assert "if ! pipx_install_with_repair && ! pipx_install_without_watch; then" in sh
     assert 'pipx_shared_dir_is_safe "$shared"' in sh
     assert 'rm -rf "$shared"' in sh
+
+
+def test_install_ps1_retries_once_without_the_watch_extra_like_install_sh():
+    """watchdog has no wheel for a brand-new Python, so `[watch]` can mean a
+    source build; a broken toolchain then failed the whole install (seen on
+    macOS with Python 3.15, 2026-10-27). install.ps1 must fall back the same
+    way install.sh does: one more install of the same checkout without the
+    extra, after the repair retry, and every later repair reuses it."""
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    assert '$NoWatchInstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { "$SrcDir" }' in ps1
+    fallback = ps1[ps1.index("$pipxInstallSucceeded = Invoke-PipxInstallWithRepair"):]
+    fallback = fallback[: fallback.index("if (-not $pipxInstallSucceeded) {\n    $rollbackState")]
+    assert '$noWatchInstallArguments = @("install", "--force", "--editable", "--python", $PythonExecutable, $NoWatchInstallSpec)' in fallback
+    assert "if (Invoke-PipxStatus -Arguments $noWatchInstallArguments) {" in fallback
+    assert "$installArguments = $noWatchInstallArguments" in fallback
+    assert "$WatchExtraSkipped = $true" in fallback
+    # Later repair paths still go through $installArguments, so they reuse
+    # whichever spec actually installed.
+    assert ps1.index("$installArguments = $noWatchInstallArguments") < ps1.rindex(
+        "Invoke-PipxStatus -Arguments $installArguments"
+    )
+
+    warning = ps1[ps1.index("if ($WatchExtraSkipped) {"):]
+    assert ps1.index('Write-Host "Done.') < ps1.index("if ($WatchExtraSkipped) {")
+    assert "'omm setting auto-import' will not work yet" in warning
+    assert "-m pipx inject $PipxEnvironment watchdog plyer" in warning
 
 
 def test_installer_trust_anchor_matches_allowed_signers_file():
@@ -553,7 +580,7 @@ def test_installers_discard_unreferenced_new_source_before_legacy_removal():
     verified OMM pipx environment was removed" guard to trip over."""
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "discard_unreferenced_new_source() {" in sh
-    first_failure = sh.index("if ! pipx_install_with_repair; then")
+    first_failure = sh.index("if ! pipx_install_with_repair && ! pipx_install_without_watch; then")
     second_failure = sh.index("if ! verify_installed_omm_model; then")
     legacy_removal = sh.index("Removing verified legacy pipx environment")
     for start in (first_failure, second_failure):
@@ -563,7 +590,7 @@ def test_installers_discard_unreferenced_new_source_before_legacy_removal():
 
     ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "function Remove-UnreferencedNewSource {" in ps1
-    first_failure_ps1 = ps1.index("if (-not (Invoke-PipxInstallWithRepair)) {")
+    first_failure_ps1 = ps1.index("if (-not $pipxInstallSucceeded) {\n    $rollbackState")
     second_failure_ps1 = ps1.index("if (-not (Test-InstalledOmmModel)) {")
     legacy_removal_ps1 = ps1.index("Removing verified legacy pipx environment")
     for start in (first_failure_ps1, second_failure_ps1):

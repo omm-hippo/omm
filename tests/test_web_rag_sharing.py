@@ -17,6 +17,7 @@ import requests
 
 from omm import config, rag_acl, rag_connect, rag_remote
 from omm.cluster import gateway, tokens
+from tests import _gateway_tls
 from omm.documents import DocumentStore
 from omm.web import rag_sharing, worker
 from omm.web.server import WebServer
@@ -237,7 +238,8 @@ def head(lexical):
     server = gateway.GatewayServer("127.0.0.1", 0, upstream="http://127.0.0.1:9")
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", people
+    _gateway_tls.pin(server)
+    yield _gateway_tls.url(server), people
     server.shutdown()
     server.server_close()
 
@@ -346,7 +348,7 @@ def test_broken_remote_file_is_reported_and_clearable(employee, browser):
 
 
 def test_unreachable_head_keeps_the_token_out_of_the_error(employee, browser):
-    rag_remote.save(rag_remote.Remote("http://127.0.0.1:9", "omm_secretvalue"))
+    rag_remote.save(rag_remote.Remote("https://127.0.0.1:9", "omm_secretvalue"))
     status, state = browser.get("/api/rag/state")
     assert state["remote"]["name"] is None and "연결하지 못했어요" in state["error"]
     status, body = browser.get("/api/rag/collections")
@@ -379,3 +381,36 @@ def test_connect_and_disconnect_local_then_remote(employee, browser, agents_home
     assert claude.read_text(encoding="utf-8") == '{"projects": {}}\n'
     assert browser.post("/api/rag/disconnect", {"harness": "claude-code", "confirmed": True})[1]["state"] == "not_connected"
     assert not any(people["kim"] in text for text in browser.seen)
+
+
+# ------------------------------------------------- semantic search readiness --
+
+
+@pytest.fixture
+def ollama_installed_linux(monkeypatch):
+    from omm import rag_readiness
+    monkeypatch.setattr(rag_readiness, "_system", lambda: "Linux")
+    monkeypatch.setattr(rag_readiness, "install_info", lambda: {"installed": True, "app": False, "homebrew": False})
+    monkeypatch.setattr(rag_readiness, "_linux_units", lambda: (True, True, False))
+
+
+def test_local_state_tells_the_admin_how_to_fix_semantic_search(browser, ollama_installed_linux):
+    status, state = browser.get("/api/rag/state")
+    assert status == 200
+    semantic = state["semantic_search"]
+    assert semantic["state"] == "not_running" and semantic["ready"] is False and semantic["model"] == "bge-m3"
+    assert semantic["command"] == "sudo systemctl start ollama"
+    assert semantic["text"] == ("의미 검색이 꺼져 있어요. Ollama가 설치돼 있지만 켜져 있지 않아요. "
+                                "sudo systemctl start ollama로 켜 주세요. 지금은 단어 검색만 해요.")
+    assert semantic["persistence"] is None
+
+
+def test_remote_state_tells_the_employee_to_ask_the_admin(employee, web, ollama_installed_linux):
+    url, people, _ = employee
+    kim = Browser(web)
+    assert kim.post("/api/rag/remote/set", {"url": url, "token": people["kim"]})[0] == 200
+    semantic = kim.get("/api/rag/state")[1]["semantic_search"]
+    assert semantic == {"state": "not_running", "ready": False, "model": "bge-m3",
+                        "text": "회사 head의 의미 검색이 꺼져 있어요(Ollama가 꺼져 있음) - 관리자에게 알려 주세요. 지금은 단어 검색만 해요.",
+                        "command": None, "persistence": None}
+    assert people["kim"] not in json.dumps(semantic)

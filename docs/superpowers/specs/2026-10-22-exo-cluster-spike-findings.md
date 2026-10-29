@@ -276,3 +276,17 @@ exo는 같은 배치를 두 전송 방식으로 만들 수 있다: `MlxJacclInst
 - 그래서 `recommend.choose_placement`를 바꿨다: Tensor + RDMA(Jaccl, 2대 이상)가 들어가면 그것을, 아니면 전처럼 메모리를 가장 적게 쓰는 Pipeline을 고른다(같으면 RDMA 쪽). 실기기에서 `omm cluster model mlx-community/Qwen3.5-9B-4bit`가 Tensor·Jaccl 2대를 골랐고 초당 72.2~72.3토큰이 나왔다(이전 선택은 약 42).
 - 122B-8bit 모델은 Tensor 배치가 없다(3대로 나눌 수 있는 hidden size/KV head 조합이 아님). 9B는 Tensor가 2대까지만 된다.
 - `rdma_ctl disable` 상태 자체는 재지 않았다(미검증). 위 Ring 값이 RDMA 없이 Thunderbolt TCP로 도는 경우에 해당한다.
+
+## 재부팅, 자동 재로드, 하네스 연결, 다른 키 (삼각형 3대, 2026-10-25)
+
+- **재부팅(node1, 17:30경):** 사람이 Mac 앞에서 FileVault를 풀고 로그인하자 exo 서비스가 올라왔고, Thunderbolt Bridge는 꺼진 채, `omm Thunderbolt N` 서비스 3개 유지, pf 규칙과 새 enable 토큰(참조 1개), `sleep 0`, 3대 발견, `status` 문제 없음. 로그인 전에는 아무것도 뜨지 않는다(`gui/<uid>` 서비스). 다만 **모델은 다시 올라오지 않았다**: exo는 인스턴스를 메모리에만 들고 있다.
+- **자동 재로드:** head의 게이트웨이 서비스(항상 떠 있는 유일한 프로세스)가 30초마다 확인해, `omm cluster model`로 마지막에 올린 모델이 없으면 다시 올린다. 클러스터가 본 적 있는 Mac이 모두 돌아올 때까지 최대 10분 기다린다. `--unload`하면 잊는다.
+  - head에서 `omm cluster restart`: 43초 뒤 다시 Serving(Tensor 2대). 첫 확인은 exo가 메모리를 아직 보고하지 않아 "들어가지 않음" 경고를 한 번 남겼고, 다음 확인에서 올렸다.
+  - 게이트웨이와 exo를 동시에 재시작(재부팅 흉내): 11초 뒤 Serving.
+  - `--unload` 뒤 75초 동안 다시 올리지 않음.
+  - 인스턴스가 걸친 node1의 exo를 멈추자 인스턴스가 사라졌고, node1이 돌아오자 그 직후 다시 올렸다(아래 다른 키 시험 중).
+  - 실제 재부팅 뒤의 자동 재로드는 **미검증**(FileVault 때문에 사람이 로그인해야 한다).
+- **하네스 연결 명령(`omm setting agent cluster`):** 노트북에서 `omm rag remote set`으로 head 주소와 토큰을 넣고, Claude Code 2.1.308, Codex 0.164.0, pi 0.73.1을 각각 연결했다(별도 설정 폴더). 세 하네스 모두 도구로 파일을 읽어 정답을 냈다(`Qwen3.5-9B-4bit`). 게이트웨이 로그: `/v1/messages` 200, `/v1/responses` 200, `/v1/chat/completions` 200. 설정 파일은 0600. `omm setting agent cloud`로 세 하네스 모두 원래대로 돌아왔고, 하네스 폴더에 토큰이 남지 않았다. Codex는 `experimental_bearer_token`, pi는 `apiKey`에 토큰을 직접 넣는다. 9B 모델은 "secret"이라는 단어가 들어간 질문에는 파일을 읽고도 답을 거절했다(모델 성향, 연결 문제 아님).
+- **다른 키(클러스터 이름)를 가진 exo:** node1의 exo를 무작위 다른 이름으로 90초 동안 띄웠다. node1은 계속 자기 하나만 보았고, head의 `status`는 "node Node1 ... missing"을 표시했다. 원래 이름으로 되돌리자 바로 3대가 되었다. 52416이 사내망에 열려 있어도 키가 다르면 클러스터에 들어오지 못한다.
+- **`omm engine security`:** 클러스터 Mac에서는 52415/52416(head는 52440도) 리스너와 방화벽 상태를 한 줄로 보여 준다. sudo 표가 없으면 pf에 실제로 올라간 규칙을 읽을 수 없어 "Could not determine"으로 표시한다(head·member 실측). 규칙이 확인되면 "Gateway only (token required)"(단위 테스트로만 확인).
+- **아직 못 한 것:** 케이블을 뽑았을 때 이웃을 놓치는 증상은 이날 재현되지 않아 `omm cluster restart`로 낫는지 여전히 미검증. 4대 구성(장비 3대뿐).

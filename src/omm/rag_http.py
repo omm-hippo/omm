@@ -21,7 +21,7 @@ import json
 import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from omm import documents, rag_acl, rag_mcp
+from omm import documents, rag_acl, rag_mcp, rag_readiness
 
 MAX_JSON_BODY = 64 * 1024
 # Imports embed on the head and can take minutes; a few at once is plenty
@@ -153,6 +153,9 @@ def _rest(method, path, query, headers, body, caller):
     route = (method, path)
     if route == ("GET", "/rag/v1/whoami"):
         return _ok({"name": caller.name})
+    if route == ("GET", "/rag/v1/readiness"):
+        # State and model only: fix commands and paths are for the head's administrator.
+        return _ok(rag_readiness.public(rag_readiness.check()))
     if route == ("GET", "/rag/v1/collections"):
         return _ok({"collections": [_collection_view(row) for row in rag_acl.collections(caller)]})
     if route == ("POST", "/rag/v1/collections"):

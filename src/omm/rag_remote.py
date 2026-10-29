@@ -7,7 +7,9 @@ unshare commands talk to the head instead of this PC's document store, so the
 originals and the index live only on the head.
 
 Requests go straight to the head: proxy environment variables are ignored so
-the token and the documents never pass through a proxy.
+the token and the documents never pass through a proxy. They use HTTPS and
+trust only the head certificate `omm rag remote set` pinned in
+``OMM_HOME/rag-remote-ca.pem`` after the user compared its fingerprint (#536).
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import ssl
 from urllib import error as urlerror, request as urlrequest
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -26,7 +29,21 @@ UPLOAD_TIMEOUT = 900  # The head embeds every chunk before it answers.
 
 
 class RemoteError(ValueError):
-    """A user-facing problem; never contains the token."""
+    """A user-facing problem; never contains the token. ``status`` is the head's HTTP status, if any."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+PLAIN_HTTP = ("클러스터 게이트웨이는 이제 HTTPS만 받아요. "
+              "`omm rag remote set https://<헤드 주소>:52440` 으로 다시 설정해 주세요.")
+# Not "`omm rag remote set`을 다시 실행해 주세요": the web page rewrites that
+# phrase into its own connect button, which cannot show a fingerprint.
+NOT_PINNED = ("이 PC가 헤드의 인증서를 아직 확인하지 않았어요. 터미널에서 "
+              "`omm rag remote set https://<헤드 주소>:52440` 을 실행해 헤드 Mac이 보여 주는 지문과 같은지 확인해 주세요.")
+WRONG_CERTIFICATE = ("헤드가 이 PC에 고정된 것과 다른 인증서를 내밀었어요. 헤드를 새로 만든 게 맞는지 관리자에게 확인한 뒤 "
+                     "`omm rag remote clear` 후 `omm rag remote set https://<헤드 주소>:52440` 으로 지문을 다시 확인해 주세요.")
 
 
 @dataclass(frozen=True)
@@ -42,12 +59,14 @@ def remote_path() -> Path:
 def normalize_url(value: str) -> str:
     text = (value or "").strip()
     if "://" not in text:
-        text = "http://" + text
+        text = "https://" + text
     parts = urlsplit(text)
-    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
-        raise RemoteError("헤드 주소는 http://<헤드 Mac 주소>:52440 형식으로 적어 주세요.")
+    if parts.scheme == "http":
+        raise RemoteError(PLAIN_HTTP)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise RemoteError("헤드 주소는 https://<헤드 Mac 주소>:52440 형식으로 적어 주세요.")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
-        raise RemoteError("헤드 주소에는 경로를 붙이지 말고 http://<주소>:52440 까지만 적어 주세요.")
+        raise RemoteError("헤드 주소에는 경로를 붙이지 말고 https://<주소>:52440 까지만 적어 주세요.")
     host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
     return f"{parts.scheme}://{host}:{parts.port or DEFAULT_PORT}"
 
@@ -79,7 +98,42 @@ def clear() -> bool:
     path = remote_path()
     existed = path.exists()
     path.unlink(missing_ok=True)
+    # Forgetting the head forgets its certificate: the next `set` asks again.
+    ca_path().unlink(missing_ok=True)
     return existed
+
+
+def ca_path() -> Path:
+    return config.OMM_HOME / "rag-remote-ca.pem"
+
+
+def save_ca(pem: str) -> Path:
+    from omm.atomic import atomic_write_text
+
+    path = ca_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, pem)
+    os.chmod(path, 0o644)
+    return path
+
+
+def pinned_ca() -> str | None:
+    try:
+        return ca_path().read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def ssl_context(remote: Remote, ca_pem: str | None = None) -> ssl.SSLContext:
+    """Trusts only the pinned head certificate (or `ca_pem` while it is being pinned)."""
+    if not remote.url.startswith("https://"):
+        raise RemoteError(PLAIN_HTTP)
+    if ca_pem is None and not ca_path().is_file():
+        raise RemoteError(NOT_PINNED)
+    try:
+        return ssl.create_default_context(cafile=None if ca_pem else str(ca_path()), cadata=ca_pem)
+    except (ssl.SSLError, OSError, ValueError):
+        raise RemoteError(NOT_PINNED) from None
 
 
 def mcp_url(remote: Remote) -> str:
@@ -87,10 +141,11 @@ def mcp_url(remote: Remote) -> str:
 
 
 class Client:
-    def __init__(self, remote: Remote):
+    def __init__(self, remote: Remote, ca_pem: str | None = None):
         self.remote = remote
         # An empty ProxyHandler turns off HTTP(S)_PROXY for these requests.
-        self._opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+        self._opener = urlrequest.build_opener(urlrequest.ProxyHandler({}),
+                                               urlrequest.HTTPSHandler(context=ssl_context(remote, ca_pem)))
 
     def call(self, method: str, path: str, *, query: dict | None = None, json_body=None,
              data: bytes | None = None, headers: dict | None = None, timeout=TIMEOUT):
@@ -106,8 +161,10 @@ class Client:
             with self._opener.open(req, timeout=timeout) as response:
                 payload = response.read()
         except urlerror.HTTPError as error:
-            raise RemoteError(_message(error.code, error.read())) from None
-        except (urlerror.URLError, OSError):
+            raise RemoteError(_message(error.code, error.read()), error.code) from None
+        except (urlerror.URLError, OSError) as error:
+            if isinstance(getattr(error, "reason", error), ssl.SSLCertVerificationError):
+                raise RemoteError(WRONG_CERTIFICATE) from None
             raise RemoteError(f"헤드({self.remote.url})에 연결하지 못했어요. 같은 사내망인지, 헤드 Mac이 켜져 있는지 확인해 주세요.") from None
         try:
             return json.loads(payload or b"{}")

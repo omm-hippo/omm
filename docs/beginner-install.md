@@ -94,9 +94,9 @@ macOS와 같은 `curl -fsSL https://omm.run/install.sh | sh` 명령을 터미널
 설치가 끝나면 마지막에 이런 문장이 나옵니다.
 
 - Windows: `Done. If 'omm' isn't found, open a new PowerShell window (pipx just updated your PATH).`
-  <!-- install.ps1:901 -->
+  <!-- install.ps1:920 -->
 - macOS/Linux: `Done. Open a new shell so zsh loads the pipx PATH configured by the installer.`
-  <!-- install.sh:921 -->
+  <!-- install.sh:1093 -->
 
 **지금 열려 있는 창을 닫고 새 터미널(PowerShell) 창을 여세요.** 설치 직후의 창은 `omm`
 명령 위치(PATH)를 아직 모릅니다. 새 창에서 아래를 실행합니다.
@@ -202,20 +202,22 @@ curl -fsSL https://omm.run/uninstall.sh | sh     # macOS / Linux
 
 | 화면에 보이는 문장 | 뜻 | 할 일 |
 |---|---|---|
-| `Windows detected. Run the native PowerShell installer instead:` <!-- install.sh:60 --> | Windows에서 macOS/Linux용 명령을 실행함 | 위 Windows 명령을 PowerShell에서 실행 |
+| `Windows detected. Run the native PowerShell installer instead:` <!-- install.sh:83 --> | Windows에서 macOS/Linux용 명령을 실행함 | 위 Windows 명령을 PowerShell에서 실행 |
 | `No usable Python 3.10+ found (the Microsoft Store Python cannot host pipx environments).` <!-- install.ps1:261 --> | 쓸 수 있는 Python이 없어 winget으로 설치를 시도함 | 기다리면 됨. 다음 줄에 실패가 나오면 아래 줄 참고 |
 | `Python 3.10+ not found. Install it from https://www.python.org/downloads/ ...` <!-- install.ps1:267 --> | Python 자동 설치 실패 | python.org에서 Python 설치 → **새 창**에서 설치 명령 다시 실행 |
-| `Python 3.10+ not found and no supported package manager was found.` <!-- install.sh:307 --> 또는 `Python 3.10+ not found after dependency bootstrap` <!-- install.sh:352 --> | Linux/macOS에서 Python 자동 설치 실패 | Python 3.10 이상을 직접 설치 → 새 창에서 다시 실행 |
+| `Python 3.10+ not found and no supported package manager was found.` <!-- install.sh:433 --> 또는 `Python 3.10+ not found after dependency bootstrap` <!-- install.sh:482 --> | Linux/macOS에서 Python 자동 설치 실패 | Python 3.10 이상을 직접 설치 → 새 창에서 다시 실행 |
 | `git not found. Install git first (needed to fetch omm from GitHub): https://git-scm.com/downloads` <!-- install.ps1:280, install.ps1:285 --> | git 자동 설치 실패 (Windows) | git 설치 → 새 창에서 다시 실행 |
-| `git not found and no supported package manager was found.` <!-- install.sh:323 --> 또는 `git not found after dependency bootstrap` <!-- install.sh:357 --> | git 자동 설치 실패 (macOS/Linux) | git 설치 → 새 창에서 다시 실행 |
-| `git 2.34+ is required to verify SSH commit signatures` <!-- install.ps1:132, install.sh:117 --> | git이 너무 오래됨 | git을 최신으로 업데이트 후 다시 실행 |
-| `Homebrew is required on macOS when Python 3.10+ or git is missing.` <!-- install.sh:243 --> | Homebrew 자동 설치가 꺼져 있음 | [brew.sh](https://brew.sh/)에서 Homebrew 설치 후 다시 실행 |
-| `Cannot install system dependencies: root or sudo is required.` <!-- install.sh:148 --> | Linux에서 패키지 설치 권한이 없음 | 관리자에게 Python·git 설치를 부탁하거나 `sudo` 권한으로 다시 실행 |
-| `Python ensurepip/venv support is missing; install the Python venv package first.` <!-- install.sh:382 --> | Python 가상환경 패키지가 없음 | 배포판의 `python3-venv` 등 설치 후 다시 실행 |
-| `git clone failed or stalled (no progress for 60s)` <!-- install.ps1:702, install.sh:729 --> | 인터넷 연결 문제로 다운로드가 멈춤 | 네트워크(회사·학교 프록시 포함) 확인 후 다시 실행 |
-| `Signature verification failed - refusing to install untrusted code.` <!-- install.ps1:730, install.sh:756 --> | 받은 코드의 서명이 맞지 않아 설치를 거부함 | 우회하지 말고 [이슈](https://github.com/omm-hippo/omm/issues)로 알려 주세요 |
-| `pipx reports the '...' environment as broken (see 'pipx list').` <!-- install.ps1:665, install.sh:690 --> | 이전 설치 흔적(pipx 환경)이 깨짐 | `pipx list`로 확인 후 해당 환경을 지우고 다시 실행. 모델은 영향 없음 |
-| `omm installer failed; see the messages above.` <!-- install.ps1:15 --> | 위쪽에 실제 원인이 따로 출력됨 | 바로 위 빨간 문장을 이 표에서 찾기 |
+| `git not found and no supported package manager was found.` <!-- install.sh:450 --> 또는 `git not found after dependency bootstrap` <!-- install.sh:492 --> | git 자동 설치 실패 (macOS/Linux) | git 설치 → 새 창에서 다시 실행 |
+| `git 2.34+ is required to verify SSH commit signatures` <!-- install.ps1:132, install.sh:140 --> | git이 너무 오래됨 | git을 최신으로 업데이트 후 다시 실행 |
+| `Homebrew is required on macOS when Python 3.10+ or git is missing.` <!-- install.sh:338 --> | Homebrew 자동 설치가 꺼져 있음 | [brew.sh](https://brew.sh/)에서 Homebrew 설치 후 다시 실행 |
+| `Cannot install system dependencies: root or sudo is required.` <!-- install.sh:171 --> | Linux에서 패키지 설치 권한이 없음 | 관리자에게 Python·git 설치를 부탁하거나 `sudo` 권한으로 다시 실행 |
+| `Python ensurepip/venv support is missing; install the Python venv package first.` <!-- install.sh:520 --> | Python 가상환경 패키지가 없음 | 배포판의 `python3-venv` 등 설치 후 다시 실행 |
+| `git clone failed or stalled (no progress for 60s)` <!-- install.ps1:702, install.sh:869 --> | 인터넷 연결 문제로 다운로드가 멈춤 | 네트워크(회사·학교 프록시 포함) 확인 후 다시 실행 |
+| `Signature verification failed - refusing to install untrusted code.` <!-- install.ps1:730, install.sh:896 --> | 받은 코드의 서명이 맞지 않아 설치를 거부함 | 우회하지 말고 [이슈](https://github.com/omm-hippo/omm/issues)로 알려 주세요 |
+| `pipx reports the '...' environment as broken (see 'pipx list').` <!-- install.ps1:665, install.sh:829 --> | 이전 설치 흔적(pipx 환경)이 깨짐 | `pipx list`로 확인 후 해당 환경을 지우고 다시 실행. 모델은 영향 없음 |
+| `Homebrew could not install` <!-- install.sh:383 --> | Homebrew가 Python·git을 설치하지 못함. 다른 macOS 계정이 설치한 Homebrew(쓰기 권한 없음)인 경우가 많음 | 그 계정에서 `brew install python`을 실행하거나 python.org에서 Python 설치 후 다시 실행 |
+| `omm was installed WITHOUT auto-import support` <!-- install.ps1:926, install.sh:1036 --> | 설치는 끝났지만 자동 가져오기(`omm setting auto-import`)에 필요한 watchdog을 만들지 못함 | 다른 기능은 그대로 사용. 자동 가져오기가 필요하면 바로 아래에 나온 `pipx inject` 명령을 실행하거나, macOS는 Xcode Command Line Tools를 업데이트한 뒤 설치 명령 다시 실행 |
+| `omm installer failed; see the messages above.` <!-- install.ps1:15 --> 또는 `omm installer failed while` <!-- install.sh:30 --> | 위쪽에 실제 원인이 따로 출력됨 | 바로 위 빨간 문장을 이 표에서 찾기 |
 | `omm` 명령을 찾을 수 없음 (`'omm' is not recognized...` / `command not found`) | 설치한 창이 아직 PATH를 모름 | 창을 닫고 새 창에서 다시 시도 |
 
 더 많은 경우는 설치 안내의 [Troubleshooting](install.md#troubleshooting) 표에 있습니다.
