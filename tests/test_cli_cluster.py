@@ -257,7 +257,7 @@ def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fa
 def test_init_says_what_to_do_when_exo_does_not_answer(cluster_fakes, monkeypatch):
     from omm.cluster import commands
 
-    monkeypatch.setattr(commands, "_exo_answers", lambda out: False)
+    monkeypatch.setattr(commands, "exo_answers", lambda out: False)
     result = runner.invoke(cli.app, ["cluster", "init"])
     assert result.exit_code == 0, result.output
     text = " ".join(result.output.split())
@@ -278,7 +278,7 @@ def test_exo_answers_waits_for_exo_to_start(cluster_fakes):
         if clock[0] >= 6:
             cluster_fakes.exo_up = True
 
-    assert commands._exo_answers(lines.append, sleep=sleep, clock=lambda: clock[0]) is True
+    assert commands.exo_answers(lines.append, sleep=sleep, clock=lambda: clock[0]) is True
     assert lines == ["Waiting for exo to start..."]
 
 
@@ -291,7 +291,7 @@ def test_exo_answers_gives_up_after_the_timeout(cluster_fakes):
     def sleep(seconds):
         clock[0] += seconds
 
-    assert commands._exo_answers(lambda line: None, sleep=sleep, clock=lambda: clock[0]) is False
+    assert commands.exo_answers(lambda line: None, sleep=sleep, clock=lambda: clock[0]) is False
     assert clock[0] == commands.EXO_START_SECONDS
 
 
@@ -1956,3 +1956,30 @@ def test_status_says_which_macs_update_macos_to_the_newest_build(cluster_fakes):
     cluster_fakes.state["nodeIdentities"][cluster_fakes._node_id("mac-b")]["osBuildVersion"] = "25F80"
     problem = next(p for p in _status()["problems"] if p.startswith("macOS versions differ"))
     assert problem.endswith("Update macOS to 26.5 (25F80) on mac-a, mac-c, mac-d, one Mac at a time")
+
+
+def test_bare_cluster_prints_the_head_steps_without_asking(cluster_fakes, monkeypatch):
+    from omm.cluster import guide
+
+    monkeypatch.setattr(guide.platform, "system", lambda: "Darwin")
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.idle_sleep = 1
+    result = runner.invoke(cli.app, ["cluster"])
+    assert result.exit_code == 0, result.output
+    assert "This Mac: head in omm-" in result.output
+    assert "[omm can do this] this Mac sleeps after 1 min idle; run omm cluster on this Mac to fix it" in result.output
+    assert "Run it now?" not in result.output
+
+
+def test_bare_cluster_json_lists_steps(cluster_fakes, monkeypatch):
+    from omm.cluster import guide
+
+    monkeypatch.setattr(guide.platform, "system", lambda: "Darwin")
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.idle_sleep = 1
+    result = runner.invoke(cli.app, ["--json", "cluster"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["role"] == "head"
+    assert {"kind": "run", "text": "this Mac sleeps after 1 min idle; run omm cluster on this Mac to fix it",
+            "where": None, "fix": "keep_awake"} in data["steps"]

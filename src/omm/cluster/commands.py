@@ -66,7 +66,7 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
     netconfig.apply()
     netconfig.wait_for_addresses(out)
     exo_service.install(namespace)
-    if _exo_answers(out):
+    if exo_answers(out):
         out(f"exo is running on this Mac (cluster {namespace}).")
     else:
         out(f"exo has not answered for {EXO_START_SECONDS} seconds. {EXO_HELD_FIX}")
@@ -101,7 +101,7 @@ EXO_START_SECONDS = 60
 EXO_START_POLL = 2
 
 
-def _exo_answers(out: Out, *, timeout: float = EXO_START_SECONDS, sleep=time.sleep, clock=time.monotonic) -> bool:
+def exo_answers(out: Out, *, timeout: float = EXO_START_SECONDS, sleep=time.sleep, clock=time.monotonic) -> bool:
     deadline = clock() + timeout
     told = False
     while True:

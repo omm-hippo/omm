@@ -326,7 +326,7 @@ def test_run_once_remembers_and_reuses_the_head_address(cycle, monkeypatch):
     sent = _behind(cycle, monkeypatch)
     member_link.run_once()
     member_link.run_once()
-    assert member_link.last_head_path().read_text().strip() == "169.254.0.2:52440"
+    assert member_link.last_head_path().read_text(encoding="utf-8").strip() == "169.254.0.2:52440"
     assert sent[1][2] == ["169.254.0.2:52440"]
 
 

@@ -311,7 +311,7 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Other combinations fail
 # before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
-    "cluster status",
+    "cluster", "cluster status",
     "cluster recommend",
     "cluster search",
     "cluster list",
@@ -1232,9 +1232,10 @@ engine_app = typer.Typer(
 app.add_typer(engine_app)
 cluster_app = typer.Typer(
     name="cluster",
-    help="Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+    help="Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+). Bare omm cluster shows this Mac's next step and runs it after a yes.",
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
+    invoke_without_command=True,
 )
 app.add_typer(cluster_app)
 cluster_token_app = typer.Typer(
@@ -2439,7 +2440,7 @@ def _installed_commit() -> str | None:
     return vcs_info.get("commit_id") if isinstance(vcs_info, dict) else None
 
 
-def _remote_head_commit(ref: str = "main") -> str | None:
+def _remote_head_commit(ref: str = "main", timeout: float = 10) -> str | None:
     """Latest commit on the given ref of the omm repo, via `git ls-remote`
     (no GitHub API rate limit, no auth needed for a public repo)."""
     try:
@@ -2449,7 +2450,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=10,
+            timeout=timeout,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -2509,6 +2510,57 @@ def _cluster_out(line: str) -> None:
     # The terminal wraps long lines itself: rich's hard line breaks split the
     # commands and the certificate fingerprint these lines carry.
     console.print(line, markup=False, soft_wrap=True, emoji=False)
+
+
+class _ClusterGuideUi:
+    """The prompts bare `omm cluster` asks (cluster/guide.py)."""
+
+    def confirm(self, message: str, default: bool) -> bool:
+        return _ask_confirm(message, default=default)
+
+    def text(self, message: str) -> str | None:
+        return _ask_text(message)
+
+    def choose(self, message: str, choices: list[tuple[str, str]]) -> str | None:
+        import questionary
+
+        return _ask_select(questionary.select(
+            message, choices=[questionary.Choice(label, value=value) for value, label in choices]))
+
+    def pause(self, message: str) -> bool:
+        return _ask_text(message) is not None
+
+
+@cluster_app.callback(invoke_without_command=True)
+def cluster_guide(ctx: typer.Context) -> None:
+    """Bare `omm cluster` shows this Mac's next step and runs it after a yes; a subcommand skips it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    import platform
+
+    from omm.cluster import chat, commands as cluster_commands, guide, settings as cluster_settings
+
+    json_out = _global_opts().json
+    # Scripts and pipes only get the steps printed: nothing is asked or run.
+    interactive = _stdin_is_tty() and _stdout_is_tty() and not json_out
+    if cluster_settings.load() is None and chat.cluster_configured():
+        _cluster_employee_status(_cluster_call(chat.endpoint))
+        if (platform.system() != "Darwin" or not interactive
+                or not _ask_confirm("Set this Mac up as one of the cluster's Macs?", default=False)):
+            return
+    if json_out:
+        if cluster_settings.load() is None:
+            report = {"role": None, "namespace": None}
+            found = guide.new_mac_steps() if platform.system() == "Darwin" else []
+        else:
+            report = _cluster_call(cluster_commands.status)
+            found = guide.steps(report["problems"])
+        _print_json(data={"role": report["role"], "namespace": report["namespace"],
+                          "steps": [step.as_json() for step in found]})
+        return
+    code = _cluster_call(lambda: guide.run(_ClusterGuideUi(), _cluster_out, interactive=interactive))
+    if code:
+        raise typer.Exit(code)
 
 
 @cluster_app.command(name="init")
