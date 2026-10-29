@@ -328,9 +328,9 @@ def test_cli_collection_add_search_status_reindex(ollama, tmp_path):
     assert json.loads(status.output)['embedding']['available'] is True
     changed = _cli('embedding-model', 'set', 'other-embed')
     assert changed.exit_code == 0 and 'omm rag reindex' in changed.output
-    assert '임베딩 모델 바뀜 (재색인 필요)' in _cli('status').output
+    assert 'embedding model changed (reindex needed)' in _cli('status').output
     assert _cli('reindex').exit_code == 0
-    assert '재색인 필요 0개' in _cli('status').output
+    assert 'need reindex: 0' in ' '.join(_cli('status').output.split())
     removed = _cli('remove', '인사규정', '휴가.txt', '--yes')
     assert removed.exit_code == 0 and DocumentStore().list() == []
     assert _cli('collection', 'delete', '인사규정', '--yes').exit_code == 0

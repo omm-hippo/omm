@@ -159,6 +159,18 @@ def preflight(model, base_url):
             "tools_advertised": True, "tool_workflow_verified": False}
 
 
+def installed_models(base_url="http://127.0.0.1:11434"):
+    """Local Ollama model tags for a picker. Any failure (Ollama off, bad
+    origin, odd reply) is an empty list: the caller falls back to typing."""
+    try:
+        rows = LoopbackJsonClient(base_url).request(
+            "GET", "/api/tags", timeout=3, default_failure="server_unavailable").data.get("models")
+    except (ValueError, RuntimeAdapterError):
+        return []
+    names = {row.get("name") for row in rows if isinstance(row, dict)} if isinstance(rows, list) else set()
+    return sorted(n for n in names if isinstance(n, str) and n and not n.lower().endswith((":cloud", "-cloud")))
+
+
 def _journal(harness):
     return config.OMM_HOME / "agent-connections" / (harness + ".json")
 

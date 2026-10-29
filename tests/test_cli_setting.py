@@ -4,7 +4,7 @@ import pytest
 import questionary
 from typer.testing import CliRunner
 
-from omm import catalog, cli, config
+from omm import agent_connection, catalog, cli, config
 
 runner = CliRunner()
 
@@ -485,6 +485,7 @@ def test_setting_theme_bare_with_tty_previews_and_saves_the_pick(
     # covered separately in test_theme.py; here we only need to confirm
     # configure_theme wires its result through to config.
     config.update_config(theme="dark")
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_pick_theme_interactively", lambda *a, **k: "high-contrast")
 
@@ -498,6 +499,7 @@ def test_setting_theme_bare_with_tty_keeps_current_value_on_cancel(
     isolated_omm_home, monkeypatch
 ):
     config.update_config(theme="dark")
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_pick_theme_interactively", lambda *a, **k: None)
 
@@ -534,6 +536,7 @@ def test_setting_theme_with_set_flag_skips_the_picker(isolated_omm_home, monkeyp
     # wizard fire here - which then crashes in its own engine-checklist
     # step, since that step checks onboarding.py's own (unmocked) stdin
     # state, not this one.
+    config.update_config(onboarding_completed=True)
     config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
 
@@ -656,7 +659,7 @@ def test_ask_text_binds_escape_to_cancel(monkeypatch):
     assert calls == ["raw-question"]
 
 
-def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, local=None):
+def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, local=None, models=None, args=("setting",)):
     """Run bare `omm setting` with scripted menu answers and record agent_* calls."""
     calls: list = []
     queue = iter(answers)
@@ -667,11 +670,15 @@ def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, l
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(queue))
     monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: text)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: next(confirms))
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_stdout_is_tty", lambda: True)
+    monkeypatch.setattr(agent_connection, "installed_models", lambda *a, **k: models or [])
     monkeypatch.setattr(cli, "agent_local", local or (lambda *a: calls.append(("local", *a))))
     monkeypatch.setattr(cli, "agent_cluster_cmd", lambda *a: calls.append(("cluster", *a)))
     monkeypatch.setattr(cli, "agent_cloud", lambda *a: calls.append(("cloud", *a)))
     monkeypatch.setattr(cli, "agent_status", lambda *a: calls.append(("status", *a)))
-    result = runner.invoke(cli.app, ["setting"])
+    result = runner.invoke(cli.app, list(args))
     assert result.exit_code == 0, result.stdout
     # Every scripted answer must have been asked for, in order; otherwise the
     # menu took a different path than the one under test.
@@ -761,3 +768,67 @@ def test_setting_agent_menu_survives_a_failed_connect(isolated_omm_home, monkeyp
     )
 
     assert calls == [("status", "claude"), ("status", "codex"), ("status", "pi")]
+
+
+def test_setting_agent_menu_lists_installed_ollama_models(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(
+        monkeypatch, ["agent", "local", "codex", "qwen3:8b", "back", None],
+        models=["llama3:8b", "qwen3:8b"],
+    )
+
+    assert calls == [("local", "codex", "qwen3:8b", "http://127.0.0.1:11434")]
+
+
+def test_setting_agent_menu_model_list_falls_back_to_typing(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(
+        monkeypatch, ["agent", "local", "pi", "\0type", "back", None],
+        models=["llama3:8b"], text="custom:tag",
+    )
+
+    assert calls == [("local", "pi", "custom:tag", "http://127.0.0.1:11434")]
+
+
+def test_bare_setting_agent_opens_the_picker_on_a_terminal(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(
+        monkeypatch, ["local", "claude", "back"], text="qwen3:8b", args=("setting", "agent"),
+    )
+
+    assert calls == [("local", "claude", "qwen3:8b", "http://127.0.0.1:11434")]
+
+
+def test_bare_setting_agent_without_a_terminal_prints_help(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+
+    result = runner.invoke(cli.app, ["setting", "agent"])
+
+    assert result.exit_code == 0, result.output
+    assert "local" in result.output and "cluster" in result.output
+
+
+def test_agent_local_asks_only_for_what_is_missing(isolated_omm_home, monkeypatch):
+    from omm import agent_connection
+
+    connected: list = []
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_stdout_is_tty", lambda: True)
+    monkeypatch.setattr(agent_connection, "installed_models", lambda *a, **k: ["qwen3:8b"])
+    monkeypatch.setattr(agent_connection, "connect", lambda *a, **k: connected.append((a, k)))
+    asked: list = []
+    answers = iter(["qwen3:8b"])
+    monkeypatch.setattr(cli, "_ask_select", lambda question: asked.append(question) or next(answers))
+
+    result = runner.invoke(cli.app, ["setting", "agent", "local", "codex"])
+
+    assert result.exit_code == 0, result.output
+    assert connected == [(("codex", "qwen3:8b"), {"base_url": "http://127.0.0.1:11434"})]
+    assert len(asked) == 1  # the model; the harness was on the command line
+
+
+def test_agent_local_missing_harness_without_a_terminal_is_a_usage_error(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+
+    result = runner.invoke(cli.app, ["setting", "agent", "local"])
+
+    assert result.exit_code == 2
+    assert "Missing harness" in result.output

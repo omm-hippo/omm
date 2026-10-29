@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import re
 from pathlib import Path
 import socket
 import threading
@@ -187,7 +188,9 @@ def test_rag_status_shows_the_line_and_json(isolated_omm_home, machine):
     result = runner.invoke(cli.app, ["rag", "status"])
     assert result.exit_code == 0, result.output
     output = " ".join(result.output.split())
-    assert "의미 검색: 꺼짐 (Ollama가 꺼져 있음) - Ollama가 설치돼 있지만 켜져 있지 않아요. `open -a Ollama`로" in output
+    assert ("Semantic search: off (Ollama not running) - Ollama is installed but not running. "
+            "Run `open -a Ollama`. Word search only for now.") in output
+    assert not re.search("[가-힣]", result.output.split("Documents:")[0])
     data = json.loads(runner.invoke(cli.app, ["rag", "status", "--json"]).output)
     assert data["semantic_search"]["state"] == "not_running"
     assert data["semantic_search"]["command"] == "open -a Ollama"
@@ -236,8 +239,9 @@ def test_employee_sees_the_head_state_in_remote_and_status(employee):
     assert result.exit_code == 0, result.output
     assert expected in " ".join(result.output.split())
     output = " ".join(runner.invoke(cli.app, ["rag", "status"]).output.split())
-    assert f"원격 헤드: {url}" in output and expected in output
-    assert "systemctl" not in output.split("아래는")[0]  # No admin commands in the head part.
+    expected_en = "Company head semantic search is off (Ollama not running) - tell the admin. Word search only for now."
+    assert f"Remote head: {url}" in output and expected_en in output
+    assert "systemctl" not in output.split("Below are")[0]  # No admin commands in the head part.
     data = json.loads(runner.invoke(cli.app, ["rag", "status", "--json"]).output)
     assert data["remote"] == {"url": url, "semantic_search": {"state": "not_running", "model": "bge-m3"}}
 
