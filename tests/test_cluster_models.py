@@ -49,6 +49,7 @@ class FakeExo:
         self.fit_alone = set()  # fits only once none of `blockers` is loaded
         self.blockers = {SMALL, OTHER}
         self.started, self.deleted_downloads, self.deleted_instances, self.added, self.created = [], [], [], [], []
+        self.placed = []
         self.complete_on_poll = True
         self.fail_on = None
         self.hits = [exo_client.SearchHit(SMALL, 40482, ("text-generation",)),
@@ -91,7 +92,13 @@ class FakeExo:
         return [exo_client.ExoModel(m, mb * 1024 * 1024, {"id": m, "quantization": "4bit", "family": "qwen"})
                 for m, mb in self.catalog.items()]
 
-    def previews(self, model_id):
+    def previews(self, model_id, on=None):
+        if on:
+            ring = {"MlxRingInstance": {"shardAssignments": {"nodeToRunner": {"n1": "r"}},
+                                        "hostsByNode": {"n1": [{"ip": "0.0.0.0", "port": 1}]}}}
+            from omm.cluster import recommend
+            return [recommend.place_on([exo_client.Placement(model_id, "Pipeline", ring, {"n1": GIB}, None, "MlxRing")],
+                                       self.state(), on)]
         loaded = {model for model, _ in self.instances.values()}
         if self.fits.get(model_id) or (model_id in self.fit_alone and not loaded & self.blockers):
             return [exo_client.Placement(model_id, "Pipeline", {"MlxRingInstance": {}},
@@ -125,6 +132,7 @@ class FakeExo:
 
     def create_instance(self, placement):
         self.created.append(placement.model_id)
+        self.placed.append(sorted(placement.memory_delta_by_node))
         self.instances[f"i-{placement.model_id}"] = (placement.model_id, True)
         return "cmd"
 
@@ -345,7 +353,7 @@ def test_guard_observe_shows_exo_error(exo):
 
 def test_not_memory_related_misfit_keeps_old_error(exo):
     exo.fits[BIG] = False
-    exo.previews = lambda model_id: [exo_client.Placement(model_id, "Tensor", {}, {}, "No tensor sharding found")]
+    exo.previews = lambda model_id, on=None: [exo_client.Placement(model_id, "Tensor", {}, {}, "No tensor sharding found")]
     with pytest.raises(ClusterError, match="does not fit in this cluster's free memory"):
         _guarded(exo, GuardPolicy.ASK, answer=True)
 
@@ -449,7 +457,7 @@ def test_settings_keep_several_models_with_their_choice(isolated_omm_home):
     settings.save(value)
     assert settings.load() == value
     saved = json.loads(settings.settings_path().read_text(encoding="utf-8"))
-    assert "model" not in saved and saved["models"][0] == {"model": SMALL, "sharding": "Tensor", "macs": 2}
+    assert "model" not in saved and saved["models"][0] == {"model": SMALL, "sharding": "Tensor", "macs": 2, "on": None}
     # Junk from a hand-edited file is dropped, not trusted.
     saved["models"] += [{"model": ""}, "x", {"model": "a/b", "sharding": "Diagonal", "macs": True}]
     settings.settings_path().write_text(json.dumps(saved), encoding="utf-8")
@@ -506,7 +514,7 @@ def test_guard_ask_forgets_the_models_it_unloaded(exo):
 
 def test_info_lists_placements_and_employee_info_hides_mac_names(exo):
     rows = json.loads((FIX / "previews-3node.json").read_text(encoding="utf-8"))
-    exo.previews = lambda model_id: exo_client.parse_previews(rows)
+    exo.previews = lambda model_id, on=None: exo_client.parse_previews(rows)
     exo.have(SMALL, "n1")
     data = models.info(SMALL, exo)
     assert data["loaded"] is False and data["fits"] is True and len(data["placements"]) == 9
@@ -520,3 +528,24 @@ def test_info_of_a_loaded_model_skips_placements(exo):
     exo.load(SMALL)
     data = models.info(SMALL, exo)
     assert data["loaded"] is True and data["loaded_macs"] == 3 and data["placements"] == []
+
+
+def test_ensure_loaded_on_a_named_mac_places_it_there_and_remembers_the_name(exo):
+    seen, out = _lines()
+    assert models.ensure_loaded(SMALL, out, policy=GuardPolicy.BLOCK, confirm=None, client=exo, on="mac-c").startswith("Serving")
+    assert exo.placed == [["n3"]]
+    assert settings.load().kept(SMALL).on == "mac-c"
+    assert json.loads(settings.settings_path().read_text(encoding="utf-8"))["models"][0]["on"] == "mac-c"
+
+
+def test_ensure_loaded_on_refuses_a_model_loaded_on_another_mac(exo):
+    exo.load(SMALL)  # the fake loads it on every Mac
+    with pytest.raises(ClusterError, match="already loaded as .*unload it first"):
+        models.ensure_loaded(SMALL, lambda line: None, policy=GuardPolicy.BLOCK, confirm=None, client=exo, on="mac-c")
+    assert exo.created == []
+
+
+def test_ensure_loaded_on_an_unknown_mac_fails_before_anything_is_created(exo):
+    with pytest.raises(ClusterError, match="No Mac on this cluster matches 'nope'"):
+        models.ensure_loaded(SMALL, lambda line: None, policy=GuardPolicy.BLOCK, confirm=None, client=exo, on="nope")
+    assert exo.created == []

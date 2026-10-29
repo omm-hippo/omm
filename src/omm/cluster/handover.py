@@ -171,7 +171,7 @@ def promote(reply: member_link.HeadReply, own_node: str) -> None:
         raise ClusterError("the head called off the handover")
     meta, aside, adopted = rag_backup.backup_meta(), None, False
     carried = instruction.get("settings") or {}
-    kept = tuple(settings.KeptModel(row["model"], row.get("sharding"), row.get("macs"))
+    kept = tuple(settings.KeptModel(row["model"], row.get("sharding"), row.get("macs"), row.get("on"))
                  for row in carried.get("models") or [] if isinstance(row, dict) and row.get("model"))
     try:
         if expected:

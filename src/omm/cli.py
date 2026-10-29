@@ -2660,8 +2660,8 @@ def cluster_status_cmd() -> None:
     if report["kept_models"]:
         from omm.cluster import recommend
 
-        kept = ", ".join(entry["model"] + ("" if not (entry["sharding"] or entry["macs"]) else
-                                           f" ({recommend.describe(entry['sharding'], entry['macs'])})")
+        kept = ", ".join(entry["model"] + ("" if not (entry["sharding"] or entry["macs"] or entry.get("on")) else
+                                           f" ({recommend.describe(entry['sharding'], entry['macs'], entry.get('on'))})")
                          for entry in report["kept_models"])
         console.print(f"Kept loaded: {kept} (this Mac loads them again after exo restarts)", markup=False)
     if report.get("members"):
@@ -2928,9 +2928,15 @@ def cluster_load_cmd(
         None, "--sharding", case_sensitive=False,
         help="Split the model by tensor or by layers (pipeline); omit to let omm pick"),
     macs: int | None = typer.Option(None, "--macs", min=1, help="How many Macs to spread it over; omit to let omm pick"),
+    on: str | None = typer.Option(
+        None, "--on", metavar="MAC",
+        help="Load it on this one Mac (part of its name, e.g. node3), not --sharding or --macs"),
 ) -> None:
     """Load a model into the cluster's memory so employees can use it (head Mac only)."""
     from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    if on and (sharding or macs):
+        raise typer.BadParameter("--on loads on one Mac; leave out --sharding and --macs", param_hint="--on")
 
     _cluster_call(cluster_commands.require_head_for, "omm cluster load")
     rows = {row.model for row in _cluster_call(cluster_models.inventory)}
@@ -2938,7 +2944,7 @@ def cluster_load_cmd(
         console.print(f"{model} is not installed yet; exo downloads it first "
                       f"(omm cluster install {model} downloads without loading).", markup=False)
     # exo spells them "Tensor" and "Pipeline".
-    choice = {"sharding": sharding.value.capitalize() if sharding else None, "macs": macs}
+    choice = {"sharding": sharding.value.capitalize() if sharding else None, "macs": macs, "on": on}
     console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard(), **choice)),
                   markup=False)
 

@@ -477,7 +477,7 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
 
 
 def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None, *,
-               sharding: str | None = None, macs: int | None = None) -> str:
+               sharding: str | None = None, macs: int | None = None, on: str | None = None) -> str:
     """Load `model_id` (on `placement`, else omm's pick) and remember it with the admin's choice."""
     require_macos()
     client = client or ExoClient()
@@ -488,7 +488,7 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
         # exo would place a second full copy next to the first one.
         out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
     else:
-        placement = placement or recommend.choose_placement(client.previews(model_id),
+        placement = placement or recommend.choose_placement(client.previews(model_id, on=on),
                                                             sharding=sharding, macs=macs)
         if placement is None:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
@@ -538,9 +538,9 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
     if current.role != "head":
         # Only the head runs the gateway; this Mac's own address serves nothing.
         return f"Serving {model_id}; employees reach it through the head Mac's gateway"
-    entry = settings.KeptModel(model_id, sharding, macs)
+    entry = settings.KeptModel(model_id, sharding, macs, on)
     # A plain load of a model already serving keeps the choice it was loaded with.
-    if current.kept(model_id) != entry and (created or sharding or macs or not current.kept(model_id)):
+    if current.kept(model_id) != entry and (created or sharding or macs or on or not current.kept(model_id)):
         settings.save(current.keeping(entry))
     return f"Serving {model_id} at https://{lan_ipv4()}:{current.gateway_port}"
 

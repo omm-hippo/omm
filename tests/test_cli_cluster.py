@@ -103,7 +103,7 @@ class _FakeExoClient:
         self._guard()
         return exo_client.parse_models(self.fakes.models)
 
-    def previews(self, model_id):
+    def previews(self, model_id, on=None):
         self._guard()
         rows = exo_client.parse_previews(self.fakes.previews)
         return [dataclasses.replace(r, model_id=model_id) for r in rows]
@@ -831,7 +831,7 @@ def test_model_list_fetches_previews_concurrently(cluster_fakes, monkeypatch):
     barrier = threading.Barrier(count, timeout=5)
     original = _FakeExoClient.previews
 
-    def previews(self, model_id):
+    def previews(self, model_id, on=None):
         barrier.wait()
         return original(self, model_id)
 
@@ -847,7 +847,7 @@ def test_model_list_fails_when_one_preview_fails(cluster_fakes, monkeypatch):
 
     original = _FakeExoClient.previews
 
-    def previews(self, model_id):
+    def previews(self, model_id, on=None):
         if "Llama-3.2-1B" in model_id:
             raise ClusterError("exo request GET /instance/previews failed: HTTP 500")
         return original(self, model_id)
@@ -1095,7 +1095,7 @@ def test_head_remembers_the_loaded_model_and_unload_forgets_it(cluster_fakes):
     assert settings.load().models == (settings.KeptModel(MODEL),)
     status = runner.invoke(cli.app, ["cluster", "status"])
     assert f"Kept loaded: {MODEL} (this Mac" in status.output
-    assert _status()["kept_models"] == [{"model": MODEL, "sharding": None, "macs": None}]
+    assert _status()["kept_models"] == [{"model": MODEL, "sharding": None, "macs": None, "on": None}]
     # Re-running init restarts exo; the model must still come back afterwards.
     runner.invoke(cli.app, ["cluster", "init"])
     assert settings.load().models == (settings.KeptModel(MODEL),)
@@ -1902,3 +1902,23 @@ def test_status_plain_output_lists_member_macs(head_with_members):
     result = runner.invoke(cli.app, ["cluster", "status"])
     assert result.exit_code == 0, result.output
     assert "Macs following this head:" in result.output and "omm bbbbbbb" in result.output
+
+
+def test_load_on_one_mac_cannot_combine_with_sharding_or_macs(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "load", MODEL, "--on", "node3", "--macs", "2"])
+    assert result.exit_code == 2
+    assert "--on loads on one Mac" in result.output
+
+
+def test_autoload_keeps_waiting_when_the_named_mac_is_not_there(cluster_fakes, autoload_head, monkeypatch):
+    from omm.cluster.errors import PlacementError
+
+    current = settings.load()
+    settings.save(current.keeping(settings.KeptModel(MODEL, None, None, "node9")))
+
+    def previews(self, model_id, on=None):
+        raise PlacementError("No Mac on this cluster matches 'node9'")
+
+    monkeypatch.setattr(autoload_head.ExoClient, "previews", previews)
+    assert autoload_head.check_once(autoload_head.Tracker(), now=0) == f"{MODEL}: does not fit"
+    assert not cluster_fakes.created

@@ -20,7 +20,7 @@ import threading
 import time
 
 from omm.cluster import exo_client, recommend, settings
-from omm.cluster.errors import ClusterError
+from omm.cluster.errors import ClusterError, PlacementError
 from omm.cluster.exo_client import ExoClient
 
 POLL_SECONDS = 30
@@ -85,9 +85,13 @@ def check_once(tracker: Tracker, *, client: ExoClient | None = None, now: float 
 
 
 def _reload(entry: settings.KeptModel, tracker: Tracker, client: ExoClient, now: float) -> str:
-    choice = recommend.describe(entry.sharding, entry.macs)
+    choice = recommend.describe(entry.sharding, entry.macs, entry.on)
     try:
-        placement = recommend.choose_placement(client.previews(entry.model), sharding=entry.sharding, macs=entry.macs)
+        placement = recommend.choose_placement(client.previews(entry.model, on=entry.on), sharding=entry.sharding,
+                                               macs=entry.macs)
+    except PlacementError:
+        # The Mac is not there (yet) or has no room; the next pass looks again.
+        placement = None
     except ClusterError:
         return "exo not reachable"
     if placement is None:

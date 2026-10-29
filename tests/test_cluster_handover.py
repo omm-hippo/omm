@@ -86,7 +86,7 @@ def test_start_bumps_epoch_and_carries_models(head):
     assert handover.start("t", now=datetime.now(timezone.utc)) == 3
     pending = members.pending_handover()
     assert pending["to"] == "t" and pending["epoch"] == 3
-    assert pending["settings"]["models"] == [{"model": "mlx-community/x", "sharding": "Tensor", "macs": 2}]
+    assert pending["settings"]["models"] == [{"model": "mlx-community/x", "sharding": "Tensor", "macs": 2, "on": None}]
     assert pending["settings"]["known_nodes"] == ["node4", "node1"] and pending["settings"]["gateway_port"] == 52440
 
 

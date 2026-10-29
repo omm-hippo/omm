@@ -402,10 +402,14 @@ class ExoClient:
     def models(self) -> list[ExoModel]:
         return parse_models(self._get("/models"))
 
-    def previews(self, model_id: str) -> list[Placement]:
+    def previews(self, model_id: str, on: str | None = None) -> list[Placement]:
+        """exo's placements; with `on` (a Mac's name) only the one that puts the model on that Mac."""
         from urllib.parse import quote
 
-        return parse_previews(self._get(f"/instance/previews?model_id={quote(model_id, safe='')}", timeout=60))
+        from omm.cluster import recommend
+
+        placements = parse_previews(self._get(f"/instance/previews?model_id={quote(model_id, safe='')}", timeout=60))
+        return [recommend.place_on(placements, self.state(), on)] if on else placements
 
     def create_instance(self, placement: Placement) -> str:
         data = self._call("POST", "/instance", payload={"instance": placement.instance}, timeout=60)
