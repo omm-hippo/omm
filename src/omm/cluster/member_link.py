@@ -66,6 +66,42 @@ def own_node_id(raw_state: dict, local: list[str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def catching_up(raw_state: dict, own_node: str) -> bool:
+    """True while this Mac's exo still replays the cluster's event log.
+
+    Until it has caught up, its `/state` is an old view of the cluster that
+    lists other Macs but not this one (Node2 joining a cluster with 1.67M
+    events took hours, 2026-10-29).
+    """
+    networks = exo_client.node_ipv4s(raw_state)
+    return bool(networks) and own_node not in networks
+
+
+def last_head_path() -> Path:
+    from omm import config
+
+    return config.OMM_HOME / "cluster" / "last-head.txt"
+
+
+def _last_head() -> str | None:
+    try:
+        address = last_head_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return address or None
+
+
+def _remember_head(address: str) -> None:
+    if address == _last_head():
+        return
+    from omm.atomic import atomic_write_text
+
+    try:
+        atomic_write_text(last_head_path(), address + "\n")
+    except OSError:
+        log.warning("could not save the head's address", exc_info=True, extra={"event": "cluster_member_last_head"})
+
+
 def ordered_addresses(raw_state: dict, own_node: str | None) -> list[tuple[str, str]]:
     """Every peer's (node id, IPv4), Thunderbolt link-local first: those never cross the office network."""
     rows = [(node, address) for node, addresses in exo_client.node_ipv4s(raw_state).items()
@@ -112,9 +148,17 @@ def request(address: str, method: str, path: str, key: bytes, own_node: str, *, 
     return response.status, data, reply_headers
 
 
-def find_head(raw_state: dict, key: bytes, own_node: str, *, report: dict) -> HeadReply | None:
-    """Poll every peer address at once; the proven head with the highest epoch wins."""
+def find_head(raw_state: dict, key: bytes, own_node: str, *, report: dict,
+              extra: list[str] = ()) -> HeadReply | None:
+    """Poll every peer address at once; the proven head with the highest epoch wins.
+
+    `extra` are "host:port" addresses tried as well (the head this Mac last
+    reached): a Mac still catching up only knows the old addresses in its
+    stale `/state`.
+    """
     targets = [(node, f"{address}:{GATEWAY_PORT}") for node, address in ordered_addresses(raw_state, own_node)]
+    known = {address for _, address in targets}
+    targets += [("", address) for address in extra if address not in known]
     if not targets:
         return None
     payload = json.dumps(report).encode()
@@ -129,6 +173,8 @@ def find_head(raw_state: dict, key: bytes, own_node: str, *, report: dict) -> He
         if status != 200 or not isinstance(body, dict) or body.get("head") is not True:
             return None
         epoch = body.get("epoch")
+        # An extra address carries no node id from exo; the head names itself.
+        node = node or str(body.get("node_id") or address)
         return HeadReply(node, address, epoch if isinstance(epoch, int) else 0, body)
 
     with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
@@ -189,6 +235,11 @@ def _raw_state() -> dict:
     return exo_client.ExoClient().raw_state(timeout=5)
 
 
+def _event_index(raw_state: dict) -> int | None:
+    value = raw_state.get("lastEventAppliedIdx")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def run_once(*, first: bool = False) -> str:
     current = settings.load()
     if current is None or current.role != "member":
@@ -205,14 +256,22 @@ def run_once(*, first: bool = False) -> str:
 
         exo_service.install(current.namespace, keep_if_same=True)
     raw = _raw_state()
-    own = own_node_id(raw, local_ipv4s())
+    own = own_node_id(raw, local_ipv4s()) or exo_client.ExoClient().node_id()
     if own is None:
         log.warning("could not tell which exo node is this Mac", extra={"event": "cluster_member_no_node"})
         return "no_node"
+    behind = catching_up(raw, own)
+    sent = {**report(), "catching_up": behind, "event_index": _event_index(raw)}
     key = member_auth.member_key(current.namespace)
-    head = find_head(raw, key, own, report=report())
+    last = _last_head()
+    head = find_head(raw, key, own, report=sent, extra=[last] if last else [])
     if head is None:
         return "no_head"
+    _remember_head(head.address)
+    if behind:
+        # An omm update restarts the link and a snapshot pull is long; both
+        # wait until exo has caught up (the head shows the progress).
+        return "catching_up"
     instruction = head.body.get("handover")
     if isinstance(instruction, dict) and instruction.get("to") == own:
         handover.promote(head, own)

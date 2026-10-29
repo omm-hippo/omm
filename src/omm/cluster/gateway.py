@@ -520,6 +520,8 @@ class _Handler(BaseHTTPRequestHandler):
             "version": version_follow.local_version(),
             "rag_marker": rag_backup.store_marker(),
             "handover": pending if pending is not None and pending.get("to") == node else None,
+            # A member that reached this head at a saved address has no exo node id for it.
+            "node_id": self._exo().node_id(timeout=2),
         }).encode()
         # Before the reply starts, so a failure here still reaches the member as a 500.
         proof = self._head_proof(nonce, hashlib.sha256(body).hexdigest())
