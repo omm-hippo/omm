@@ -1,4 +1,4 @@
-import {ModelGuide,RecoveryActions} from './Usability';
+import {RecoveryActions} from './Usability';
 import {TaskProgress} from './TaskFlow';
 import DocumentPanel, {DocumentProgress} from './DocumentPanel';
 import React, {useEffect, useRef, useState} from 'react';
@@ -7,10 +7,10 @@ import {api, gib, bytes} from './api';
 import './style.css';
 import './workspace.css';
 import {Sidebar,CommandPalette,WorkspaceIcon} from './Workspace.jsx';
-import {destinations,readAppearance,measurementSummary,wikiSummary} from './workspace-state.js';
+import {destinations,readAppearance,measurementSummary} from './workspace-state.js';
 import ChatPanel from './ChatPanel';
 import SharedAI from './SharedAI';
-import {WikiExplorer,Connections,Diagnostics,Comparison,RuntimeSettings,FilesSettings} from './ManagementPanels';
+import {Connections,Diagnostics,Comparison,RuntimeSettings,FilesSettings} from './ManagementPanels';
 import {L,lang} from './i18n.js';
 document.documentElement.lang=lang;document.title=L('OMM · 로컬 모델 관리','OMM · Local model manager');
 
@@ -29,7 +29,7 @@ function Evidence({catalog,onUpdate,busy}) {
 }
 
 function Icon({name}) {
-  const paths = {wiki:<><path d="M3 4h7c2 0 2 2 2 2s0-2 2-2h7v16h-7c-2 0-2 2-2 2s0-2-2-2H3Z"/><path d="M12 6v16"/></>,recommend:<><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3Z"/></>,models:<><path d="m12 3 9 5-9 5-9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10"/></>,jobs:<><path d="M8 5h13M8 12h13M8 19h13"/><circle cx="3" cy="5" r=".8"/><circle cx="3" cy="12" r=".8"/><circle cx="3" cy="19" r=".8"/></>,search:<><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></>};
+  const paths = {recommend:<><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3Z"/></>,models:<><path d="m12 3 9 5-9 5-9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10"/></>,jobs:<><path d="M8 5h13M8 12h13M8 19h13"/><circle cx="3" cy="5" r=".8"/><circle cx="3" cy="12" r=".8"/><circle cx="3" cy="19" r=".8"/></>,search:<><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></>};
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
@@ -38,8 +38,8 @@ function Hardware({machine, budget}) {
   return <div className="hardware">{fields.map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>;
 }
 
-function ModelTable({rows, onSelect, onDetails}) {
-  return <div className="table-wrap"><table><thead><tr><th>{L('모델','Model')}</th><th>{L('용도','Use')}</th><th>{L('예상 메모리','Est. memory')}</th><th>{L('예측 근거','Basis')}</th><th><span className="sr-only">{L('작업','Actions')}</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small><button className="text-button" onClick={()=>onDetails(model.wiki || {missing:true,name:model.name,ref:model.ref})}>{L('모델 설명','Model details')}</button><small>{wikiSummary(model.wiki)}</small>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status] || L('실측 근거 부족', 'Not enough measurements')}</span><small>{evidenceBasis[model.evidence.basis] || L('근거 부족', 'Not enough evidence')}{L(' · 보정된 정확도 없음',' · No calibrated accuracy')}</small>{model.evidence.matching_feature_configurations && <small>{L(`같은 특성의 학습 구성 ${model.evidence.matching_feature_configurations.training} · 검증 구성 ${model.evidence.matching_feature_configurations.holdout}`, `Same-feature configurations: ${model.evidence.matching_feature_configurations.training} training · ${model.evidence.matching_feature_configurations.holdout} holdout`)}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>{L(`약 ${model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama`, `About ${model.predicted_tokens_per_second.toFixed(1)} tok/s expected · Ollama`)}</small>}</td><td>{!model.installed && <button className="primary" onClick={()=>onSelect({...model,operation:'start_chat'})}>{L('이 모델로 대화 시작','Start chatting with this model')}</button>}<button onClick={()=>onSelect(model)}>{model.installed?L('설치 정보', 'Install info'):L('설치', 'Install')}</button></td></tr>)}</tbody></table></div>;
+function ModelTable({rows, onSelect}) {
+  return <div className="table-wrap"><table><thead><tr><th>{L('모델','Model')}</th><th>{L('용도','Use')}</th><th>{L('예상 메모리','Est. memory')}</th><th>{L('예측 근거','Basis')}</th><th><span className="sr-only">{L('작업','Actions')}</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status] || L('실측 근거 부족', 'Not enough measurements')}</span><small>{evidenceBasis[model.evidence.basis] || L('근거 부족', 'Not enough evidence')}{L(' · 보정된 정확도 없음',' · No calibrated accuracy')}</small>{model.evidence.matching_feature_configurations && <small>{L(`같은 특성의 학습 구성 ${model.evidence.matching_feature_configurations.training} · 검증 구성 ${model.evidence.matching_feature_configurations.holdout}`, `Same-feature configurations: ${model.evidence.matching_feature_configurations.training} training · ${model.evidence.matching_feature_configurations.holdout} holdout`)}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>{L(`약 ${model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama`, `About ${model.predicted_tokens_per_second.toFixed(1)} tok/s expected · Ollama`)}</small>}</td><td>{!model.installed && <button className="primary" onClick={()=>onSelect({...model,operation:'start_chat'})}>{L('이 모델로 대화 시작','Start chatting with this model')}</button>}<button onClick={()=>onSelect(model)}>{model.installed?L('설치 정보', 'Install info'):L('설치', 'Install')}</button></td></tr>)}</tbody></table></div>;
 }
 
 function Installed({rows,onAction,onSettings,onChat}) {
@@ -90,31 +90,8 @@ function FirstUse({machine,onModels,onAction}) {
   </section>;
 }
 
-function WikiDetail({model,onClose}) {
-  const dialog=useRef(null);useEffect(()=>{dialog.current?.showModal();},[]);
-  return <dialog className="wiki-dialog" ref={dialog} onCancel={onClose}><h2>{model.name}</h2>
-    {model.missing ? <><p>{L('이 설치 대상에 정확하게 연결된 위키 설명이 아직 없어요.',"There's no wiki entry matched to this download yet.")}</p><p className="filename">{model.ref}</p></> : <>
-      <p>{model.summary}</p>
-      <dl><dt>{L('개발사 · 규모 표기','Publisher · Stated size')}</dt><dd>{model.publisher} · {model.sizeLabel || L('미확인', 'Unknown')}</dd>
-      <dt>{L('구조','Architecture')}</dt><dd>{model.architecture==='moe'?'MoE':model.architecture==='dense'?'Dense':L('미확인', 'Unknown')}</dd>
-      <dt>{L('공개 문서·설정의 문맥 길이','Context length (public docs/config)')}</dt><dd>{Number.isInteger(model.context?.tokens)?L(`${model.context.tokens.toLocaleString()} 토큰`, `${model.context.tokens.toLocaleString()} tokens`):L('미확인', 'Unknown')}</dd>
-      <dt>{L('확인된 입력','Confirmed inputs')}</dt><dd>{(model.inputs || []).join(', ') || L('미확인', 'Unknown')}</dd>
-      <dt>{L('도구 호출','Tool calling')}</dt><dd>{model.toolCalling===true?L('개발사 지원 표기 · 실행 미검증', 'Supported per publisher · Not verified by running'):model.toolCalling===false?L('개발사 미지원 표기', 'Not supported per publisher'):model.toolFormatDeclared?L('공식 템플릿에 호출 형식 포함 · 작업 성공 미검증', 'Call format in official template · Task success not verified'):L('미확인', 'Unknown')}</dd>
-      <dt>{L('라이선스 표기','Stated license')}</dt><dd><a href={model.license?.url} target="_blank" rel="noreferrer">{model.license?.label || L('미확인', 'Unknown')}</a></dd></dl>
-      <h3>{L('선택할 때','When to choose')}</h3><p>{model.chooseWhen}</p>
-      <h3>{L('특징과 주의점','Strengths and cautions')}</h3>{[...model.strengths,...model.cautions].map((claim,index)=><p key={index}><small>{claim.basis==='publisher'?L('개발사 설명', 'Publisher'):L('편집 의견', 'Editor note')}</small>{claim.text}</p>)}
-      <h3>{L('실행 조건','Requirements')}</h3><p>{model.runtimeNote}</p>
-      {['declared_base_repository','publisher_declared_base'].includes(model.match) && <p>{L('원본 체크포인트 설명을 연결했어요. 변환본의 양자화·실행 앱 호환성은 따로 확인해야 해요.',"This links the original checkpoint's description. Check the converted file's quantization and app compatibility separately.")}</p>}
-      <p className="filename">{model.packageRepository || model.repository}</p>
-      <h3>{L('출처','Sources')}</h3>{model.sources.map(source=><p key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></p>)}
-      <small>{L(`검토 ${model.reviewedAt} · OMM 실측 품질 평가 없음`, `Reviewed ${model.reviewedAt} · No OMM-measured quality rating`)}</small>{model.stale && <p>{L('검토 후 시간이 지난 자료예요. 현재 지원 여부는 출처에서 다시 확인해 주세요.','This entry was reviewed a while ago. Check the sources for current support.')}</p>}
-    </>}
-    <div className="dialog-actions"><button onClick={onClose}>{L('닫기','Close')}</button></div>
-  </dialog>;
-}
-
 function App() {
-  const readTab = ()=>destinations.some(item=>item.id===location.hash.slice(1)) ? location.hash.slice(1) : 'wiki';
+  const readTab = ()=>destinations.some(item=>item.id===location.hash.slice(1)) ? location.hash.slice(1) : 'recommend';
   const [tab,setCurrentTab] = useState(readTab);
   const [sidebar,setSidebar]=useState(()=>!window.matchMedia('(max-width: 760px)').matches);
   const [mobile,setMobile]=useState(()=>window.matchMedia('(max-width: 760px)').matches);
@@ -162,8 +139,6 @@ function App() {
   const [jobs,setJobs] = useState([]);
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
-  const [wiki,setWiki]=useState(null);
-  const [description,setDescription]=useState(null);
   const [settingsModel,setSettingsModel]=useState(null);
   const [chatModel,setChatModel]=useState(null);
   const [preparedTask,setPreparedTask]=useState(null);
@@ -185,7 +160,6 @@ function App() {
       setMachine(hw);setCatalog(recs);setModels(list);setJobs(history);
     } catch(e){if(!signal?.aborted && sequence===requestSequence.current)setError(e.message);} finally {if(!signal?.aborted && sequence===requestSequence.current)setLoading(false);}
   }
-  useEffect(()=>{api('/api/wiki').then(setWiki).catch(e=>setError(e.message));},[]);
   useEffect(()=>{
     const controller = new AbortController();
     const timer = setTimeout(()=>refresh(controller.signal),query ? 250 : 0);
@@ -232,8 +206,8 @@ function App() {
     catch(e){setError(e.message);}
     finally{setUpdating(false);}
   }
-  const titles={wiki:L('모델 찾기', 'Find models'),recommend:L('내 컴퓨터에 맞는 추천', 'Recommended for this computer'),models:L('내 모델', 'My models'),chat:L('로컬 모델과 대화', 'Chat with a local model'),shared:L('공유 AI', 'Shared AI'),documents:L('내 문서', 'My documents'),comparison:L('성능 비교', 'Performance comparison'),jobs:L('작업', 'Tasks'),connections:L('연결 상태', 'Connections'),diagnostics:L('진단', 'Diagnostics'),settings:L('파일·설정', 'Files & settings')};
-  const subtitles={wiki:L('모델 위키에서 용도와 특징을 살펴보고 설치할 파일을 선택하세요.', 'Browse uses and traits in the model wiki, then choose a file to install.'),recommend:L('현재 메모리 여유에 맞는 후보와 추천 근거를 확인하세요.', 'See models that fit your free memory and why they were picked.'),models:L('설치된 모델의 연결, 실행과 설정을 관리하세요.', 'Manage links, runs, and settings for installed models.'),chat:L('모델의 실제 응답을 받고 대화를 이어가세요.', 'Get real responses from a model and keep chatting.'),shared:L('팀의 공유 서버에 연결하고 모델의 실제 답변을 확인하세요.', "Connect to your team's shared server and see the model's real answers."),documents:L('등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.', 'Ask a local model about your documents and see the original sources.'),comparison:L('실제 로컬 응답으로 속도와 산술 점검 결과를 비교하세요.', 'Compare speed and arithmetic check results using real local responses.'),jobs:L('진행 상황과 저장된 작업 결과를 확인하세요.', 'See progress and saved task results.'),connections:L('실행 앱과 로컬 서버, 다운로드 서버의 연결을 확인하세요.', 'Check connections to apps, local servers, and download servers.'),diagnostics:L('문제가 있는 지점과 해결 방법을 확인하세요.', 'See what went wrong and how to fix it.'),settings:L('저장 공간과 기존 모델, 데이터 공유 설정을 관리하세요.', 'Manage storage, existing models, and data sharing settings.')};
+  const titles={recommend:L('내 컴퓨터에 맞는 추천', 'Recommended for this computer'),models:L('내 모델', 'My models'),chat:L('로컬 모델과 대화', 'Chat with a local model'),shared:L('공유 AI', 'Shared AI'),documents:L('내 문서', 'My documents'),comparison:L('성능 비교', 'Performance comparison'),jobs:L('작업', 'Tasks'),connections:L('연결 상태', 'Connections'),diagnostics:L('진단', 'Diagnostics'),settings:L('파일·설정', 'Files & settings')};
+  const subtitles={recommend:L('현재 메모리 여유에 맞는 후보와 추천 근거를 확인하세요.', 'See models that fit your free memory and why they were picked.'),models:L('설치된 모델의 연결, 실행과 설정을 관리하세요.', 'Manage links, runs, and settings for installed models.'),chat:L('모델의 실제 응답을 받고 대화를 이어가세요.', 'Get real responses from a model and keep chatting.'),shared:L('팀의 공유 서버에 연결하고 모델의 실제 답변을 확인하세요.', "Connect to your team's shared server and see the model's real answers."),documents:L('등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.', 'Ask a local model about your documents and see the original sources.'),comparison:L('실제 로컬 응답으로 속도와 산술 점검 결과를 비교하세요.', 'Compare speed and arithmetic check results using real local responses.'),jobs:L('진행 상황과 저장된 작업 결과를 확인하세요.', 'See progress and saved task results.'),connections:L('실행 앱과 로컬 서버, 다운로드 서버의 연결을 확인하세요.', 'Check connections to apps, local servers, and download servers.'),diagnostics:L('문제가 있는 지점과 해결 방법을 확인하세요.', 'See what went wrong and how to fix it.'),settings:L('저장 공간과 기존 모델, 데이터 공유 설정을 관리하세요.', 'Manage storage, existing models, and data sharing settings.')};
   const title=titles[tab],subtitle=subtitles[tab];
   const visible = catalog?.models || [];
   function openPreparedChat(job){setPreparedTask({...job.result,id:crypto.randomUUID(),job_id:job.id});setChatModel({id:job.result.model_id,filename:job.result.filename,engines:[job.result.engine],exists:true});setRefreshKey(key=>key+1);setTab('chat');}
@@ -260,9 +234,8 @@ function App() {
     {sidebar && <button className="sidebar-backdrop" aria-label={L('메뉴 닫기','Close menu')} onClick={()=>setSidebar(false)}/>}
     <aside id="workspace-sidebar" aria-label={L('OMM 작업 공간','OMM workspace')} hidden={!sidebar}>{mobile && <button className="icon-button sidebar-dismiss" aria-label={L('사이드바 닫기','Close sidebar')} onClick={()=>setSidebar(false)}><WorkspaceIcon name="close"/></button>}<Sidebar tab={tab} onNavigate={setTab} onSearch={()=>setPalette(true)} appearance={appearance} onAppearance={setAppearance} activeJobs={jobs.filter(j=>['queued','running','cancelling'].includes(j.status)).length}/></aside>
     <main id="workspace-main" inert={mobile && sidebar?true:undefined}><div className="workspace-topbar"><div className="workspace-location"><button className="icon-button" aria-label={sidebar?L('사이드바 접기', 'Collapse sidebar'):L('사이드바 펼치기', 'Expand sidebar')} aria-expanded={sidebar} aria-controls="workspace-sidebar" onClick={()=>setSidebar(value=>!value)}><WorkspaceIcon name="menu"/></button><span>{L('내 작업 공간','My workspace')}</span><span className="breadcrumb-separator">/</span><strong>{destinations.find(x=>x.id===tab)?.label}</strong></div><button className="icon-button" aria-label={L('메뉴 검색 열기','Open menu search')} title={L('메뉴 검색 (⌘/Ctrl K)','Search menu (⌘/Ctrl K)')} onClick={()=>setPalette(true)}><WorkspaceIcon name="search"/></button></div>
-    <div className="workspace-content"><header><div><h1>{title}</h1><p>{subtitle}</p></div>{tab!=='shared'&&<button className="refresh-button" onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}><WorkspaceIcon name="refresh" size={16}/>{loading?L('확인 중…', 'Checking…'):L('다시 확인', 'Check again')}</button>}</header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['wiki','recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
-    {tab==='wiki' && <WikiExplorer document={wiki} profile={profile} onOpen={setDescription} onSelect={choose}/>}
-    {tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onAction={choose} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label={L('메모리 사용 방식','Memory usage mode')}>{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder={L('모델 이름으로 찾기','Search by model name')} aria-label={L('모델 이름으로 찾기','Search by model name')}/></label></div><ModelGuide profile={profile} refreshKey={refreshKey} onSelect={choose} onDetails={setDescription}/>{loading?<div className="empty" role="status">{L('컴퓨터와 추천 자료를 확인하고 있어요.','Checking your computer and recommendation data.')}</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?L('검색 결과가 없어요','No results'):L('현재 예산에 맞는 모델이 없어요', 'No models fit the current budget')}</h2><p>{query?L('다른 이름으로 검색해 보세요.','Try a different name.'):L('사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.', 'Change the usage mode or close other apps, then check again.')}</p></div>}<p className="footnote">{L('예상 속도는 실제 측정과 다를 수 있어요.','Estimated speed may differ from actual measurements.')}</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/></>}
+    <div className="workspace-content"><header><div><h1>{title}</h1><p>{subtitle}</p></div>{tab!=='shared'&&<button className="refresh-button" onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}><WorkspaceIcon name="refresh" size={16}/>{loading?L('확인 중…', 'Checking…'):L('다시 확인', 'Check again')}</button>}</header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
+    {tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onAction={choose} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label={L('메모리 사용 방식','Memory usage mode')}>{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder={L('모델 이름으로 찾기','Search by model name')} aria-label={L('모델 이름으로 찾기','Search by model name')}/></label></div>{loading?<div className="empty" role="status">{L('컴퓨터와 추천 자료를 확인하고 있어요.','Checking your computer and recommendation data.')}</div>:visible.length?<ModelTable rows={visible} onSelect={choose}/>:<div className="empty"><h2>{query?L('검색 결과가 없어요','No results'):L('현재 예산에 맞는 모델이 없어요', 'No models fit the current budget')}</h2><p>{query?L('다른 이름으로 검색해 보세요.','Try a different name.'):L('사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.', 'Change the usage mode or close other apps, then check again.')}</p></div>}<p className="footnote">{L('예상 속도는 실제 측정과 다를 수 있어요.','Estimated speed may differ from actual measurements.')}</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/></>}
     {tab==='models' && <Installed rows={models} onAction={choose} onSettings={setSettingsModel} onChat={model=>{setChatModel(model);setTab('chat');}}/>}
     {(visited.has('chat') || tab==='chat') && <div hidden={tab!=='chat'}><ChatPanel onRecover={recover} models={models} initialModel={chatModel} preparedTask={preparedTask} onModelStatusChange={()=>setRefreshKey(key=>key+1)} onModels={()=>setTab('models')}/></div>}
     {(visited.has('shared') || tab==='shared') && <div hidden={tab!=='shared'}><SharedAI/></div>}
@@ -272,7 +245,7 @@ function App() {
     {tab==='diagnostics' && <Diagnostics refreshKey={refreshKey}/>}
     {tab==='comparison' && <Comparison models={models} jobs={jobs} onAction={choose}/>}
     {tab==='settings' && <FilesSettings refreshKey={refreshKey} onAction={choose}/>}
-    </div></main>{palette && <CommandPalette onClose={()=>setPalette(false)} onNavigate={setTab}/>} {description && <WikiDetail model={description} onClose={()=>setDescription(null)}/>} {settingsModel && <RuntimeSettings model={settingsModel} refreshKey={refreshKey} onClose={()=>setSettingsModel(null)} onAction={choose}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
+    </div></main>{palette && <CommandPalette onClose={()=>setPalette(false)} onNavigate={setTab}/>} {settingsModel && <RuntimeSettings model={settingsModel} refreshKey={refreshKey} onClose={()=>setSettingsModel(null)} onAction={choose}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
 
 }
 

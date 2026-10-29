@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from omm import config, hardware, model_wiki, predictor, registry, runtime_profiles, usage
+from omm import config, hardware, predictor, registry, runtime_profiles, usage
 from omm.engines.base import LoadReceipt, ProbeResult, RuntimeHealth, RuntimeModel
-from omm.web import discovery, maintenance, management, performance
+from omm.web import maintenance, management, performance
 from omm.web.service import WebService, identifier
 
 
@@ -90,43 +90,6 @@ def test_comparison_resolves_server_owned_models(managed):
     assert WebService().request(body)["filenames"] == [managed]
     with pytest.raises(ValueError,match="confirmed"):
         WebService().request({**body,"confirmed":False})
-
-
-def test_wiki_packages_use_exact_relations_not_model_family(monkeypatch,isolated_omm_home):
-    hw=hardware.HardwareInfo("macOS","","Apple M5",24,20,True,"Apple M5",24,20)
-    monkeypatch.setattr(hardware,"scan_hardware",lambda:hw)
-    candidates=[{"repo_id":"Qwen/Qwen3-8B-GGUF","filename":"Qwen3-8B-Q4_K_M.gguf","size_bytes":4_000_000_000},
-                {"repo_id":"unknown/Qwen3-8B-GGUF","filename":"Qwen3-8B-Q4_K_M.gguf","size_bytes":4_000_000_000}]
-    monkeypatch.setattr(predictor,"load_cached_model",lambda:{"candidates":candidates})
-    value=WebService().wiki_packages("qwen3-8b")
-    assert len(value["packages"]) == 1
-    assert value["packages"][0]["ref"].startswith("Qwen/")
-    assert value["packages"][0]["fits"] is True
-
-
-def test_package_discovery_rejects_name_only_and_split_shards(monkeypatch):
-    model=next(x for x in model_wiki.catalog()["models"] if x["id"] == "phi-4-mini-instruct")
-    class Client:
-        def __enter__(self): return self
-        def __exit__(self,*args): pass
-        def get(self,url,**kwargs):
-            assert kwargs["allow_redirects"] is False
-            if url.endswith('/api/models'):
-                assert kwargs['params']['cardData'] == 'true'  # full=true alone omits base_model metadata.
-                data=[{"id":"vendor/phi-4-mini-instruct-wrong","cardData":{"base_model":"other/model"}},
-                      {"id":"vendor/phi-4-mini-instruct-GGUF","cardData":{"base_model":model["repository"]}}]
-            else:
-                assert 'wrong' not in url
-                data={"cardData":{"base_model":model["repository"]},"siblings":[
-                    {"rfilename":"model-Q4_K_M.gguf","size":1_000_000_000},
-                    {"rfilename":"model-00001-of-00002.gguf","size":1_000_000_000},
-                    {"rfilename":"../escape.gguf","size":1_000_000_000}]}
-            return SimpleNamespace(json=lambda:data,raise_for_status=lambda:None,url=url)
-    import requests
-    monkeypatch.setattr(requests,"Session",Client)
-    [row]=discovery.discover(model)
-    assert row["filename"] == "model-Q4_K_M.gguf"
-    assert row["wiki"]["match"] == "publisher_declared_base"
 
 
 @pytest.fixture
@@ -270,86 +233,3 @@ def test_network_checks_are_fixed_and_not_retried(monkeypatch):
     value=management.check_network()
     assert len(calls) == value["requests"] == 2
     assert all(kwargs == {"timeout":3,"allow_redirects":False} for _,kwargs in calls)
-
-
-
-WIKI_CANDIDATES=[{"repo_id":"Qwen/Qwen3-8B-GGUF","filename":"Qwen3-8B-Q4_K_M.gguf","size_bytes":4_000_000_000},
-                 {"repo_id":"someone/Unreviewed-7B-GGUF","filename":"Unreviewed-7B-Q4_K_M.gguf","size_bytes":3_900_000_000}]
-EXACT_CANDIDATE={"repo_id":"Qwen/Qwen3-8B","filename":"Qwen3-8B-Q4_K_M.gguf","size_bytes":4_100_000_000}
-
-
-@pytest.fixture
-def wiki_offline(monkeypatch,isolated_omm_home):
-    """No network at all: every outbound connection attempt fails loudly."""
-    import socket
-    import requests
-    def refuse(*args,**kwargs):
-        raise OSError("network disabled for test")
-    monkeypatch.setattr(socket.socket,"connect",refuse)
-    monkeypatch.setattr(socket,"create_connection",refuse)
-    monkeypatch.setattr(requests.Session,"request",lambda *a,**k:(_ for _ in ()).throw(requests.ConnectionError("offline")))
-    hw=hardware.HardwareInfo("macOS","","Apple M5",24,20,True,"Apple M5",24,20)
-    monkeypatch.setattr(hardware,"scan_hardware",lambda:hw)
-    from omm import recommend_facts, recommend_status
-    monkeypatch.setattr(predictor,"load_cached_model",lambda:{"candidates":[dict(c) for c in WIKI_CANDIDATES]})
-    monkeypatch.setattr(predictor,"rank_candidates",lambda artifact,info:[(c,None) for c in artifact["candidates"]])
-    monkeypatch.setattr(predictor,"cached_model_signature_is_valid",lambda *a:False)
-    monkeypatch.setattr(recommend_facts,"apply",lambda artifact:artifact)
-    monkeypatch.setattr(recommend_status,"detect_installation_statuses",lambda rows:[recommend_status.NOT_INSTALLED]*len(rows))
-    return hw
-
-
-def _cli_wiki(candidate,hw):
-    from omm import cli, recommend_status
-    [row]=cli._build_recommend_json_rows([(candidate,None)],[candidate["repo_id"]+"/"+candidate["filename"]],
-                                         [recommend_status.NOT_INSTALLED],"balanced",info=hw)
-    return row["wiki"]
-
-
-def test_web_wiki_matches_cli_for_exact_declared_and_missing_models_offline(wiki_offline):
-    value=WebService().recommendations("balanced")
-    assert len(value["models"])==2
-    for candidate in WIKI_CANDIDATES:
-        web=next(row for row in value["models"] if row["filename"]==candidate["filename"] and candidate["repo_id"] in row["ref"])
-        cli_wiki=_cli_wiki(candidate,wiki_offline)
-        assert web["wiki"]==cli_wiki
-    by_repo={c["repo_id"]:_cli_wiki(c,wiki_offline) for c in WIKI_CANDIDATES+[EXACT_CANDIDATE]}
-    assert by_repo["Qwen/Qwen3-8B"]["match"]=="exact_repository"
-    assert by_repo["Qwen/Qwen3-8B-GGUF"]["match"]=="declared_base_repository"
-    assert by_repo["Qwen/Qwen3-8B-GGUF"]["sources"]==by_repo["Qwen/Qwen3-8B"]["sources"]
-    # A similar-looking name never borrows another checkpoint's description.
-    assert by_repo["someone/Unreviewed-7B-GGUF"] is None
-    catalog=model_wiki.catalog()
-    assert catalog["contentVersion"]==model_wiki.load()["contentVersion"]
-    assert {m["id"] for m in catalog["models"]}>={"qwen3-8b"}
-
-
-def test_web_wiki_packages_work_offline_and_discovery_fails_plainly(wiki_offline):
-    service=WebService()
-    packages=service.wiki_packages("qwen3-8b")["packages"]
-    assert {row["ref"].split("/")[0] for row in packages}=={"Qwen"}
-    assert all(row["wiki"]["id"]=="qwen3-8b" for row in packages)
-    with pytest.raises(ValueError,match="Hugging Face에 연결하지 못했어요"):
-        service.discover_packages("qwen3-8b")
-    assert service.wiki_packages("qwen3-8b")["packages"]==packages
-    with pytest.raises(ValueError):
-        service.wiki_packages("not-in-the-wiki")
-
-
-def test_stale_wiki_review_is_flagged_identically_in_web_and_cli(monkeypatch,wiki_offline):
-    import copy
-    original=copy.deepcopy(model_wiki.load())
-    old={**original,"reviewedAt":"2020-01-01","models":[{**m,"reviewedAt":"2020-01-01"} for m in original["models"]]}
-    monkeypatch.setattr(model_wiki,"load",lambda:old)
-    assert model_wiki.catalog()["stale"] is True
-    web=next(row for row in WebService().recommendations("balanced")["models"] if "Qwen/Qwen3-8B-GGUF" in row["ref"])
-    cli_wiki=_cli_wiki(WIKI_CANDIDATES[0],wiki_offline)
-    assert web["wiki"]["stale"] is True and cli_wiki["stale"] is True and web["wiki"]==cli_wiki
-    assert web["wiki"]["reviewedAt"]=="2020-01-01" and web["wiki"]["sources"]==cli_wiki["sources"]
-
-
-def test_wiki_api_route_serves_bundled_catalog_offline(wiki_offline):
-    # The route handler returns model_wiki.catalog() unchanged: no network, same source/version.
-    value=model_wiki.catalog()
-    assert value["locale"]=="ko" and isinstance(value["stale"],bool)
-    assert all(model["sources"] for model in value["models"])

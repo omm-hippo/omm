@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from omm import install_safety, model_wiki, predictor, recommend_selection, recommend_status, rules, hub
+from omm import install_safety, predictor, recommend_selection, recommend_status, rules, hub
 from omm.hardware import HardwareInfo
 from omm.web import runtime
 from omm.web.jobs import JobManager
@@ -151,56 +151,3 @@ def test_only_typed_reasons_drive_recovery():
     assert failure(install_safety.SafetyError('blocked')) == {'reason': 'safety_failed'}
     assert failure(ActionError('out_of_memory', '')) == {'reason': 'out_of_memory'}
     assert failure(ActionError([], '')) == {'reason': 'unknown'}
-
-
-@pytest.fixture
-def guide_data(monkeypatch, isolated_omm_home):
-    from omm.web import service
-    candidates = []
-    for i in range(6):
-        candidates.append({'name': f'm{i}', 'repo_id': f'test/m{i}', 'filename': f'm{i}.gguf',
-                           'memory_gb': i + 1})
-    monkeypatch.setattr(service.hardware, 'scan_hardware', lambda: HardwareInfo(
-        os_name='test', os_version='', cpu='test', ram_total_gb=16, ram_available_gb=12, gpu_name=None,
-        vram_total_gb=None, vram_free_gb=None, unified_memory=False))
-    monkeypatch.setattr(predictor, 'load_cached_model', lambda: None)
-    monkeypatch.setattr(rules, 'load_rules', lambda: candidates)
-    monkeypatch.setattr(hub, 'CURATED_INDEX', {c['name']: (c['repo_id'], c['filename']) for c in candidates})
-    monkeypatch.setattr(predictor, 'estimate_required_memory_gb', lambda c: c['memory_gb'])
-    monkeypatch.setattr(predictor, 'candidate_fits_memory', lambda info, c: c['memory_gb'] <= 5)
-    monkeypatch.setattr(predictor, 'profile_memory_cap_gb', lambda *args: 8)
-    monkeypatch.setattr(service.hardware, 'calculate_memory_budget', lambda _: SimpleNamespace(install_budget_gb=8))
-    monkeypatch.setattr(recommend_status, 'detect_installation_statuses', lambda rows: [SimpleNamespace(
-        installed=False, engines=[], managed_by_omm=False, match_kind=None) for _ in rows])
-    monkeypatch.setattr(service.recommend_evidence, 'describe', lambda *args: {'status': 'static_rules'})
-    monkeypatch.setattr(predictor, 'memory_estimate_basis', lambda c: 'fixture')
-    def describe(c):
-        i = int(c['name'][1:])
-        return {'id': f'm{i}', 'tasks': ['coding'] if i == 0 else ['multilingual', 'general'],
-                'inputs': ['text'], 'chooseWhen': '위키 용도 설명', 'reviewedAt': '2026-10-01'}
-    monkeypatch.setattr(model_wiki, 'describe', describe)
-    return WebService()
-
-
-def test_guide_filters_before_shortlisting_and_excludes_unfit(guide_data, monkeypatch):
-    # An early global shortlist could erase the only coding model.
-    monkeypatch.setattr(recommend_selection, 'shortlist', lambda rows: rows[:3])
-    result = guide_data.guide('coding')
-    assert [m['filename'] for m in result['models']] == ['m0.gguf']
-    for purpose in ('korean', 'documents'):
-        rows = guide_data.guide(purpose)['models']
-        assert len(rows) == 3
-        assert all(row['memory_required_gb'] <= 5 for row in rows)
-        assert all(row['id'] in guide_data.candidates for row in rows)
-    assert '한국어' in guide_data.guide('korean')['models'][0]['reasons'][0]
-
-
-def test_guide_does_not_fabricate_match_for_missing_wiki(guide_data, monkeypatch):
-    monkeypatch.setattr(model_wiki, 'describe', lambda c: None)
-    assert guide_data.guide('korean')['models'] == []
-    options = guide_data.guide('korean')['wiki_options']
-    assert 0 < len(options) <= 3
-    assert all('multilingual' in model['tasks'] for model in options)
-    assert all('memory_required_gb' not in model for model in options)
-    with pytest.raises(ValueError):
-        guide_data.guide('arbitrary')

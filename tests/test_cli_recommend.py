@@ -828,7 +828,7 @@ def test_recommend_cancel_at_profile_prompt_exits_cleanly(monkeypatch, isolated_
     assert "Cancelled" in result.output
 
 
-def test_json_rows_carry_evidence_basis_and_explicit_wiki_status(monkeypatch, isolated_omm_home):
+def test_json_rows_carry_evidence_basis(monkeypatch, isolated_omm_home):
     candidates = [{"repo_id": "Qwen/Qwen3-8B-GGUF", "filename": "Qwen3-8B-Q4_K_M.gguf", "size_bytes": 1024**3},
                   {"repo_id": "org/Unknown-1B", "filename": "Unknown-1B-Q4_K_M.gguf", "size_bytes": 1024**3}]
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
@@ -845,6 +845,4 @@ def test_json_rows_carry_evidence_basis_and_explicit_wiki_status(monkeypatch, is
         assert row["evidence"]["calibrated_interval"] is False
         assert row["evidence"]["catalog_measurements"]["raw_rows"] == 9
         assert row["evidence"]["catalog_measurements"]["independent_devices"] is None
-    statuses = sorted(r["wiki_status"] for r in rows.values())
-    assert statuses == ["matched", "missing"]
-    assert all((r["wiki"] is None) == (r["wiki_status"] == "missing") for r in rows.values())
+    assert all("wiki" not in r and "wiki_status" not in r for r in rows.values())

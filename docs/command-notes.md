@@ -18,8 +18,7 @@ the command exits without downloading.
 ## omm web
 
 `omm web` prints a loopback-only URL for the local model manager. Open it to
-search the existing model wiki by purpose and description, select an exact GGUF
-package, review hardware, choose a memory budget, and
+pick an exact GGUF package from the recommendations, review hardware, choose a memory budget, and
 inspect or remove OMM-managed models and runner links. Each file operation
 requires confirmation in the page. Installation verifies the downloaded file
 and registry; it does not automatically load the model, run a benchmark, or
@@ -39,10 +38,6 @@ through Ollama or LM Studio's local API, preserve a preloaded model's context,
 and release only its own test load. The response and compatibility outcome are
 shown separately from installation. See [local manager guidance](local-web.md)
 for click launchers, description sources, memory checks and verification limits.
-
-The bundled [model wiki](model-wiki-expansion.md) covers 114 exact
-checkpoints with publisher filtering and explicit unknown values. Descriptions
-do not imply a compatible GGUF or a verified runtime/quality result.
 
 Secondary screens show runner/API and explicit external connectivity checks,
 read-only diagnostics, storage and external-file previews, and sharing policies.

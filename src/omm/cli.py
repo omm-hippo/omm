@@ -5498,7 +5498,6 @@ def _build_recommend_json_rows(
     info: object = None,
     eligible_count: int | None = None,
 ) -> list[dict]:
-    from omm import model_wiki
     rows = recommend_ui.build_rows(ranked, refs, installations)
     budget = recommend_ui._available_memory(info, profile)
     return [
@@ -5526,10 +5525,8 @@ def _build_recommend_json_rows(
             "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
             "quantization": recommend_ui.quantization_label(row.candidate),
             "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "basis": "insufficient_evidence", "matching_environment_samples": None, "calibrated_interval": False}),
-            "wiki": wiki,
-            "wiki_status": "matched" if wiki else "missing",
         }
-        for index, row, wiki in ((i, r, model_wiki.describe(r.candidate)) for i, r in enumerate(rows))
+        for index, row in enumerate(rows)
     ]
 
 

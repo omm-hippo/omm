@@ -37,13 +37,8 @@ def session(server):
 
 
 def test_usability_routes_preserve_session_confirmation_and_input_boundaries(server, monkeypatch):
-    assert requests.get(server.url + 'api/guide?purpose=coding', timeout=5).status_code == 401
     client = session(server)
     headers = {'X-OMM-Web': '1'}
-    monkeypatch.setattr(server.service, 'guide', lambda purpose, profile: {'purpose': purpose, 'profile': profile})
-    assert client.get(server.url + 'api/guide?purpose=coding&profile=minimal', timeout=5).json() == {'purpose': 'coding', 'profile': 'minimal'}
-    assert client.get(server.url + 'api/guide?purpose=coding&purpose=korean', timeout=5).status_code == 400
-    assert client.get(server.url + 'api/guide?purpose=coding&url=http://evil.example', timeout=5).status_code == 400
     body = {'operation': 'engine_start', 'engine': 'ollama', 'confirmed': True, 'request_id': str(uuid.uuid4())}
     assert client.post(server.url + 'api/jobs', json=body, timeout=5).status_code == 403
     assert client.post(server.url + 'api/jobs', json={**body, 'confirmed': False}, headers=headers, timeout=5).status_code == 400
@@ -59,7 +54,7 @@ def test_usability_routes_preserve_session_confirmation_and_input_boundaries(ser
 
 def test_management_routes_keep_session_and_confirmation_boundaries(server, monkeypatch):
     from omm.web import management
-    for route in ("connections", "diagnostics", "settings", "files", "imports", "wiki/packages?id=qwen3-8b"):
+    for route in ("connections", "diagnostics", "settings", "files", "imports"):
         assert requests.get(server.url + "api/" + route, timeout=5).status_code == 401
     client = session(server)
     headers = {"X-OMM-Web": "1"}
@@ -70,7 +65,6 @@ def test_management_routes_keep_session_and_confirmation_boundaries(server, monk
     monkeypatch.setattr(management, "check_network", lambda: {"requests": 2, "targets": []})
     assert client.post(server.url + "api/connections/check", json={"url": "https://evil.example"}, headers=headers, timeout=5).status_code == 400
     assert client.post(server.url + "api/connections/check", json={}, headers=headers, timeout=5).json()["requests"] == 2
-    assert client.post(server.url + "api/wiki/discover", json={"id": "missing", "profile": "balanced"}, headers=headers, timeout=5).status_code == 400
 
 
 def test_chat_routes_require_authenticated_bounded_model_selection(server,monkeypatch):
@@ -517,13 +511,6 @@ def test_files_api_reports_storage_saved_bytes(server):
     config.add_storage_saved_bytes(3*1024**3)
     value = session(server).get(server.url+'api/files',timeout=5).json()
     assert value['storage_saved_bytes'] == 3*1024**3 and 'managed_bytes' in value
-
-
-def test_wiki_route_serves_the_same_bundled_catalog_as_cli(server):
-    from omm import model_wiki
-    value = session(server).get(server.url+'api/wiki',timeout=5).json()
-    assert value == json.loads(json.dumps(model_wiki.catalog()))
-    assert value['contentVersion'] == model_wiki.load()['contentVersion']
 
 
 def test_real_worker_reports_document_import_stages_and_piece_counts(monkeypatch, isolated_omm_home):
