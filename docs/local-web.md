@@ -30,7 +30,7 @@ not contact the shared server. **저장된 연결 지우기** deletes the local 
 after confirmation, without revoking the server token. Existing local chat,
 RAG remote settings and agent settings are independent.
 
-## Start a local server, recover, and choose by purpose
+## Start a local server and recover
 
 **연결 상태 → Ollama 서버 켜기** checks the existing API first. If it is off,
 confirmation authorizes the mandatory native app safety checks and background
@@ -48,20 +48,9 @@ cleanup targets. Files are deleted only after selecting targets and confirming
 the existing cleanup action. Unknown errors open diagnostics. After recovery,
 retry the failed preparation explicitly; the helper does not replay it silently.
 
-In **추천**, choose **한국어 대화**, **코딩**, or **문서 질문**. The guide filters
-hardware-eligible recommendations by sourced wiki tasks before shortlisting
-at most three packages. It preserves the existing memory and recommendation
-rules, explains the match, and links to sources/cautions. Multilingual support
-is not measured Korean quality. Document candidates consume text excerpts from
-**내 문서**; this does not imply native PDF/image support. No match is shown as
-an empty state rather than an unsupported recommendation. When the local
-recommendation cache lacks exact wiki matches, up to three wiki entries are
-offered for explicit package lookup instead. They are clearly labeled as
-unverified for package identity and memory fit until that lookup succeeds.
-
 ## Prepare a local model and start a conversation
 
-Choose **이 모델로 대화 시작** in recommendations or a wiki package, or
+Choose **이 모델로 대화 시작** in recommendations, or
 **대화 준비하고 시작** for an existing managed model. One confirmation covers
 the selected runner's installation when needed, native application safety checks,
 the model download/link, a short real response check, and opening chat. A new
@@ -150,7 +139,7 @@ Windows installation are separate acceptance checks from wrapper tests.
 First-time install help in Korean: [beginner-install.md](beginner-install.md).
 Korean demo checklist and feature status: [mentoring-demo.md](mentoring-demo.md).
 
-## Recommendation provenance and descriptions
+## Recommendation provenance
 
 The page uses its cached catalog or bundled rules until **추천 자료 업데이트**
 explicitly fetches and verifies new catalog data. Whole-catalog totals, local
@@ -160,14 +149,6 @@ feature vectors. Exact checkpoint identity, independent devices and calibrated
 confidence remain unknown when the source does not provide them. Older signed
 catalogs remain readable and show missing support instead of invented numbers.
 The same evidence fields are carried in CLI JSON and selection details.
-
-The model-description view reuses omm.run's pinned bilingual catalog, version
-2026-10-01.1 at commit 54f386d7471dfb3da233adeb9c3beed2fe4787ae. Publisher claims,
-editorial cautions, source URLs, review dates and null OMM evaluations are kept.
-Package matching uses exact repositories or separately reviewed base-model
-relationships, never a name-family guess. Reviewed relationships are in
-`src/omm/model-wiki-matches.json`; unknown uploads and different sizes/versions
-remain unmatched. Text stays local and is available offline.
 
 ## Demonstration and human usability checks
 
@@ -180,20 +161,10 @@ failed step and recovery result without claiming bot tests are human feedback.
 No participant recruitment, personal data collection or performance score is
 implied by this scenario.
 
-## Wiki search and management screens
+## Management screens
 
-The default **모델 찾기** page reuses the existing bilingual wiki. Search covers
-model names, repositories, descriptions, strengths and use-case labels; purpose
-filters preserve the wiki's original categories. **설치 파일 보기** shows exact
-repositories and reviewed base-model relationships from the local catalog.
-An explicit online search makes at most nine bounded Hugging Face metadata
-requests (one search and up to eight repositories), with no redirect following
-or retry. Other uploads must declare the exact original repository in their
-model card and retain that declaration in the detailed response. These are
-publisher declarations, not OMM quality verification. Split shards are excluded
-from the single-file installer. Unknown or over-budget memory fits cannot be
-installed from this selector. Model-description versions and sources remain
-visible, including absent OMM quality evaluations.
+The default page is **추천**. Model descriptions, search across the wider model
+library and package browsing are left to external sources such as Hugging Face.
 
 **연결 상태** lives in secondary navigation. App installation, local API response,
 and actual model generation are distinct. External connectivity is checked only

@@ -66,13 +66,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .workspace .hardware>div:first-child{padding-left:0}
 .workspace .hardware strong{font-size:12px;font-weight:550;line-height:1.65}
 .workspace .hardware span{font-size:11px}
-.workspace .wiki-list h2{font-size:16px;letter-spacing:-.3px}
-.workspace .wiki-list article{padding:22px 0}
-.workspace .wiki-list p{font-size:13px;line-height:1.8}
-.workspace .wiki-list .choose-when{font-size:12px}
-.workspace .wiki-list button{font-size:12px}
 .workspace .search{background:var(--surface);font-size:13px;padding:9px 12px}
-.workspace .explorer-toolbar{margin:0 0 12px}
 .workspace .evidence{background:var(--nav);border-color:var(--line)}
 .workspace .field{font-size:12px}
 .workspace .field select{font-size:13px;background:var(--surface);color:var(--ink);max-width:100%}
@@ -152,13 +146,11 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   .workspace>main{width:100%}.workspace-topbar{height:54px;padding:0 14px}.workspace-location{gap:10px}.workspace-location>span:first-of-type{display:none}.workspace-location .breadcrumb-separator{display:none}
   .workspace-content{padding:26px 18px 36px}.workspace h1{font-size:22px}.workspace header{align-items:flex-start;gap:9px;margin-bottom:24px}.workspace header p{font-size:12px}.refresh-button{padding:6px;font-size:11px;gap:5px}.refresh-button svg{display:none}
   .workspace .hardware{gap:12px;margin-bottom:24px}.workspace .hardware>div{padding:0 10px}.workspace .hardware>div:nth-child(odd){padding-left:0}.workspace .hardware strong{font-size:11px}
-  .workspace .profiles{flex-wrap:wrap}.workspace .profiles button{font-size:11px;padding:9px 7px;white-space:normal}.workspace .wiki-list article{padding:20px 0}.workspace .wiki-list p{font-size:12px}.workspace .wiki-list article .row-actions{flex-wrap:wrap}
+  .workspace .profiles{flex-wrap:wrap}.workspace .profiles button{font-size:11px;padding:9px 7px;white-space:normal}
   .sidebar-open .sidebar-backdrop{display:block;position:fixed;inset:0;border:0;border-radius:0;background:rgba(0,0,0,.3);z-index:19;width:100%;height:100dvh}
   .chat-welcome{padding:28px 0 22px}.chat-welcome h2{font-size:21px}.chat-starters{gap:6px}.chat-starters button{padding:8px 10px;font-size:11px}
   .chat-connect{padding:16px}.chat-transcript{padding:20px 0;height:42vh}.chat-message>.rich-text{font-size:13px}.user-message>div{font-size:13px;max-width:95%}
   .chat-send{padding:0 8px;gap:8px}.send-preference{flex-wrap:wrap;gap:0}.send-preference select{max-width:155px}.send-preference small{display:none}.chat-composer textarea{min-height:90px;font-size:14px}.chat-controls>button{font-size:11px;padding:8px 10px}
   .command-palette{max-height:85dvh}.command-search{padding:12px}.command-hint{font-size:10px;padding:11px 14px}
 }
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
-
-.model-guide{margin:22px 0 30px}.model-guide h2{margin-bottom:10px}.guide-candidates{display:grid;gap:0;margin-top:18px}.guide-candidates article{padding:20px 0;border-top:1px solid var(--line);min-width:0}.guide-candidates h3{margin:0 0 8px;font-size:16px;overflow-wrap:anywhere}.guide-candidates ul{padding-left:20px;line-height:1.8;font-size:13px}.guide-candidates .row-actions,.recovery-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.recovery-actions button{white-space:normal;text-align:left}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}.recovery-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.recovery-actions button{white-space:normal;text-align:left}

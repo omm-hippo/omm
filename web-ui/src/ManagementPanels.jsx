@@ -2,7 +2,6 @@ import React, {useEffect, useRef, useState} from 'react';
 import {api, bytes} from './api';
 import {L} from './i18n.js';
 
-const tasks = {general:L('일반 텍스트','General text'),agents:L('에이전트','Agents'),coding:L('코딩','Coding'),reasoning:L('추론','Reasoning'),vision:L('이미지','Images'),multilingual:L('다국어','Multilingual'),compact:L('경량','Lightweight')};
 const runtimeNames = {ollama:'Ollama',lmstudio:'LM Studio'};
 
 function useResource(path, refreshKey = 0) {
@@ -24,51 +23,6 @@ function LoadState({resource}) {
   if(resource.error)return <p role="alert" className="error">{resource.error}</p>;
   if(resource.loading)return <p role="status">{L('로컬 상태를 확인하고 있어요.','Checking local status.')}</p>;
   return null;
-}
-
-export function WikiExplorer({document,onOpen,onSelect,profile}) {
-  const [query,setQuery] = useState('');
-  const [task,setTask] = useState('');
-  const [publisher,setPublisher] = useState('');
-  const [page,setPage] = useState(0);
-  const [selected,setSelected] = useState(null);
-  const publishers=[...new Set((document?.models || []).map(model=>model.publisher))].sort();
-  const terms=query.toLocaleLowerCase('ko').trim().split(/\s+/).filter(Boolean);
-  const rows=(document?.models || []).filter(model=>{
-    const text=[model.name,model.repository,model.publisher,model.sizeLabel,model.license?.label,...(model.aliases || []),...(model.languages || []),model.summary,model.chooseWhen,...model.strengths.map(x=>x.text),...model.tasks.map(x=>tasks[x])].join(' ').toLocaleLowerCase('ko');
-    return (!task || model.tasks.includes(task)) && (!publisher || model.publisher===publisher) && terms.every(x=>text.includes(x));
-  });
-  const pages=Math.max(1,Math.ceil(rows.length/20));
-  const currentPage=Math.min(page,pages-1);
-  const visible=rows.slice(currentPage*20,currentPage*20+20);
-  return <>
-    <div className="explorer-toolbar"><label className="search"><input maxLength={160} value={query} onChange={e=>{setQuery(e.target.value);setPage(0);}} placeholder={L('모델 이름, 용도, 특징으로 검색','Search by model name, use, or feature')} aria-label={L('모델 위키 검색','Search model wiki')}/></label><label className="field">{L('용도','Use')}<select aria-label={L('용도','Use')} value={task} onChange={e=>{setTask(e.target.value);setPage(0);}}><option value="">{L('전체 용도','All uses')}</option>{Object.entries(tasks).map(([key,name])=><option value={key} key={key}>{name}</option>)}</select></label><label className="field">{L('개발사','Publisher')}<select aria-label={L('개발사','Publisher')} value={publisher} onChange={e=>{setPublisher(e.target.value);setPage(0);}}><option value="">{L('전체 개발사','All publishers')}</option>{publishers.map(name=><option key={name}>{name}</option>)}</select></label></div>
-    <p className="footnote">{L(`모델 위키 ${document?.models?.length || 0}종 · 검색 결과 ${rows.length}종 · 목록 갱신 ${document?.reviewedAt || '확인 중'} · 모델별 검토일과 출처는 상세에서 확인하세요.`,`Model wiki: ${document?.models?.length || 0} models · ${rows.length} results · List updated ${document?.reviewedAt || 'checking'} · See each model’s details for its review date and sources.`)}{document?.stale && L(' 갱신 후 30일이 지난 자료예요.',' This data is more than 30 days old.')}</p>
-    <div className="wiki-list">{visible.map(model=><article key={model.id}><div><h2>{model.name}</h2><p>{model.summary}</p><small>{model.publisher} · {model.tasks.map(x=>tasks[x]).join(' · ')}</small><p className="choose-when">{model.chooseWhen}</p></div><div className="row-actions"><button onClick={()=>onOpen(model)}>{L('설명 보기','View details')}</button><button className="primary" onClick={()=>setSelected(model)}>{L('설치 파일 보기','View install files')}</button></div></article>)}</div>
-    {rows.length>20 && <nav className="row-actions" aria-label={L('모델 위키 페이지','Model wiki pages')}><button disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>{L('이전','Previous')}</button><span role="status">{L(`${currentPage+1} / ${pages} 페이지`,`Page ${currentPage+1} / ${pages}`)}</span><button disabled={currentPage===pages-1} onClick={()=>setPage(currentPage+1)}>{L('다음','Next')}</button></nav>}
-    {document && !rows.length && <div className="empty">{L('이 조건에 맞는 위키 설명이 없어요.','No wiki entries match these filters.')}</div>}
-    {selected && <PackageDialog model={selected} profile={profile} onClose={()=>setSelected(null)} onSelect={row=>{setSelected(null);onSelect(row);}}/>}
-  </>;
-}
-
-export function PackageDialog({model,profile,onClose,onSelect}) {
-  const dialog=useRef(null);
-  const resource=useResource(`/api/wiki/packages?id=${encodeURIComponent(model.id)}&profile=${profile}`);
-  const [remote,setRemote]=useState(null);
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState('');
-  useEffect(()=>{dialog.current?.showModal();},[]);
-  async function discover() {
-    setBusy(true);setError('');
-    try {setRemote(await api('/api/wiki/discover',{id:model.id,profile}));}
-    catch(e){setError(e.message);}finally{setBusy(false);}
-  }
-  const value=remote || resource.data;
-  return <dialog className="wide-dialog" ref={dialog} onCancel={onClose}><h2>{L(`${model.name} 설치 파일`,`${model.name} install files`)}</h2><p>{model.summary}</p><p className="footnote">{L('정확한 원본 모델 관계가 확인된 GGUF 파일만 보여줘요. 용량과 설치 예산을 확인한 뒤 선택하세요. 실제 실행에는 실행 시점의 메모리 여유가 필요해요.','Only GGUF files with a confirmed link to the original model are shown. Check the size and install budget before you choose. Running the model needs free memory at the time it runs.')}</p><LoadState resource={resource}/>{error && <p role="alert" className="error">{error}</p>}
-    <div className="package-list">{value?.packages.map(row=><article key={row.id}><div><strong>{row.filename}</strong><small>{row.wiki.packageRepository || row.wiki.repository}</small><small>{bytes(row.size_bytes)} · {L('예상 메모리','Estimated memory')} {row.memory_required_gb?.toFixed(1) || L('확인 필요','Unknown')} GB · {row.fits===true?L('선택한 설치 예산에 맞음','Fits the selected install budget'):row.fits===false?L('선택한 설치 예산 초과','Exceeds the selected install budget'):L('메모리 판단 근거 부족','Not enough data to judge memory')}</small><small>{row.wiki.match==='publisher_declared_base'?L('업로더가 명시한 원본 모델 관계','Base model declared by the uploader'):L('기존 위키의 저장소 연결 근거','Repository link from the existing wiki')}</small></div><div className="row-actions"><button className="primary" onClick={()=>onSelect({...row,operation:'start_chat'})} disabled={row.fits!==true}>{L('이 모델로 대화 시작','Start chatting with this model')}</button><button onClick={()=>onSelect(row)} disabled={row.fits!==true}>{L('설치','Install')}</button></div></article>)}</div>
-    {!resource.loading && !value?.packages.length && <div className="empty">{L('로컬 자료에 연결된 설치 파일이 없어요. 온라인에서 파일을 찾아볼 수 있어요.','No install files are linked in the local data. You can look for files online.')}</div>}
-    <p className="footnote">{L('온라인 검색은 Hugging Face에 접속해 파일 목록을 확인해요. 모델 파일은 설치를 선택할 때 내려받아요.','Online search connects to Hugging Face to list files. Model files download only when you choose to install.')}</p><div className="dialog-actions"><button onClick={onClose}>{L('닫기','Close')}</button><button onClick={discover} disabled={busy}>{busy?L('설치 파일 찾는 중…','Finding install files…'):L('온라인에서 설치 파일 찾기','Find install files online')}</button></div>
-  </dialog>;
 }
 
 export function Connections({refreshKey,onAction}) {
