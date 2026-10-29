@@ -816,6 +816,8 @@ def test_agent_local_asks_only_for_what_is_missing(isolated_omm_home, monkeypatc
     monkeypatch.setattr(agent_connection, "connect", lambda *a, **k: connected.append((a, k)))
     asked: list = []
     answers = iter(["qwen3:8b"])
+    # Building a real questionary.select needs a console on Windows CI.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: asked.append(question) or next(answers))
 
     result = runner.invoke(cli.app, ["setting", "agent", "local", "codex"])
