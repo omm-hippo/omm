@@ -128,6 +128,11 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _common_name(text: str) -> str:
+    """X.509 caps a common name at 64 characters; the full names stay in the SAN."""
+    return text[:64]
+
+
 def _san(names):
     from cryptography import x509
 
@@ -159,7 +164,7 @@ def _make_ca(directory: Path) -> None:
     key = ec.generate_private_key(ec.SECP256R1())
     host = _local_hostname() or "head"
     name = x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "omm cluster"),
-                      x509.NameAttribute(NameOID.COMMON_NAME, f"omm cluster CA ({host})")])
+                      x509.NameAttribute(NameOID.COMMON_NAME, _common_name(f"omm cluster CA ({host})"))])
     now = _now()
     certificate = (
         x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
@@ -195,7 +200,7 @@ def _issue_server(directory: Path, names: list[str]) -> None:
     now = _now()
     certificate = (
         x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[-1])]))
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, _common_name(names[-1]))]))
         .issuer_name(ca.subject).public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(minutes=5))

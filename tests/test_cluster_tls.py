@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import ssl
 import threading
@@ -40,6 +41,16 @@ def test_ca_and_server_keys_are_owner_only(tmp_path):
         assert (tmp_path / "ca.key").stat().st_mode & 0o777 == 0o600
         assert (tmp_path / "server.key").stat().st_mode & 0o777 == 0o600
     assert tls.ensure(tmp_path, ["127.0.0.1", "192.0.2.10", "node4.local"]) is False
+
+
+def test_a_long_bonjour_name_still_gets_certificates(tmp_path, monkeypatch):
+    # X.509 caps a common name at 64 characters; a 63-character LocalHostName plus ".local" is 69.
+    from cryptography import x509
+
+    host = "m" * 63 + ".local"
+    monkeypatch.setattr(tls, "_local_hostname", lambda run=None: host)
+    assert tls.ensure(tmp_path, ["127.0.0.1", host]) is True
+    assert host in tls._names_of(x509.load_pem_x509_certificate((tmp_path / "server.pem").read_bytes()))
 
 
 def test_server_certificate_is_reissued_from_the_same_ca_when_addresses_change(tmp_path):
@@ -202,6 +213,53 @@ def test_a_head_with_a_different_certificate_is_refused(head, monkeypatch, tmp_p
     assert not rag_remote.remote_path().exists()
 
 
+def _pin_earlier_head(tmp_path, url):
+    tls.ensure(tmp_path / "earlier", ["127.0.0.1"])
+    earlier = (tmp_path / "earlier" / "ca.pem").read_text(encoding="utf-8")
+    rag_remote.save_ca(earlier)
+    rag_remote.save(rag_remote.Remote(url, "omm_old"))
+    return earlier
+
+
+def test_the_same_address_with_a_different_certificate_is_still_refused(head, monkeypatch, tmp_path):
+    server, token = head
+    earlier = _pin_earlier_head(tmp_path, _gateway_tls.url(server))
+    result, asked = _set(server, "--yes", token=token, monkeypatch=monkeypatch)
+    assert result.exit_code == 1 and asked == []
+    assert "다른 인증서" in result.output
+    assert rag_remote.pinned_ca() == earlier and rag_remote.load().token == "omm_old"
+
+
+def test_a_new_head_address_asks_again_and_replaces_the_pin(head, monkeypatch, tmp_path):
+    # After `omm cluster handover` the head has another address and its own CA.
+    server, token = head
+    _pin_earlier_head(tmp_path, "https://10.0.0.9:52440")
+    result, asked = _set(server, token=token, monkeypatch=monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert asked and tls.head_fingerprint() in result.output
+    assert rag_remote.pinned_ca().encode() == server.certificates.ca_pem()
+    assert rag_remote.load() == rag_remote.Remote(_gateway_tls.url(server), token)
+
+
+def test_a_new_head_address_declined_keeps_the_old_head(head, monkeypatch, tmp_path):
+    server, token = head
+    earlier = _pin_earlier_head(tmp_path, "https://10.0.0.9:52440")
+    result, asked = _set(server, token=token, confirm=False, monkeypatch=monkeypatch)
+    assert result.exit_code == 1 and asked
+    assert rag_remote.pinned_ca() == earlier and rag_remote.load().url == "https://10.0.0.9:52440"
+
+
+def test_a_new_head_address_without_a_terminal_needs_yes(head, monkeypatch, tmp_path):
+    server, token = head
+    earlier = _pin_earlier_head(tmp_path, "https://10.0.0.9:52440")
+    result, asked = _set(server, token=token, tty=False, monkeypatch=monkeypatch)
+    assert result.exit_code == 1 and "--yes" in result.output
+    assert rag_remote.pinned_ca() == earlier
+    result, asked = _set(server, "--yes", token=token, tty=False, monkeypatch=monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert rag_remote.pinned_ca().encode() == server.certificates.ca_pem()
+
+
 def test_a_remote_saved_over_plain_http_says_to_set_it_again(isolated_omm_home):
     rag_remote.save(rag_remote.Remote("http://10.0.0.5:52440", "omm_x"))
     result = runner.invoke(cli.app, ["rag", "collection", "list"])
@@ -222,7 +280,7 @@ def test_rag_connect_remote_says_how_the_harness_trusts_the_head(isolated_omm_ho
     rag_remote.save(rag_remote.Remote("https://10.0.0.5:52440", "omm_x"))
     result = runner.invoke(cli.app, ["rag", "connect", "codex", "--remote"])
     assert result.exit_code == 0, result.output
-    assert f"CODEX_CA_CERTIFICATE={rag_remote.ca_path()} codex" in result.output
+    assert f"CODEX_CA_CERTIFICATE={shlex.quote(str(rag_remote.ca_path()))} codex" in result.output
 
 
 def test_fingerprint_is_printed_verbatim_not_as_emoji(head, monkeypatch):

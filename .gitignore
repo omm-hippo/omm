@@ -28,3 +28,6 @@ demo/
 
 # local AI-tooling scratch, not part of the project
 add_korean_comments.py
+
+# team-only OSS contest material lives in the private repo omm-hippo/osscontest
+osscontest/

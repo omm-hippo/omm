@@ -1,12 +1,12 @@
 build==1.6.1
 hatchling==1.32.4
 pyinstaller==6.22.3
-pyinstaller-hooks-contrib==2026.8
+pyinstaller-hooks-contrib==2026.9
 
 # Runtime graph mirrored from pyproject.toml and checked by
 # tests/test_dependency_parity.py for every npm binary target.
 annotated-doc==0.0.5
-certifi==2026.10.19
+certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.0
@@ -19,7 +19,7 @@ cryptography==48.0.0; sys_platform == "darwin" and platform_machine == "x86_64"
 cryptography==50.0.1; sys_platform != "darwin" or platform_machine != "x86_64"
 filelock==4.1.0
 tomlkit==0.15.2
-pypdf==6.21.1
+pypdf==6.21.2
 idna==3.20
 markdown-it-py==4.2.0
 mdurl==0.1.2
@@ -34,12 +34,12 @@ shellingham==1.5.4
 typer==0.27.3
 typing-extensions==4.16.0
 urllib3==2.8.0
-wcwidth==0.9.2
+wcwidth==0.9.4
 
 # Runtime dependencies for the beta daemon GUI, including its templates and forms.
 annotated-types==0.8.0
 anyio==4.15.1
-fastapi==0.152.0
+fastapi==0.162.0
 h11==0.16.0
 jinja2==3.1.6
 markupsafe==3.0.4

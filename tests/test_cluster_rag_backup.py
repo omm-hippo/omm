@@ -1,5 +1,6 @@
 from datetime import datetime
 import hashlib
+import os
 import shutil
 import sqlite3
 import stat
@@ -77,7 +78,8 @@ def test_install_backup_mode_and_marker(tmp_path):
     rag_backup.install_backup(incoming, sha256=sha, marker="m1")
     assert rag_backup.backup_marker() == "m1"
     assert rag_backup.backup_saved_at()
-    assert stat.S_IMODE(rag_backup.backup_path().stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(rag_backup.backup_path().stat().st_mode) == 0o600
     assert "one" in _names(rag_backup.backup_path())
 
 

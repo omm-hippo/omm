@@ -670,7 +670,22 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
     """Adds the `More about omm ...: https://omm.run/commands/...` footer to
     every subcommand's `--help`, at the single place Click resolves a name
     to a command object - so a new command gets its documentation link
-    without touching its decorator."""
+    without touching its decorator.
+
+    A group that has no default action of its own (`omm cluster`, `omm rag`,
+    `omm engine`, ...) prints its help and exits 0 when typed bare, the way
+    `git remote` or `docker image` do. Click would otherwise answer
+    `Error: Missing command.` with exit 2, which reads like a mistyped
+    command. Groups that take an action (`omm setting`, `omm upload`) set
+    `invoke_without_command` and keep their own behaviour. Not
+    `no_args_is_help`: since Click 8.2 that exits 2."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # resilient_parsing is how `omm help` renders a group's help without running it.
+        if not args and not self.invoke_without_command and not ctx.resilient_parsing:
+            click.echo(ctx.get_help(), color=ctx.color)
+            ctx.exit(0)
+        return super().parse_args(ctx, args)
 
     def get_command(self, ctx: click.Context, cmd_name: str):
         command = super().get_command(ctx, cmd_name)
@@ -910,7 +925,8 @@ def _rag_confirm(message: str) -> None:
 @rag_app.command(name="status")
 @global_flags
 def rag_status_cmd() -> None:
-    """Show collections, the embedding model, and which documents need reindexing."""
+    """Show collections, the embedding model, whether semantic search is ready, and which documents need reindexing."""
+    from omm import rag_readiness
     from omm.documents import DocumentStore
     try:
         store = DocumentStore()
@@ -918,17 +934,29 @@ def rag_status_cmd() -> None:
         documents = store.list()
     except ValueError as error:
         _rag_fail(error)
-    if _global_opts().json:
-        _print_json(data={**result, "documents_detail": [
-            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
-            for d in documents]})
-        return
     embedding = result["embedding"]
+    readiness = rag_readiness.check(embedding["model"], embedding["base_url"])
+    client = _rag_cli.remote_client()
+    head = rag_readiness.remote_view(client) if client else None
+    if _global_opts().json:
+        data = {**result, "semantic_search": readiness, "documents_detail": [
+            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
+            for d in documents]}
+        if client:
+            data["remote"] = {"url": client.remote.url, "semantic_search": head}
+        _print_json(data=data)
+        return
+    if client:
+        console.print(f"원격 헤드: {escape(client.remote.url)}")
+        console.print(escape(rag_readiness.remote_line(head)))
+        console.print("아래는 이 PC에 저장된 문서예요.")
+        console.print()
     state = "사용 가능" if embedding["available"] else "사용 불가"
     console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
                   f"메모리 유지 {escape(_rag_keep_alive_label(embedding['keep_alive']))}")
-    if embedding["notice"]:
-        console.print(f"  {escape(embedding['notice'])}")
+    console.print(escape(rag_readiness.line(readiness)))
+    if readiness["persistence"]:
+        console.print(f"  {escape(readiness['persistence'])}")
     console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
                   f"재색인 필요 {result['reindex_needed']}개 · 원본 다시 등록 필요 {result['reregister_needed']}개")
     for collection in result["collections"]:
@@ -3315,6 +3343,11 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    # Same reason as in _SKIP_ONBOARDING_SUBCOMMANDS: cluster Macs are set up
+    # over SSH, exo owns their models, and the scan printed its "No
+    # externally-managed .gguf files" line into `omm cluster join` (or would
+    # stop it on an import prompt). The one-time flag stays unset for later.
+    "cluster",
 }
 
 # Hidden background children/services are not a user-issued command, so they
