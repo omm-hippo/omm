@@ -67,16 +67,80 @@ def test_brew_found_outside_path(monkeypatch, tmp_path):
     assert preflight._brew() == str(fake)
 
 
-def test_install_exo_without_brew_raises_with_manual_url(monkeypatch):
+def _recording_run(calls, fail=()):
+    def run(argv, **kwargs):
+        calls.append(argv)
+        failed = any(argv[0].endswith(name) for name in fail)
+        return subprocess.CompletedProcess(argv, 1 if failed else 0, "", "boom" if failed else "")
+    return run
+
+
+def _dmg_steps(calls):
+    return [argv[0].rsplit("/", 1)[-1] + (" " + argv[1] if argv[0].endswith("hdiutil") else "") for argv in calls]
+
+
+def test_install_exo_without_brew_installs_the_dmg(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "_brew", lambda: None)
-    with pytest.raises(ClusterError, match="https://assets.exolabs.net/EXO-latest.dmg"):
-        preflight.install_exo(lambda line: None)
+    monkeypatch.setattr(preflight, "EXO_APP_PATH", tmp_path / "EXO.app")
+    calls, lines = [], []
+    preflight.install_exo(lines.append, run=_recording_run(calls))
+    assert _dmg_steps(calls) == ["curl", "hdiutil attach", "ditto", "hdiutil detach"]
+    assert calls[0][-1] == preflight.EXO_DMG_URL
+    assert calls[2][-1] == str(tmp_path / "EXO.app")
+    assert any(preflight.EXO_DMG_URL in line for line in lines)
 
 
-def test_install_exo_failure_raises(monkeypatch):
+def test_brew_failure_falls_back_to_the_dmg_and_says_why(monkeypatch, tmp_path):
+    # node3, 2026-10-30: /opt/homebrew belongs to another macOS account.
+    stderr = ("Error: The following directories are not writable by your user:\n"
+              "/opt/homebrew/share/zsh\n/opt/homebrew/var/homebrew/locks\n")
+    calls, lines = [], []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0].endswith("brew"):
+            return subprocess.CompletedProcess(argv, 1, "", stderr)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
     monkeypatch.setattr(preflight, "_brew", lambda: "/opt/homebrew/bin/brew")
-    with pytest.raises(ClusterError, match="brew install --cask exo"):
-        preflight.install_exo(lambda line: None, run=lambda argv, **k: subprocess.CompletedProcess(argv, 1, "", "boom"))
+    monkeypatch.setattr(preflight, "EXO_APP_PATH", tmp_path / "EXO.app")
+    preflight.install_exo(lines.append, run=run)
+    assert _dmg_steps(calls) == ["brew", "curl", "hdiutil attach", "ditto", "hdiutil detach"]
+    said = "\n".join(lines)
+    assert "another macOS account" in said and preflight.EXO_DMG_URL in said
+    assert "/opt/homebrew/share/zsh" not in said
+
+
+def test_brew_failure_reason_is_its_last_line():
+    assert preflight._brew_failure_reason("==> Downloading\nError: Download failed\n\n") == "Error: Download failed"
+    assert preflight._brew_failure_reason("") == "no output"
+
+
+def test_install_exo_tells_how_long_brew_takes_and_shows_its_output(monkeypatch):
+    # node4, 2026-10-30: a silent few-minute download looked like a hang.
+    seen, lines = [], []
+    monkeypatch.setattr(preflight, "_brew", lambda: "/opt/homebrew/bin/brew")
+    preflight.install_exo(lines.append, run=lambda argv, **k: seen.append(k) or subprocess.CompletedProcess(argv, 0, "", ""))
+    assert "400 MB" in lines[0]
+    assert "stdout" not in seen[0] and not seen[0].get("capture_output")
+
+
+def test_dmg_download_failure_raises_with_the_url(monkeypatch, tmp_path):
+    monkeypatch.setattr(preflight, "_brew", lambda: None)
+    monkeypatch.setattr(preflight, "EXO_APP_PATH", tmp_path / "EXO.app")
+    calls = []
+    with pytest.raises(ClusterError, match="https://assets.exolabs.net/EXO-latest.dmg"):
+        preflight.install_exo(lambda line: None, run=_recording_run(calls, fail=("curl",)))
+    assert _dmg_steps(calls) == ["curl"]
+
+
+def test_dmg_copy_failure_still_detaches(monkeypatch, tmp_path):
+    monkeypatch.setattr(preflight, "_brew", lambda: None)
+    monkeypatch.setattr(preflight, "EXO_APP_PATH", tmp_path / "EXO.app")
+    calls = []
+    with pytest.raises(ClusterError, match="/Applications|EXO.app"):
+        preflight.install_exo(lambda line: None, run=_recording_run(calls, fail=("ditto",)))
+    assert _dmg_steps(calls) == ["curl", "hdiutil attach", "ditto", "hdiutil detach"]
 
 
 def _fake_app(tmp_path, version="1.0.71"):
