@@ -259,7 +259,7 @@ def test_a_numbered_ref_argument_resolves_to_its_runtime_ref(
     _patch_prompts(monkeypatch, texts=["p"], votes=["a"], continues=[False])
     monkeypatch.setattr(cli.arena, "generate_side", lambda *a, **k: _result("x"))
     monkeypatch.setattr(
-        cli.session_cache, "load_last_results", lambda: ["alpha.gguf", "beta.gguf"]
+        cli.session_cache, "load_last_results", lambda **_: ["alpha.gguf", "beta.gguf"]
     )
     result = runner.invoke(cli.app, ["arena", "1", "2"])
     assert result.exit_code == 0, result.output

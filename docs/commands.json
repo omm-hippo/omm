@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.92",
+  "omm_version": "0.4.93",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -460,7 +460,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],
@@ -565,7 +565,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id",
+          "help": "exo model id or number from omm cluster search/recommend/list",
           "required": true
         }
       ],
@@ -647,13 +647,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Download a model to every Mac in the cluster without loading it (head Mac only).",
+      "summary": "Download models to every Mac in the cluster without loading them (head Mac only).",
       "description": "",
-      "usage": "omm cluster install [OPTIONS] {model}",
+      "usage": "omm cluster install [OPTIONS] {models}",
       "arguments": [
         {
-          "name": "model",
-          "help": "exo model id, from omm cluster recommend or search",
+          "name": "models",
+          "help": "exo model id or number from omm cluster search/recommend; comma-separate several",
           "required": true
         }
       ],
@@ -830,7 +830,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],
@@ -984,7 +984,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id; omit when the cluster serves one",
+          "help": "exo model id or number from omm cluster list; omit when the cluster serves one",
           "required": false
         }
       ],
@@ -1255,13 +1255,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Delete a model's files from every Mac, unloading it first (head Mac only).",
+      "summary": "Delete models' files from every Mac, unloading them first (head Mac only).",
       "description": "",
-      "usage": "omm cluster uninstall [OPTIONS] {model}",
+      "usage": "omm cluster uninstall [OPTIONS] {models}",
       "arguments": [
         {
-          "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "name": "models",
+          "help": "exo model id or number from omm cluster list; comma-separate several",
           "required": true
         }
       ],
@@ -1314,7 +1314,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],

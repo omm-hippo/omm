@@ -123,8 +123,8 @@ omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, document 
 omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
 omm cluster recommend [--json]  # Show the biggest exo models that fit the cluster's free memory
 omm cluster search TEXT [--json]  # Search Hugging Face for MLX models exo can run
-omm cluster install MODEL  # Download a model to every Mac without loading it (head Mac)
-omm cluster uninstall MODEL [--yes]  # Delete a model from every Mac, unloading it first (head Mac)
+omm cluster install MODEL[,MODEL...]  # Download models to every Mac without loading them; MODEL is an exo id or a number from the last cluster search/recommend/list (head Mac)
+omm cluster uninstall MODEL[,MODEL...] [--yes]  # Delete models from every Mac, unloading them first (head Mac)
 omm cluster list [--json]  # Models on the cluster and whether each is loaded (employee PCs: loaded ones)
 omm cluster info MODEL [--json]  # A model's details, which Macs have it, and every way it can be placed now (also from employee PCs)
 omm cluster load MODEL [--sharding tensor|pipeline] [--macs N | --on MAC]  # Load a model into memory for employees, optionally placed your way (--on: one named Mac); obeys omm setting memory-guard (head Mac)

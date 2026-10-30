@@ -183,7 +183,12 @@ from omm.cli_views import print_scan, table as _table
 from omm.cli_help import BriefUsageError, UsageError, engine_read_only_args, option_requested
 from omm.atomic import atomic_write_text, locked
 from omm.model_export import export_model_file
-from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
+from omm.completion import (
+    complete_cluster_model,
+    complete_engine_key,
+    complete_install_name,
+    complete_remove_filename,
+)
 from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config
 from omm.downloader import (
     DownloadCancelled,
@@ -2805,6 +2810,36 @@ def _cluster_guard() -> dict:
     return {"policy": policy, "confirm": _ask_confirm if _stdin_is_tty() else None}
 
 
+_CLUSTER_STATE_STYLE = {"loaded": "success", "loading": "warning", "not installed": "muted"}
+
+
+def _cluster_ref(arg: str) -> str:
+    """An exo model id, or a number from the last `omm cluster search`/`recommend`/`list` here."""
+    return _resolve_ref(arg, scope=session_cache.CLUSTER)
+
+
+def _cluster_state(state: str) -> str:
+    style = _CLUSTER_STATE_STYLE.get(state)
+    return f"[{style}]{escape(state)}[/{style}]" if style else escape(state)
+
+
+def _cluster_models_table(title: str, columns: list[str]):
+    table = _table(title=title)
+    table.add_column("#", justify="right")
+    # Ids run to ~50 characters: let only the id fold, so the short columns stay one line in 80 columns.
+    table.add_column("Model", style="accent", overflow="fold")
+    for column in columns:
+        table.add_column(column, justify="right" if column in ("Size", "Downloads", "Of free") else "left",
+                         no_wrap=True)
+    return table
+
+
+def _cluster_pick_hint(point) -> None:
+    # Installing is the head admin's call; an employee PC only looks.
+    console.print("[muted]To use one, ask the cluster admin to install and load it.[/muted]" if point is not None
+                  else "[muted]Install with: omm cluster install <number>  (e.g. omm cluster install 1)[/muted]")
+
+
 @cluster_app.command(name="recommend")
 @global_flags
 def cluster_recommend_cmd() -> None:
@@ -2816,17 +2851,19 @@ def cluster_recommend_cmd() -> None:
         rows = _cluster_call(lambda: chat.view(point, "/omm/recommend"))
     else:
         rows = _cluster_call(cluster_models.recommend_rows)
+    session_cache.record_results([row["model"] for row in rows], scope=session_cache.CLUSTER)
     if _global_opts().json:
         _print_json(data=rows)
         return
     if not rows:
         console.print("No exo model fits this cluster's free memory right now.", markup=False)
         return
+    table = _cluster_models_table("Fits the cluster's free memory", ["Size", "Of free", "State"])
     for index, row in enumerate(rows, 1):
-        console.print(f"{index}. {row['model']}  {_cluster_gib(row['size_bytes'])}  "
-                      f"uses {row['memory_used_fraction']:.0%} of free memory  [{row['state']}]", markup=False)
-    console.print("To use one, ask the cluster admin to install and load it." if point is not None
-                  else "Install one with: omm cluster install <model>", markup=False)
+        table.add_row(str(index), escape(row["model"]), _cluster_gib(row["size_bytes"]),
+                      f"{row['memory_used_fraction']:.0%}", _cluster_state(row["state"]))
+    console.print(table)
+    _cluster_pick_hint(point)
 
 
 @cluster_app.command(name="search")
@@ -2840,52 +2877,74 @@ def cluster_search_cmd(text: str = typer.Argument(..., help="Words to look for i
         rows = _cluster_call(lambda: chat.view(point, "/omm/search", q=text))
     else:
         rows = _cluster_call(cluster_models.search, text)
+    session_cache.record_results([row["model"] for row in rows], scope=session_cache.CLUSTER)
     if _global_opts().json:
         _print_json(data=rows)
         return
     if not rows:
         console.print(f"No MLX model matches {text}.", markup=False)
         return
-    for row in rows:
-        fit = {True: "fits", False: "does not fit", None: "fit unknown"}[row["fits"]]
-        where = "" if row["in_catalog"] else "  (not in exo's list; install adds it)"
-        console.print(f"{row['model']}  {_cluster_gib(row['size_bytes'])}  {fit}  "
-                      f"{row['downloads']} downloads{where}", markup=False)
-    console.print("Install one with: omm cluster install <model>", markup=False)
+    fit_text = {True: "[success]fits[/success]", False: "[warning]does not fit[/warning]",
+                None: "[muted]fit unknown[/muted]"}
+    table = _cluster_models_table(f"MLX models matching {escape(text)}", ["Size", "Fit", "Downloads"])
+    outside = False
+    for index, row in enumerate(rows, 1):
+        model = escape(row["model"])
+        if not row["in_catalog"]:
+            outside = True
+            model += " [muted]*[/muted]"
+        table.add_row(str(index), model, _cluster_gib(row["size_bytes"]), fit_text[row["fits"]],
+                      str(row["downloads"]))
+    console.print(table)
+    if outside:
+        console.print("[muted]* not in exo's list yet; install adds it.[/muted]")
+    _cluster_pick_hint(point)
 
 
 @cluster_app.command(name="install")
 @global_flags
-def cluster_install_cmd(model: str = typer.Argument(..., help="exo model id, from omm cluster recommend or search")) -> None:
-    """Download a model to every Mac in the cluster without loading it (head Mac only)."""
+def cluster_install_cmd(
+    models: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                 help="exo model id or number from omm cluster search/recommend; comma-separate several"),
+) -> None:
+    """Download models to every Mac in the cluster without loading them (head Mac only)."""
     from omm.cluster import models as cluster_models
 
-    started = _cluster_call(cluster_models.install, model, _cluster_out)
-    if started:
-        console.print(f"Installed {model} on {started} more Mac(s).", markup=False)
-    console.print(f"Chat with it: omm cluster run {model}", markup=False)
+    refs = _resolve_refs_multi(models, scope=session_cache.CLUSTER)
+    if not refs:
+        raise typer.Exit(1)
+    for model in refs:
+        started = _cluster_call(cluster_models.install, model, _cluster_out)
+        if started:
+            console.print(f"Installed {model} on {started} more Mac(s).", markup=False)
+        console.print(f"Chat with it: omm cluster run {model}", markup=False)
 
 
 @cluster_app.command(name="uninstall")
 @global_flags
 def cluster_uninstall_cmd(
-    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
+    models: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                 help="exo model id or number from omm cluster list; comma-separate several"),
 ) -> None:
-    """Delete a model's files from every Mac, unloading it first (head Mac only)."""
+    """Delete models' files from every Mac, unloading them first (head Mac only)."""
     from omm.cluster import commands as cluster_commands, models as cluster_models
 
+    refs = _resolve_refs_multi(models, scope=session_cache.CLUSTER)
+    if not refs:
+        raise typer.Exit(1)
     _cluster_call(cluster_commands.require_head_for, "omm cluster uninstall")
     rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
-    if model in rows and rows[model].state in ("loaded", "loading") and not _global_opts().yes:
-        question = f"{model} is loaded and may be in use by other people. Unload and delete it?"
-        if not _stdin_is_tty():
-            err_console.print(f"{model} is loaded and may be in use; run again with --yes to unload and delete it.",
-                              markup=False)
-            raise typer.Exit(2)
-        if not _ask_confirm(question):
-            raise typer.Exit(1)
-    removed = _cluster_call(cluster_models.uninstall, model, _cluster_out)
-    console.print(f"Removed {model} from {removed} Mac(s).", markup=False)
+    for model in refs:
+        if model in rows and rows[model].state in ("loaded", "loading") and not _global_opts().yes:
+            question = f"{model} is loaded and may be in use by other people. Unload and delete it?"
+            if not _stdin_is_tty():
+                err_console.print(f"{model} is loaded and may be in use; run again with --yes to unload and delete it.",
+                                  markup=False)
+                raise typer.Exit(2)
+            if not _ask_confirm(question):
+                raise typer.Exit(1)
+        removed = _cluster_call(cluster_models.uninstall, model, _cluster_out)
+        console.print(f"Removed {model} from {removed} Mac(s).", markup=False)
 
 
 @cluster_app.command(name="list")
@@ -2899,6 +2958,7 @@ def cluster_list_cmd() -> None:
         rows = _cluster_call(chat.loaded_rows, _cluster_call(chat.endpoint))
     else:
         rows = _cluster_call(cluster_models.inventory)
+    session_cache.record_results([row.model for row in rows], scope=session_cache.CLUSTER)
     if _global_opts().json:
         _print_json(data=[row.as_dict() for row in rows])
         return
@@ -2906,8 +2966,15 @@ def cluster_list_cmd() -> None:
         console.print("No model is loaded on the cluster right now." if cluster_settings.load() is None
                       else "No models on this cluster yet. Find one with: omm cluster recommend", markup=False)
         return
-    for line in _cluster_rows_text(rows):
-        console.print(line, markup=False)
+    # An older head sends bare ids: no size or Mac count to show.
+    with_macs = any(row.nodes_total for row in rows)
+    table = _cluster_models_table("Cluster models", ["Size", "Macs", "State"] if with_macs else ["Size", "State"])
+    for index, row in enumerate(rows, 1):
+        cells = [str(index), escape(row.model), _cluster_gib(row.size_bytes)]
+        if with_macs:
+            cells.append(f"{row.nodes_installed}/{row.nodes_total}" if row.nodes_total else "")
+        table.add_row(*cells, _cluster_state(row.state))
+    console.print(table)
 
 
 def _cluster_rows_text(rows) -> list[str]:
@@ -2919,10 +2986,14 @@ def _cluster_rows_text(rows) -> list[str]:
 
 @cluster_app.command(name="info")
 @global_flags
-def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
+def cluster_info_cmd(
+    model: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                help="exo model id or number from omm cluster search/recommend/list"),
+) -> None:
     """Show a model's details, which Macs have it, and the ways it can be placed now."""
     from omm.cluster import chat, models as cluster_models
 
+    model = _cluster_ref(model)
     point = _cluster_employee_point()
     if point is not None:
         data = _cluster_call(lambda: chat.view(point, "/omm/info", model=model))
@@ -2932,7 +3003,7 @@ def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> N
         _print_json(data=data)
         return
     card = data["card"]
-    console.print(data["model"], markup=False)
+    console.print(f"[bold]{escape(data['model'])}[/bold]")
     for label, key in (("Family", "family"), ("Base model", "base_model"), ("Quantization", "quantization"),
                        ("Context", "context_length")):
         if card.get(key):
@@ -2988,7 +3059,8 @@ class _ClusterSharding(str, enum.Enum):
 @cluster_app.command(name="load")
 @global_flags
 def cluster_load_cmd(
-    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
+    model: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                help="exo model id or number from omm cluster list"),
     sharding: _ClusterSharding | None = typer.Option(
         None, "--sharding", case_sensitive=False,
         help="Split the model by tensor or by layers (pipeline); omit to let omm pick"),
@@ -3003,6 +3075,7 @@ def cluster_load_cmd(
     if on and (sharding or macs):
         raise typer.BadParameter("--on loads on one Mac; leave out --sharding and --macs", param_hint="--on")
 
+    model = _cluster_ref(model)
     _cluster_call(cluster_commands.require_head_for, "omm cluster load")
     rows = {row.model for row in _cluster_call(cluster_models.inventory)}
     if model not in rows:
@@ -3016,10 +3089,14 @@ def cluster_load_cmd(
 
 @cluster_app.command(name="unload")
 @global_flags
-def cluster_unload_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+def cluster_unload_cmd(
+    model: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                help="exo model id or number from omm cluster list"),
+) -> None:
     """Free a loaded model's memory; its files stay installed (head Mac only)."""
     from omm.cluster import commands as cluster_commands
 
+    model = _cluster_ref(model)
     _cluster_call(cluster_commands.require_head_for, "omm cluster unload")
     count = _cluster_call(cluster_commands.unload_model, model)
     if not count:
@@ -3031,10 +3108,11 @@ def cluster_unload_cmd(model: str = typer.Argument(..., help="exo model id (see 
 @cluster_app.command(name="run")
 @global_flags
 def cluster_run_cmd(
-    model: str | None = typer.Argument(None, help="exo model id; omit when the cluster serves one"),
+    model: str | None = typer.Argument(None, autocompletion=complete_cluster_model,
+                                       help="exo model id or number from omm cluster list; omit when the cluster serves one"),
 ) -> None:
     """Chat in the terminal with a cluster model, loading it first when it is installed."""
-    _cluster_chat(model)
+    _cluster_chat(None if model is None else _cluster_ref(model))
 
 
 def _cluster_load_installed(model: str) -> None:
@@ -3053,10 +3131,14 @@ def _cluster_load_installed(model: str) -> None:
 
 @cluster_app.command(name="benchmark")
 @global_flags
-def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+def cluster_benchmark_cmd(
+    model: str = typer.Argument(..., autocompletion=complete_cluster_model,
+                                help="exo model id or number from omm cluster list"),
+) -> None:
     """Measure first-token time and tokens/sec of one answer on the cluster (never uploaded)."""
     from omm.cluster import bench, chat, commands as cluster_commands, exo_client
 
+    model = _cluster_ref(model)
     point = _cluster_employee_point()
     if point is not None:
         # An employee measures what is loaded; loading stays the admin's call.
@@ -6044,18 +6126,22 @@ def runtime_profile_cmd(
             console.print("Previous settings restored for the next OMM load; running models were left alone.")
 
 
-def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
+def _resolve_ref(arg: str, *, fatal: bool = True, scope: str | None = None) -> str | None:
     """If `arg` is a bare integer, treat it as a 1-based index into the last
-    `omm search`/`omm list` results shown in this terminal. Any non-numeric
-    arg passes through unchanged. With `fatal=False` a bad index prints a
-    warning and returns None instead of exiting, for `_resolve_refs_multi`'s
-    skip-and-continue behavior."""
+    `omm search`/`omm list` results shown in this terminal (with
+    `scope=session_cache.CLUSTER`, the last `omm cluster search`/`recommend`/
+    `list`). Any non-numeric arg passes through unchanged. With `fatal=False`
+    a bad index prints a warning and returns None instead of exiting, for
+    `_resolve_refs_multi`'s skip-and-continue behavior."""
     if not arg.isdecimal():
         return arg
 
-    results = session_cache.load_last_results()
+    results = session_cache.load_last_results(scope=scope)
     if not results:
-        message = "Run `omm search` or `omm list` first to install/uninstall by number."
+        if scope == session_cache.CLUSTER:
+            message = "Run `omm cluster search`, `omm cluster recommend` or `omm cluster list` first to pick a model by number."
+        else:
+            message = "Run `omm search` or `omm list` first to install/uninstall by number."
         if fatal:
             err_console.print(f"[error]{message}[/error]")
             raise typer.Exit(1)
@@ -6088,7 +6174,7 @@ def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
     return ref
 
 
-def _resolve_refs_multi(arg: str) -> list[str]:
+def _resolve_refs_multi(arg: str, *, scope: str | None = None) -> list[str]:
     """Split a comma-separated list of filenames/list-numbers, resolving
     each ref independently via `_resolve_ref`. A bad ref is skipped with a
     warning instead of aborting the rest - callers process whatever
@@ -6098,7 +6184,7 @@ def _resolve_refs_multi(arg: str) -> list[str]:
         piece = piece.strip()
         if not piece:
             continue
-        resolved = _resolve_ref(piece, fatal=False)
+        resolved = _resolve_ref(piece, fatal=False, scope=scope)
         if resolved is not None and resolved not in out:
             out.append(resolved)
     return out
