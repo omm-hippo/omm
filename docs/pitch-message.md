@@ -58,7 +58,7 @@
 4. **내 문서**에 PDF·TXT·Markdown·HTML·HWPX를 등록하고 질문하면, 답과 함께 **출처 구간(쪽 번호)**을 보여 줍니다.
    검색은 이 컴퓨터 안에서만 하고(네트워크 호출 없음), 답은 사용자가 고른 로컬 모델이 만듭니다.
 5. Claude Code·Codex CLI·pi 같은 코딩 도우미를 **로컬 Ollama 모델로 연결**하고, 원래 설정으로 되돌립니다
-   (`omm setting agent local|status|cloud`).
+   (`omm agent local|status|cloud`).
 
 여러 대에서 (개발 중, 브랜치):
 
@@ -72,7 +72,7 @@
 | **쉬움** | 모델 이름을 몰라도, 추천을 보고 버튼 한 번 확인으로 첫 대화까지 간다 | `web-ui/src/main.jsx` 버튼, `src/omm/web/task_flow.py`의 6단계 |
 | **안전·사생활** | 문서와 대화는 내 컴퓨터에 남고, 관리 화면은 이 컴퓨터 안(127.0.0.1)에서만 열린다 | `src/omm/web/server.py` 바인딩, `src/omm/documents.py` "No network calls", 업로드는 모두 동의제(`PRIVACY.md`) |
 | **저비용** | 새 GPU 서버 대신 이미 있는 기기를 쓰고, 같은 모델 파일을 두 번 받지 않는다 | 링크 공유(`omm scan`의 "GB saved by linking instead of copying"), 클러스터 실측(아래) |
-| **단계적 확장** | 한 대 → 코딩 도우미 연결 → 사내 문서 → 여러 대 묶기로 필요한 만큼 키운다 | `omm setting agent`, **내 문서**, `omm cluster`(브랜치) |
+| **단계적 확장** | 한 대 → 코딩 도우미 연결 → 사내 문서 → 여러 대 묶기로 필요한 만큼 키운다 | `omm agent`, **내 문서**, `omm cluster`(브랜치) |
 
 클러스터 실측 기록(브랜치 `docs/exo-cluster-plan`의 `docs/superpowers/specs/2026-10-22-exo-cluster-spike-findings.md`, 2026-10-24):
 
@@ -206,7 +206,7 @@
 22. **Q. 로컬 모델 품질이 클라우드 모델만 하나요?**
     A. 대부분 그렇지 않습니다. 그래서 작은 작업(문서 질문, 코드 읽기)부터 로컬로 하고, 큰 모델이 필요하면 여러 대 묶기로 키우는 흐름을 제안합니다.
 23. **Q. 다른 앱 설정을 바꾸면 위험하지 않나요?**
-    A. 바꾸기 전에 원래 파일을 `OMM_HOME/agent-connections/`에 백업하고, `omm setting agent cloud`로 되돌립니다.
+    A. 바꾸기 전에 원래 파일을 `OMM_HOME/agent-connections/`에 백업하고, `omm agent cloud`로 되돌립니다.
     사용자가 중간에 연결 설정을 직접 바꿨다면 덮어쓰지 않고 멈춥니다.
 24. **Q. 모델 파일이 진짜인지 어떻게 아나요?**
     A. 추천 카탈로그는 서명 검증을 요구할 수 있고(`omm setting catalog-trust`), 설치는 해시·안전 검사를 거칩니다.

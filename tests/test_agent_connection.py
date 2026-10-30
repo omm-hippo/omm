@@ -255,13 +255,13 @@ def test_cli_local_http_to_persisted_settings_and_exact_restore(home, ollama):
     [path] = seed("codex")
     original = path.read_bytes()
     runner = CliRunner()
-    result = runner.invoke(cli.app, ["setting", "agent", "local", "codex", "--model", "local-model", "--base-url", url])
+    result = runner.invoke(cli.app, ["agent", "local", "codex", "--model", "local-model", "--base-url", url])
     assert result.exit_code == 0, result.output
     assert "not verified" in result.output
     document = agent._parse(path.read_bytes(), True)
     assert document["model_providers"]["omm-local"]["base_url"] == url + "/v1"
     assert state["requests"] == [("GET", "/api/version", None), ("POST", "/api/show", {"model": "local-model"})]
-    result = runner.invoke(cli.app, ["setting", "agent", "cloud", "codex"])
+    result = runner.invoke(cli.app, ["agent", "cloud", "codex"])
     assert result.exit_code == 0, result.output
     assert path.read_bytes() == original
 
@@ -331,7 +331,7 @@ def test_original_file_permissions_restored(home, available):
 def test_status_does_not_print_existing_secrets(home, available):
     seed("claude")
     agent.connect("claude", "model")
-    result = CliRunner().invoke(cli.app, ["setting", "agent", "status", "claude"])
+    result = CliRunner().invoke(cli.app, ["agent", "status", "claude"])
     assert result.exit_code == 0
     assert "secret-token" not in result.output
 

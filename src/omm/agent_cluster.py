@@ -3,7 +3,7 @@
 The head address and employee token come from `omm rag remote set`
 (rag_remote.py), so an employee types the token once for both documents and
 the model. The edit reuses agent_connection's journal and field list exactly,
-so `omm setting agent cloud` restores it like a local connection. Only the
+so `omm agent cloud` restores it like a local connection. Only the
 values differ: the gateway URL and the employee token instead of loopback
 Ollama and a placeholder key, which is why every file written here is made
 owner-only (rag_connect does the same).
