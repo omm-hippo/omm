@@ -1,0 +1,40 @@
+name: omm.run docs refresh
+
+# omm.run's /docs pages mirror README.md and docs/install.md. This tells the
+# site which commit to read, so a change shows up on every Cloudflare colo
+# within about a minute instead of after the site's one-hour cache.
+# Receiver: omm-hippo/omm.run src/app/api/omm-docs/refresh/route.ts.
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - docs/install.md
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: omm-site-docs-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Point omm.run at this commit
+        env:
+          # Passed through env, never interpolated into the shell.
+          TOKEN: ${{ secrets.OMM_DOCS_REFRESH_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors --max-time 20 \
+            -X POST https://omm.run/api/omm-docs/refresh \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"sha\":\"${SHA}\"}"
