@@ -234,12 +234,11 @@ def test_head_readiness_endpoint_shares_only_state_and_model(employee):
 
 def test_employee_sees_the_head_state_in_remote_and_status(employee):
     url, _ = employee
-    expected = "회사 head의 의미 검색이 꺼져 있어요(Ollama가 꺼져 있음) - 관리자에게 알려 주세요. 지금은 단어 검색만 해요."
+    expected_en = "Company head semantic search is off (Ollama not running) - tell the admin. Word search only for now."
     result = runner.invoke(cli.app, ["rag", "remote"])
     assert result.exit_code == 0, result.output
-    assert expected in " ".join(result.output.split())
+    assert expected_en in " ".join(result.output.split())
     output = " ".join(runner.invoke(cli.app, ["rag", "status"]).output.split())
-    expected_en = "Company head semantic search is off (Ollama not running) - tell the admin. Word search only for now."
     assert f"Remote head: {url}" in output and expected_en in output
     assert "systemctl" not in output.split("Below are")[0]  # No admin commands in the head part.
     data = json.loads(runner.invoke(cli.app, ["rag", "status", "--json"]).output)
@@ -249,7 +248,7 @@ def test_employee_sees_the_head_state_in_remote_and_status(employee):
 def test_employee_view_of_a_ready_head(employee, ollama):
     DocumentStore().set_embedding_model("bge-m3", base_url=ollama.url)
     output = " ".join(runner.invoke(cli.app, ["rag", "remote"]).output.split())
-    assert "회사 head의 의미 검색: 준비됨 (bge-m3)" in output
+    assert "Company head semantic search: ready (bge-m3)" in output
 
 
 class _Client:

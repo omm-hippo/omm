@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import sys
 
+from omm import lang
+
 SERVER_NAME = "omm-documents"
 # Newest first. A client asking for one of these gets it back; any other
 # requested version gets our newest, and the client decides whether to go on.
@@ -36,8 +38,8 @@ TOOLS = [
         "title": "Search local documents",
         "description": (
             "Search the user's documents registered in OMM on this computer and return exact quotations "
-            "with document name and page. If nothing supports the query the result says '근거 없음' "
-            "(no evidence) and found is false; do not answer from memory in that case."
+            "with document name and page. If nothing supports the query the result says 'No evidence' "
+            "and found is false; do not answer from memory in that case."
         ),
         "inputSchema": {
             "type": "object",
@@ -89,14 +91,15 @@ def _search_text(result: dict) -> str:
             lines.append(f"\n[{item['rank']}] {item['document']} p.{item['page']} ({item['method']})")
             lines.append(item["quote"])
     if result.get("skipped_stale"):
-        lines.append("\n색인을 다시 만들어야 해서 검색하지 않은 문서: " + ", ".join(result["skipped_stale"]))
+        lines.append(lang.t("\n색인을 다시 만들어야 해서 검색하지 않은 문서: ", "\nNot searched because their index must be rebuilt: ")
+                     + ", ".join(result["skipped_stale"]))
     return "\n".join(lines)
 
 
 def _collections_text(result: dict) -> str:
     if not result["documents"]:
-        from omm.rag_adapter import NO_DOCUMENTS
-        return NO_DOCUMENTS
+        from omm.rag_adapter import no_documents
+        return no_documents()
     lines = []
     if result["collections_supported"]:
         lines.append("Collections: " + ", ".join(str(c.get("name") if isinstance(c, dict) else c) for c in result["collections"]))
@@ -223,6 +226,8 @@ def serve(stdin=None, stdout=None, server: Server | None = None) -> int:
     stdout = stdout if stdout is not None else sys.stdout.buffer
     # Anything else that prints must not corrupt the protocol stream.
     real_stdout, sys.stdout = sys.stdout, sys.stderr
+    # Agents read the replies; they get English like the rest of the CLI.
+    language = lang.use(lang.ENGLISH)
     server = server or Server()
     _log("ready (local documents, stdio)")
     try:
@@ -237,6 +242,7 @@ def serve(stdin=None, stdout=None, server: Server | None = None) -> int:
         pass
     finally:
         sys.stdout = real_stdout
+        lang.reset(language)
     _log("stopped")
     return 0
 

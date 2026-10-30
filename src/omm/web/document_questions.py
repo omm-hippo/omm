@@ -7,7 +7,7 @@ import re
 import uuid
 
 from omm import cli, hardware, install_state, memory_guard, registry
-from omm.documents import DocumentStore, NO_EVIDENCE
+from omm.documents import DocumentStore, no_evidence
 from omm.web import document_settings
 from omm.engines.base import LoadOptions
 from omm.web.probe import adapter_for
@@ -30,7 +30,7 @@ def answer(request, stop):
               "question": request["question"], "sources": sources, "engine": request["engine"],
               "filename": request["filename"], "retrieval": found["method"],
               "retrieval_notice": found["notice"], "embedding_model": found["embedding_model"],
-              "status": "no_evidence", "answer": NO_EVIDENCE}
+              "status": "no_evidence", "answer": no_evidence()}
     if not sources:
         return store.save_answer(result, revision)
     try:

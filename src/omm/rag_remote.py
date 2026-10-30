@@ -21,7 +21,8 @@ import ssl
 from urllib import error as urlerror, request as urlrequest
 from urllib.parse import quote, urlencode, urlsplit
 
-from omm import config
+from omm import config, lang
+from omm.lang import t
 
 DEFAULT_PORT = 52440
 TIMEOUT = 30
@@ -36,14 +37,26 @@ class RemoteError(ValueError):
         self.status = status
 
 
-PLAIN_HTTP = ("클러스터 게이트웨이는 이제 HTTPS만 받아요. "
-              "`omm rag remote set https://<헤드 주소>:52440` 으로 다시 설정해 주세요.")
+def plain_http() -> str:
+    return t("클러스터 게이트웨이는 이제 HTTPS만 받아요. "
+             "`omm rag remote set https://<헤드 주소>:52440` 으로 다시 설정해 주세요.",
+             "The cluster gateway now accepts HTTPS only. "
+             "Set it again with `omm rag remote set https://<head address>:52440`.")
+
 # Not "`omm rag remote set`을 다시 실행해 주세요": the web page rewrites that
 # phrase into its own connect button, which cannot show a fingerprint.
-NOT_PINNED = ("이 PC가 헤드의 인증서를 아직 확인하지 않았어요. 터미널에서 "
-              "`omm rag remote set https://<헤드 주소>:52440` 을 실행해 헤드 Mac이 보여 주는 지문과 같은지 확인해 주세요.")
-WRONG_CERTIFICATE = ("헤드가 이 PC에 고정된 것과 다른 인증서를 내밀었어요. 헤드를 새로 만든 게 맞는지 관리자에게 확인한 뒤 "
-                     "`omm rag remote clear` 후 `omm rag remote set https://<헤드 주소>:52440` 으로 지문을 다시 확인해 주세요.")
+def not_pinned() -> str:
+    return t("이 PC가 헤드의 인증서를 아직 확인하지 않았어요. 터미널에서 "
+             "`omm rag remote set https://<헤드 주소>:52440` 을 실행해 헤드 Mac이 보여 주는 지문과 같은지 확인해 주세요.",
+             "This PC has not checked the head's certificate yet. In a terminal, run "
+             "`omm rag remote set https://<head address>:52440` and compare the fingerprint with the one the head Mac shows.")
+
+def wrong_certificate() -> str:
+    return t("헤드가 이 PC에 고정된 것과 다른 인증서를 내밀었어요. 헤드를 새로 만든 게 맞는지 관리자에게 확인한 뒤 "
+             "`omm rag remote clear` 후 `omm rag remote set https://<헤드 주소>:52440` 으로 지문을 다시 확인해 주세요.",
+             "The head offered a different certificate from the one pinned on this PC. Ask the administrator whether "
+             "the head was rebuilt, then run `omm rag remote clear` and `omm rag remote set https://<head address>:52440` "
+             "to check the fingerprint again.")
 
 
 @dataclass(frozen=True)
@@ -62,11 +75,13 @@ def normalize_url(value: str) -> str:
         text = "https://" + text
     parts = urlsplit(text)
     if parts.scheme == "http":
-        raise RemoteError(PLAIN_HTTP)
+        raise RemoteError(plain_http())
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
-        raise RemoteError("헤드 주소는 https://<헤드 Mac 주소>:52440 형식으로 적어 주세요.")
+        raise RemoteError(t("헤드 주소는 https://<헤드 Mac 주소>:52440 형식으로 적어 주세요.",
+                            "Write the head address as https://<head Mac address>:52440."))
     if parts.path not in ("", "/") or parts.query or parts.fragment:
-        raise RemoteError("헤드 주소에는 경로를 붙이지 말고 https://<주소>:52440 까지만 적어 주세요.")
+        raise RemoteError(t("헤드 주소에는 경로를 붙이지 말고 https://<주소>:52440 까지만 적어 주세요.",
+                            "Write the head address without a path, only up to https://<address>:52440."))
     host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
     return f"{parts.scheme}://{host}:{parts.port or DEFAULT_PORT}"
 
@@ -78,9 +93,11 @@ def load() -> Remote | None:
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as error:
-        raise RemoteError(f"{path} 를 읽지 못했어요. `omm rag remote clear` 후 다시 설정해 주세요.") from error
+        raise RemoteError(t(f"{path} 를 읽지 못했어요. `omm rag remote clear` 후 다시 설정해 주세요.",
+                            f"Could not read {path}. Run `omm rag remote clear` and set it up again.")) from error
     if not isinstance(data, dict) or not isinstance(data.get("url"), str) or not isinstance(data.get("token"), str):
-        raise RemoteError(f"{path} 형식이 맞지 않아요. `omm rag remote clear` 후 다시 설정해 주세요.")
+        raise RemoteError(t(f"{path} 형식이 맞지 않아요. `omm rag remote clear` 후 다시 설정해 주세요.",
+                            f"{path} has the wrong format. Run `omm rag remote clear` and set it up again."))
     return Remote(data["url"], data["token"])
 
 
@@ -127,13 +144,13 @@ def pinned_ca() -> str | None:
 def ssl_context(remote: Remote, ca_pem: str | None = None) -> ssl.SSLContext:
     """Trusts only the pinned head certificate (or `ca_pem` while it is being pinned)."""
     if not remote.url.startswith("https://"):
-        raise RemoteError(PLAIN_HTTP)
+        raise RemoteError(plain_http())
     if ca_pem is None and not ca_path().is_file():
-        raise RemoteError(NOT_PINNED)
+        raise RemoteError(not_pinned())
     try:
         return ssl.create_default_context(cafile=None if ca_pem else str(ca_path()), cadata=ca_pem)
     except (ssl.SSLError, OSError, ValueError):
-        raise RemoteError(NOT_PINNED) from None
+        raise RemoteError(not_pinned()) from None
 
 
 def mcp_url(remote: Remote) -> str:
@@ -150,7 +167,9 @@ class Client:
     def call(self, method: str, path: str, *, query: dict | None = None, json_body=None,
              data: bytes | None = None, headers: dict | None = None, timeout=TIMEOUT):
         url = self.remote.url + path + ("?" + urlencode(query) if query else "")
-        sent = {"Authorization": f"Bearer {self.remote.token}", "Accept": "application/json", **(headers or {})}
+        # The head answers in this context's language: Korean for the web page, English for the CLI.
+        sent = {"Authorization": f"Bearer {self.remote.token}", "Accept": "application/json",
+                "Accept-Language": lang.current(), **(headers or {})}
         if json_body is not None:
             data = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
             sent["Content-Type"] = "application/json"
@@ -164,12 +183,15 @@ class Client:
             raise RemoteError(_message(error.code, error.read()), error.code) from None
         except (urlerror.URLError, OSError) as error:
             if isinstance(getattr(error, "reason", error), ssl.SSLCertVerificationError):
-                raise RemoteError(WRONG_CERTIFICATE) from None
-            raise RemoteError(f"헤드({self.remote.url})에 연결하지 못했어요. 같은 사내망인지, 헤드 Mac이 켜져 있는지 확인해 주세요.") from None
+                raise RemoteError(wrong_certificate()) from None
+            raise RemoteError(t(f"헤드({self.remote.url})에 연결하지 못했어요. 같은 사내망인지, 헤드 Mac이 켜져 있는지 확인해 주세요.",
+                                 f"Could not connect to the head ({self.remote.url}). Check that you are on the office "
+                                 "network and the head Mac is on.")) from None
         try:
             return json.loads(payload or b"{}")
         except ValueError:
-            raise RemoteError("헤드의 응답을 읽지 못했어요. 헤드의 omm 버전을 확인해 주세요.") from None
+            raise RemoteError(t("헤드의 응답을 읽지 못했어요. 헤드의 omm 버전을 확인해 주세요.",
+                                 "Could not read the head's reply. Check the omm version on the head.")) from None
 
     # -- operations ----------------------------------------------------
     def whoami(self) -> str:
@@ -219,7 +241,8 @@ class Client:
 
 def _message(status: int, payload: bytes) -> str:
     if status == 401:
-        return "헤드가 토큰을 받아 주지 않았어요. 관리자에게 새 토큰을 받아 `omm rag remote set`을 다시 실행해 주세요."
+        return t("헤드가 토큰을 받아 주지 않았어요. 관리자에게 새 토큰을 받아 `omm rag remote set`을 다시 실행해 주세요.",
+                 "The head rejected the token. Get a new token from the administrator and run `omm rag remote set` again.")
     try:
         message = json.loads(payload)["error"]["message"]
     except (ValueError, KeyError, TypeError):
@@ -227,8 +250,9 @@ def _message(status: int, payload: bytes) -> str:
     if isinstance(message, str) and message:
         return message
     if status == 404:
-        return "헤드가 이 기능을 모르는 것 같아요. 헤드의 omm을 업데이트해 주세요."
-    return f"헤드가 요청을 처리하지 못했어요 (HTTP {status})."
+        return t("헤드가 이 기능을 모르는 것 같아요. 헤드의 omm을 업데이트해 주세요.",
+                 "The head does not seem to support this. Update omm on the head.")
+    return t(f"헤드가 요청을 처리하지 못했어요 (HTTP {status}).", f"The head could not handle the request (HTTP {status}).")
 
 
 def client() -> Client | None:
@@ -248,12 +272,13 @@ def upload_paths(client: Client, collection: str, paths, *, replace=False, progr
         if problem is None:
             try:
                 if path.stat().st_size > documents.MAX_UPLOAD:
-                    raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
+                    raise ValueError(t("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.",
+                                     "Documents that are empty or larger than 6 MiB cannot be registered."))
                 if progress is not None:
                     progress(path.name, "upload", 0, 0)
                 results.append({"path": str(path), **client.upload(collection, path.name, path.read_bytes(), replace=replace)})
                 continue
             except (ValueError, OSError) as error:
-                problem = str(error) if isinstance(error, ValueError) else "파일을 읽지 못했어요. 권한을 확인해 주세요."
+                problem = str(error) if isinstance(error, ValueError) else t("파일을 읽지 못했어요. 권한을 확인해 주세요.", "Could not read the file. Check permissions.")
         results.append({"path": str(path), "name": path.name, "error": problem})
     return {"collection": collection, "results": results, "skipped": skipped}

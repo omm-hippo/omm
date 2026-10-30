@@ -209,7 +209,7 @@ def test_a_head_with_a_different_certificate_is_refused(head, monkeypatch, tmp_p
     rag_remote.save_ca((tmp_path / "earlier" / "ca.pem").read_text(encoding="utf-8"))
     result, asked = _set(server, "--yes", token=token, monkeypatch=monkeypatch)
     assert result.exit_code == 1 and asked == []
-    assert "다른 인증서" in result.output and "omm rag remote clear" in result.output
+    assert "different certificate" in result.output and "omm rag remote clear" in result.output
     assert not rag_remote.remote_path().exists()
 
 
@@ -226,7 +226,7 @@ def test_the_same_address_with_a_different_certificate_is_still_refused(head, mo
     earlier = _pin_earlier_head(tmp_path, _gateway_tls.url(server))
     result, asked = _set(server, "--yes", token=token, monkeypatch=monkeypatch)
     assert result.exit_code == 1 and asked == []
-    assert "다른 인증서" in result.output
+    assert "different certificate" in result.output
     assert rag_remote.pinned_ca() == earlier and rag_remote.load().token == "omm_old"
 
 
@@ -264,7 +264,7 @@ def test_a_remote_saved_over_plain_http_says_to_set_it_again(isolated_omm_home):
     rag_remote.save(rag_remote.Remote("http://10.0.0.5:52440", "omm_x"))
     result = runner.invoke(cli.app, ["rag", "collection", "list"])
     assert result.exit_code == 1
-    assert "HTTPS만" in result.output and "https://" in result.output
+    assert "HTTPS only" in result.output and "https://" in result.output
 
 
 def test_rag_connect_remote_says_how_the_harness_trusts_the_head(isolated_omm_home, tmp_path, monkeypatch):

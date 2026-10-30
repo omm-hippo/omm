@@ -323,7 +323,7 @@ def test_cli_collection_add_search_status_reindex(ollama, tmp_path):
     value = json.loads(found.output)
     assert value['method'] == 'hybrid' and value['sources'][0]['name'] == '휴가.txt'
     text = _cli('search', '쉬는 날 며칠 받을 수 있어?')
-    assert '의미+단어' in text.output and '[1] 휴가.txt' in text.output
+    assert 'semantic + words' in text.output and '[1] 휴가.txt' in text.output
     status = _cli('status', '--json')
     assert json.loads(status.output)['embedding']['available'] is True
     changed = _cli('embedding-model', 'set', 'other-embed')
@@ -401,7 +401,7 @@ def test_cli_add_and_reindex_json_has_no_progress_output(ollama, tmp_path):
     assert reindexed.exit_code == 0 and json.loads(reindexed.output)['reindexed'] == ['휴가.txt']
     # Off a terminal the live line is never drawn, so plain output stays clean too.
     plain = _cli('reindex', '--all')
-    assert '의미 색인 만드는 중' not in plain.output and '재색인: 휴가.txt' in plain.output
+    assert 'building semantic index' not in plain.output and 'Reindexed: 휴가.txt' in plain.output
 
 
 def test_cli_progress_line_names_document_and_batches(ollama, tmp_path, monkeypatch):
@@ -427,8 +427,8 @@ def test_cli_progress_line_names_document_and_batches(ollama, tmp_path, monkeypa
     monkeypatch.setattr(cli, 'Progress', Recorder)
     (tmp_path / '휴가.txt').write_bytes(LEAVE)
     assert _cli('add', '기본', str(tmp_path / '휴가.txt')).exit_code == 0
-    assert seen == [('disable', False), '휴가.txt: 텍스트 추출 중',
-                    '휴가.txt: 의미 색인 만드는 중 0/1 조각', '휴가.txt: 의미 색인 만드는 중 1/1 조각']
+    assert seen == [('disable', False), '휴가.txt: extracting text',
+                    '휴가.txt: building semantic index 0/1 chunks', '휴가.txt: building semantic index 1/1 chunks']
     seen.clear()
     assert _cli('reindex', '--all', '--quiet').exit_code == 0
     assert seen[0] == ('disable', True)
@@ -436,7 +436,7 @@ def test_cli_progress_line_names_document_and_batches(ollama, tmp_path, monkeypa
 
 def test_cli_embedding_model_keep_alive_option(ollama):
     result = _cli('embedding-model', 'set', 'bge-m3', '--keep-alive', '0')
-    assert result.exit_code == 0 and '바로 내림' in result.output
+    assert result.exit_code == 0 and 'unloads immediately' in result.output
     assert DocumentStore().embedding_settings()['keep_alive'] == '0'
     assert json.loads(_cli('status', '--json').output)['embedding']['keep_alive'] == '0'
     bad = _cli('embedding-model', 'set', 'bge-m3', '--keep-alive', 'forever')
