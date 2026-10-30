@@ -55,10 +55,14 @@ def lan_ipv4() -> str:
         probe.close()
 
 
-def _prepare_this_mac(namespace: str, out: Out) -> None:
+def _ensure_exo(out: Out) -> None:
     preflight.require_supported_macos()
     if not preflight.exo_installed():
         preflight.install_exo(out)
+
+
+def _prepare_this_mac(namespace: str, out: Out) -> None:
+    _ensure_exo(out)
     preflight.stage_runtime()
     out("omm will ask for this Mac's password to set up the Thunderbolt network, install the cluster "
         "firewall and turn off idle sleep.")
@@ -134,6 +138,9 @@ def init(out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "member":
         raise UsageProblem("this Mac already joined a cluster as a member; run omm cluster leave first")
+    # Before the name is saved: a Mac whose exo install failed is in no
+    # cluster, so the next bare `omm cluster` offers init/join again.
+    _ensure_exo(out)
     reuse = current is not None and not settings.is_legacy(current.namespace)
     namespace = current.namespace if reuse else settings.new_namespace()
     # Saved before anything can be interrupted: the name is printed below and
@@ -192,6 +199,7 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "head":
         raise UsageProblem("this Mac is the cluster head; run omm cluster leave first")
+    _ensure_exo(out)  # before the name is saved, as in init
     saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
