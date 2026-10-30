@@ -56,7 +56,7 @@ fi
 if [ "$PURGE" = "1" ]; then
     for agent_backup in "$RESOLVED_HOME/agent-connections/"*.json; do
         if [ -e "$agent_backup" ] || [ -L "$agent_backup" ]; then
-            echo "Agent connection backups remain. Run 'omm setting agent cloud HARNESS' for each connection before --purge." >&2
+            echo "Agent connection backups remain. Run 'omm agent cloud HARNESS' for each connection before --purge." >&2
             exit 1
         fi
     done

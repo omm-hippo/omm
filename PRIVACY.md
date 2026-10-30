@@ -324,14 +324,14 @@ stored.
 
 ## Local agent connection backups
 
-`omm setting agent local` saves a private local backup of the selected
+`omm agent local` saves a private local backup of the selected
 harness's routing settings under `OMM_HOME/agent-connections`. It may contain
 existing authentication values from those settings. Backups are not read by
 telemetry, crash reports, usage uploads or support bundles; do not share them
 in an issue. Model capability checks contact only the selected loopback Ollama
 endpoint and do not generate a prompt. A harness's own telemetry, tool network
 access and project/organization overrides remain that harness's settings.
-`omm setting agent cloud` removes the connection backup after restoring all
+`omm agent cloud` removes the connection backup after restoring all
 files successfully. See [agent connections](docs/agent-connections.md).
 
 ## Managed installation security checks

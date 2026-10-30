@@ -36,7 +36,7 @@ OMM의 역할:
 - 확인 한 번으로 실행 앱 확인부터 실제 응답 확인까지 6단계를 이어서 하고 채팅을 연다
   (웹 **이 모델로 대화 시작** / **대화 준비하고 시작**, Ollama·LM Studio만).
 - 등록한 문서에서 근거를 찾아 질문하고 출처 구간을 보여 준다 (웹 **내 문서**).
-- Claude Code·Codex CLI·pi를 로컬 Ollama 모델로 연결하고 되돌린다 (`omm setting agent local|status|cloud`).
+- Claude Code·Codex CLI·pi를 로컬 Ollama 모델로 연결하고 되돌린다 (`omm agent local|status|cloud`).
 
 ## 2. 시연 체크리스트
 
@@ -68,7 +68,7 @@ OMM의 역할:
 7. **저장 공간.** **파일·설정**의 모델 저장 공간 또는 `omm scan`으로 링크로 아낀 용량을 보여 준다.
 8. **(선택) 내 문서.** 텍스트 PDF·TXT·Markdown·HTML·HWPX(파일당 6 MiB)를 등록하고 질문해서 출처 구간이
    함께 나오는지 본다. 검색은 단어 기반이라 문서에 있는 단어로 질문한다.
-   - **(선택) 코딩 도우미.** `omm setting agent local claude --model <Ollama 모델>` → `status` → `cloud`로
+   - **(선택) 코딩 도우미.** `omm agent local claude --model <Ollama 모델>` → `status` → `cloud`로
      연결과 복원을 보여 준다. 로컬 모델의 도구 호출 작업은 미검증이다.
 9. **정리.** 웹에서 시연용 모델을 삭제하고, 파일·실행기 연결이 같이 정리되는지 본다.
 10. **(선택) 더블클릭·자동 시작.** `omm web --create-launchers "$HOME/Desktop"`으로 만든
@@ -139,7 +139,7 @@ macOS·Windows·Linux 열은 "실사용 확인" 상태입니다. 근거가 없�
 | 로그인 시 자동 시작 (`omm setting web-autostart`) | 구현 | 단위 테스트(OS 등록은 가짜로 대체) | 미검증 | 미검증 | 미검증 |
 | 처음 설치 안내 문서 ([beginner-install.md](beginner-install.md)) | 작성 | 인용 문구가 스크립트와 일치하는지 검사 | 미검증 | 미검증 | 미검증 |
 | 원클릭 대화 준비 (**이 모델로 대화 시작** / **대화 준비하고 시작**, 6단계) | 구현 | 단위 테스트(`tests/test_web_task_flow.py`) | 미검증 | 미검증 | 미검증 |
-| 코딩 도우미 연결 (`omm setting agent local\|status\|cloud`) | 구현 | 단위 테스트(격리 파일·로컬 HTTP 가짜 서버) | 부분(주3) | 미검증 | 미검증 |
+| 코딩 도우미 연결 (`omm agent local\|status\|cloud`) | 구현 | 단위 테스트(격리 파일·로컬 HTTP 가짜 서버) | 부분(주3) | 미검증 | 미검증 |
 | Mac 클러스터 (`omm cluster ...`) | 브랜치 `docs/exo-cluster-plan`에만 있음(미병합) | 브랜치의 단위 테스트 | 부분(주4) | 해당 없음 | 해당 없음 |
 | 사람 대상 사용성 평가 | 양식만 있음 | 해당 없음 | 미검증 | 미검증 | 미검증 |
 

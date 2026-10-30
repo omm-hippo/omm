@@ -344,7 +344,7 @@ itself meanwhile, so the member link gets its id from exo `GET /node_id`, tries 
 and reports `catching_up` + `event_index`; the head shows progress/ETA (`members.json` `event_rate`)
 instead of advising a re-join. The head warns when its LAN address left `cluster.json`
 `employee_addresses` (DHCP). Spec: `docs/superpowers/specs/2026-10-29-cluster-guided-next-step-design.md`.
-Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
+Employee PCs route a harness to the gateway with `omm agent cluster` (`agent_cluster.py`,
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
 list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
 and `2026-10-22-exo-cluster-spike-findings.md`.

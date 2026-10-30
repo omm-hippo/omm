@@ -781,7 +781,7 @@ agent_app = typer.Typer(
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
 )
-setting_app.add_typer(agent_app)
+app.add_typer(agent_app)
 _AGENT_LOCAL_BASE_URL = "http://127.0.0.1:11434"
 
 
@@ -790,8 +790,7 @@ _AGENT_HARNESS_LABELS = {"claude": "Claude Code", "codex": "Codex", "pi": "pi"}
 
 @agent_app.callback(invoke_without_command=True)
 def agent_menu_entry(ctx: typer.Context) -> None:
-    """Bare `omm setting agent` opens the same picker as `omm setting` > Agent;
-    a subcommand skips it."""
+    """Bare `omm agent` opens the connection picker; a subcommand skips it."""
     if ctx.invoked_subcommand is not None:
         return
     if not (_stdin_is_tty() and _stdout_is_tty()):
@@ -1621,6 +1620,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "setup",
             "engine",
             "cluster",
+            "agent",
             "import",
             "cleanup",
             "link",
@@ -3257,7 +3257,7 @@ def cluster_handover_cmd(
                  "  (use the same names: document ownership and shares follow the name)",
                  "Then each employee runs:",
                  f"  omm rag remote set https://{address}:52440",
-                 "  omm setting agent cluster          (only if they used it before)"):
+                 "  omm agent cluster                  (only if they used it before)"):
         _cluster_out(line)
 
 
@@ -11249,8 +11249,8 @@ def _upload_channel_menu() -> None:
 
 
 def _agent_menu() -> None:
-    """Interactive front for `omm setting agent {local,cluster,cloud,status}`,
-    reached from bare `omm setting agent` and the `omm setting` menu. The
+    """Interactive front for `omm agent {local,cluster,cloud,status}`,
+    reached from bare `omm agent`. The
     agent_* commands are called as plain functions with every argument spelled
     out (their typer defaults are OptionInfo objects outside a CLI parse). The
     harness/model pickers exit with typer.Exit(0) on Back or Escape; like a
@@ -11334,7 +11334,6 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
                         value="auto-import",
                     ),
-                    questionary.Choice("Agent (Claude Code / Codex / pi routing)", value="agent"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -11368,8 +11367,6 @@ def setting_menu(ctx: typer.Context) -> None:
                     auto_import_status()
             elif choice == "upload":
                 _upload_channel_menu()
-            elif choice == "agent":
-                _agent_menu()
             elif choice == "version":
                 action = _ask_select(
                     questionary.select(

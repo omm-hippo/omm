@@ -154,16 +154,16 @@ def test_existing_connection_is_never_replaced(home, remote):
 
 
 def test_cli_connects_without_printing_the_token(home, remote):
-    result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
+    result = CliRunner().invoke(cli.app, ["agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
     assert result.exit_code == 0, result.output
     assert "Saved cluster routing settings for pi" in result.output
     assert TOKEN not in result.output
-    restored = CliRunner().invoke(cli.app, ["setting", "agent", "cloud", "pi"])
+    restored = CliRunner().invoke(cli.app, ["agent", "cloud", "pi"])
     assert restored.exit_code == 0 and "Original routing restored" in restored.output
 
 
 def test_cli_error_exit_code(home):
-    result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "claude", "--model", "m"])
+    result = CliRunner().invoke(cli.app, ["agent", "cluster", "claude", "--model", "m"])
     assert result.exit_code == 1
     assert "omm rag remote set" in result.output
 
@@ -197,12 +197,12 @@ def test_claude_keeps_a_ca_file_the_user_already_set(home, remote):
 def test_codex_and_pi_get_the_line_that_starts_them_trusting_the_ca(home, remote, harness, variable):
     metadata = agent_cluster.connect(harness, "mlx-community/Qwen3.5-9B-4bit")
     assert metadata["launch"] == f"{variable}={shlex.quote(str(rag_remote.ca_path()))} {harness}"
-    result = CliRunner().invoke(cli.app, ["setting", "agent", "cloud", harness])
+    result = CliRunner().invoke(cli.app, ["agent", "cloud", harness])
     assert result.exit_code == 0
 
 
 def test_cli_prints_how_to_start_pi(home, remote):
-    result = CliRunner().invoke(cli.app, ["setting", "agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
+    result = CliRunner().invoke(cli.app, ["agent", "cluster", "pi", "--model", "mlx-community/Qwen3.5-9B-4bit"])
     assert result.exit_code == 0, result.output
     assert f"NODE_EXTRA_CA_CERTS={shlex.quote(str(rag_remote.ca_path()))} pi" in " ".join(result.output.split())
 

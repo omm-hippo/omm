@@ -659,12 +659,11 @@ def test_ask_text_binds_escape_to_cancel(monkeypatch):
     assert calls == ["raw-question"]
 
 
-def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, local=None, models=None, args=("setting",)):
-    """Run bare `omm setting` with scripted menu answers and record agent_* calls."""
+def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, local=None, models=None, args=("agent",)):
+    """Run bare `omm agent` with scripted menu answers and record agent_* calls."""
     calls: list = []
     queue = iter(answers)
-    # `omm setting` itself asks "Change another setting?" after each action, so
-    # a script that needs one specific y/n passes a list: [restore?, another?].
+    # A script that needs specific y/n answers passes them as a list.
     confirms = iter(confirm) if isinstance(confirm, list) else iter(lambda: confirm, object())
     monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(queue))
@@ -686,7 +685,7 @@ def _drive_agent_menu(monkeypatch, answers, *, text="the-model", confirm=True, l
     return calls
 
 
-def test_setting_bare_menu_offers_agent_entry(isolated_omm_home, monkeypatch):
+def test_setting_bare_menu_has_no_agent_entry(isolated_omm_home, monkeypatch):
     captured_choices: list = []
 
     def fake_select(message, choices=None, **kwargs):
@@ -700,106 +699,105 @@ def test_setting_bare_menu_offers_agent_entry(isolated_omm_home, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     choices = captured_choices[0]
-    assert any(choice.value == "agent" for choice in choices)
+    # `omm agent` is its own top-level command, not a setting.
+    assert not any(choice.value == "agent" for choice in choices)
     assert choices[-1].title == "← Back"
 
 
-def test_setting_agent_menu_connects_harness_to_local_ollama(isolated_omm_home, monkeypatch):
+def test_agent_menu_connects_harness_to_local_ollama(isolated_omm_home, monkeypatch):
     calls = _drive_agent_menu(
-        monkeypatch, ["agent", "local", "codex", "back", None], text="qwen3:8b"
+        monkeypatch, ["local", "codex", "back"], text="qwen3:8b"
     )
 
     assert calls == [("local", "codex", "qwen3:8b", "http://127.0.0.1:11434")]
 
 
-def test_setting_agent_menu_connects_harness_to_cluster(isolated_omm_home, monkeypatch):
+def test_agent_menu_connects_harness_to_cluster(isolated_omm_home, monkeypatch):
     calls = _drive_agent_menu(
-        monkeypatch, ["agent", "cluster", "claude", "back", None], text="mlx-community/Qwen3"
+        monkeypatch, ["cluster", "claude", "back"], text="mlx-community/Qwen3"
     )
 
     assert calls == [("cluster", "claude", "mlx-community/Qwen3")]
 
 
 @pytest.mark.parametrize("text", [None, ""])
-def test_setting_agent_menu_blank_or_cancelled_model_connects_nothing(
+def test_agent_menu_blank_or_cancelled_model_connects_nothing(
     isolated_omm_home, monkeypatch, text
 ):
     calls = _drive_agent_menu(
         monkeypatch,
-        ["agent", "local", "pi", "cluster", "pi", "back", None],
+        ["local", "pi", "cluster", "pi", "back"],
         text=text,
     )
 
     assert calls == []
 
 
-def test_setting_agent_menu_restore_asks_before_restoring(isolated_omm_home, monkeypatch):
+def test_agent_menu_restore_asks_before_restoring(isolated_omm_home, monkeypatch):
     declined = _drive_agent_menu(
-        monkeypatch, ["agent", "cloud", "pi", "back", None], confirm=[False, True]
+        monkeypatch, ["cloud", "pi", "back"], confirm=[False]
     )
     assert declined == []
 
     accepted = _drive_agent_menu(
-        monkeypatch, ["agent", "cloud", "pi", "back", None], confirm=[True, True]
+        monkeypatch, ["cloud", "pi", "back"], confirm=[True]
     )
     assert accepted == [("cloud", "pi")]
 
 
-def test_setting_agent_menu_status_shows_every_harness(isolated_omm_home, monkeypatch):
-    calls = _drive_agent_menu(monkeypatch, ["agent", "status", "back", None])
+def test_agent_menu_status_shows_every_harness(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(monkeypatch, ["status", "back"])
 
     assert calls == [("status", "claude"), ("status", "codex"), ("status", "pi")]
 
 
-def test_setting_agent_menu_harness_back_connects_nothing(isolated_omm_home, monkeypatch):
-    calls = _drive_agent_menu(monkeypatch, ["agent", "local", "back", "back", None])
+def test_agent_menu_harness_back_connects_nothing(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(monkeypatch, ["local", "back", "back"])
 
     assert calls == []
 
 
-def test_setting_agent_menu_survives_a_failed_connect(isolated_omm_home, monkeypatch):
+def test_agent_menu_survives_a_failed_connect(isolated_omm_home, monkeypatch):
     import typer
 
     def failing(*args):
         raise typer.Exit(1)
 
     calls = _drive_agent_menu(
-        monkeypatch, ["agent", "local", "claude", "status", "back", None], local=failing
+        monkeypatch, ["local", "claude", "status", "back"], local=failing
     )
 
     assert calls == [("status", "claude"), ("status", "codex"), ("status", "pi")]
 
 
-def test_setting_agent_menu_lists_installed_ollama_models(isolated_omm_home, monkeypatch):
+def test_agent_menu_lists_installed_ollama_models(isolated_omm_home, monkeypatch):
     calls = _drive_agent_menu(
-        monkeypatch, ["agent", "local", "codex", "qwen3:8b", "back", None],
+        monkeypatch, ["local", "codex", "qwen3:8b", "back"],
         models=["llama3:8b", "qwen3:8b"],
     )
 
     assert calls == [("local", "codex", "qwen3:8b", "http://127.0.0.1:11434")]
 
 
-def test_setting_agent_menu_model_list_falls_back_to_typing(isolated_omm_home, monkeypatch):
+def test_agent_menu_model_list_falls_back_to_typing(isolated_omm_home, monkeypatch):
     calls = _drive_agent_menu(
-        monkeypatch, ["agent", "local", "pi", "\0type", "back", None],
+        monkeypatch, ["local", "pi", "\0type", "back"],
         models=["llama3:8b"], text="custom:tag",
     )
 
     assert calls == [("local", "pi", "custom:tag", "http://127.0.0.1:11434")]
 
 
-def test_bare_setting_agent_opens_the_picker_on_a_terminal(isolated_omm_home, monkeypatch):
-    calls = _drive_agent_menu(
-        monkeypatch, ["local", "claude", "back"], text="qwen3:8b", args=("setting", "agent"),
-    )
+def test_bare_agent_opens_the_picker_on_a_terminal(isolated_omm_home, monkeypatch):
+    calls = _drive_agent_menu(monkeypatch, ["local", "claude", "back"], text="qwen3:8b")
 
     assert calls == [("local", "claude", "qwen3:8b", "http://127.0.0.1:11434")]
 
 
-def test_bare_setting_agent_without_a_terminal_prints_help(isolated_omm_home, monkeypatch):
+def test_bare_agent_without_a_terminal_prints_help(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
 
-    result = runner.invoke(cli.app, ["setting", "agent"])
+    result = runner.invoke(cli.app, ["agent"])
 
     assert result.exit_code == 0, result.output
     assert "local" in result.output and "cluster" in result.output
@@ -820,7 +818,7 @@ def test_agent_local_asks_only_for_what_is_missing(isolated_omm_home, monkeypatc
     monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: asked.append(question) or next(answers))
 
-    result = runner.invoke(cli.app, ["setting", "agent", "local", "codex"])
+    result = runner.invoke(cli.app, ["agent", "local", "codex"])
 
     assert result.exit_code == 0, result.output
     assert connected == [(("codex", "qwen3:8b"), {"base_url": "http://127.0.0.1:11434"})]
@@ -830,7 +828,7 @@ def test_agent_local_asks_only_for_what_is_missing(isolated_omm_home, monkeypatc
 def test_agent_local_missing_harness_without_a_terminal_is_a_usage_error(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
 
-    result = runner.invoke(cli.app, ["setting", "agent", "local"])
+    result = runner.invoke(cli.app, ["agent", "local"])
 
     assert result.exit_code == 2
     assert "Missing harness" in result.output
