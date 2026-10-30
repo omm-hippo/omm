@@ -7,7 +7,7 @@ runner = CliRunner()
 
 
 def test_install_resolves_numeric_arg_from_last_results(isolated_omm_home, monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["org/repo:file.gguf"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["org/repo:file.gguf"])
     monkeypatch.setattr(cli, "_print_install_suggestions", lambda name: None)
     seen = {}
 
@@ -23,7 +23,7 @@ def test_install_resolves_numeric_arg_from_last_results(isolated_omm_home, monke
 
 
 def test_install_numeric_arg_out_of_range(monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["only-one"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["only-one"])
 
     result = runner.invoke(cli.app, ["install", "5"])
 
@@ -32,7 +32,7 @@ def test_install_numeric_arg_out_of_range(monkeypatch):
 
 
 def test_install_numeric_arg_with_no_prior_results(monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: [])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: [])
 
     result = runner.invoke(cli.app, ["install", "1"])
 
@@ -41,7 +41,7 @@ def test_install_numeric_arg_with_no_prior_results(monkeypatch):
 
 
 def test_install_non_numeric_arg_is_unaffected(isolated_omm_home, monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["should-not-be-used"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["should-not-be-used"])
     monkeypatch.setattr(cli, "_print_install_suggestions", lambda name: None)
     seen = {}
 
@@ -63,7 +63,7 @@ def test_remove_resolves_numeric_arg_from_last_results(isolated_omm_home, monkey
     dest = cli.MODELS_DIR / filename
     dest.write_bytes(b"data")
     registry.save_registry({filename: {"linked": {"lmstudio": False, "ollama": False}}})
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: [filename])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: [filename])
 
     result = runner.invoke(cli.app, ["uninstall", "1"])
 

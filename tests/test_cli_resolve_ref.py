@@ -12,7 +12,7 @@ from omm import cli
 
 
 def test_resolve_ref_passes_superscript_digits_through_instead_of_crashing(monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["model.gguf"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["model.gguf"])
 
     assert cli._resolve_ref("²") == "²"
     assert cli._resolve_ref("1") == "model.gguf"
