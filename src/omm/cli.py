@@ -2511,6 +2511,19 @@ def _src_head_commit() -> str | None:
     return result.stdout.strip()
 
 
+def _same_tree(first: str, second: str) -> bool:
+    """True when two commits hold exactly the same files. install.sh installs a
+    PR merge's signed second parent while the channel tip is the merge commit
+    itself: different ids, nothing to update. False when either commit is not
+    in the clone (a newer remote commit not fetched yet)."""
+    if not (SRC_DIR / ".git").exists():
+        return False
+    result = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", f"{first}^{{tree}}", f"{second}^{{tree}}"],
+                      timeout=10)
+    trees = result.stdout.split()
+    return result.returncode == 0 and len(trees) == 2 and trees[0] == trees[1]
+
+
 def _installed_commit() -> str | None:
     """The commit the installed package actually executes.
 
@@ -3458,6 +3471,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
                         _update_notice_is_wanted(opts)
                         and _installed_commit() == installed
                         and _channel_branch() == branch
+                        and not _same_tree(latest, installed)
                     ):
                         err_console.print("[muted]Update available! Run: omm update[/muted]")
 

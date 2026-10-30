@@ -152,7 +152,7 @@ def omm_behind(timeout: float = 5) -> bool | None:
     remote = cli._remote_head_commit(cli._channel_branch(), timeout=timeout)
     if not local or not remote:
         return None
-    if local == remote:
+    if local == remote or cli._same_tree(remote, local):
         return False
     from omm.cluster import version_follow
 

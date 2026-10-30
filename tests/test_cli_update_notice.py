@@ -442,3 +442,53 @@ def test_end_to_end_command_without_global_flags_still_shows_the_update_notice(
 
     assert result.exit_code == 1, result.stdout
     assert "omm update" in result.stderr
+
+
+def _git(repo, *args):
+    import subprocess
+
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def merged_repo(tmp_path, monkeypatch):
+    """A branch tip that is a PR merge commit: install.sh installs the merge's
+    signed second parent, which holds exactly the same files."""
+    repo = tmp_path / "src"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "pr")
+    pr_tip = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge", "pr")
+    merge = _git(repo, "rev-parse", "HEAD")
+    monkeypatch.setattr(cli, "SRC_DIR", repo)
+    return {"base": base, "pr_tip": pr_tip, "merge": merge}
+
+
+def test_same_tree_spots_a_merge_holding_the_installed_files(merged_repo):
+    assert cli._same_tree(merged_repo["merge"], merged_repo["pr_tip"]) is True
+    assert cli._same_tree(merged_repo["merge"], merged_repo["base"]) is False
+    # A remote commit this clone never fetched cannot be compared: not the same.
+    assert cli._same_tree("f" * 40, merged_repo["pr_tip"]) is False
+
+
+def test_update_notice_skips_a_merge_commit_with_the_installed_files(monkeypatch):
+    # 2026-10-30: a fresh install.sh install printed "Update available!" at once.
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "pr_tip")
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (True, "merge", "pr_tip"))
+    monkeypatch.setattr(cli, "_same_tree", lambda first, second: {first, second} == {"merge", "pr_tip"})
+    printed = []
+    monkeypatch.setattr(cli.err_console, "print", lambda *a, **k: printed.append(a))
+    ctx = _FakeCtx("list")
+
+    cli._maybe_start_update_check(ctx)
+
+    for callback in ctx.close_callbacks:
+        callback()
+    assert printed == []
