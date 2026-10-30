@@ -13,6 +13,7 @@ import platform
 import plistlib
 import shutil
 import subprocess
+import tempfile
 from typing import Callable, Literal
 
 from omm import config
@@ -73,14 +74,48 @@ def _brew() -> str | None:
     return next((path for path in _BREW_CANDIDATES if Path(path).is_file()), None)
 
 
+def _brew_failure_reason(output: str) -> str:
+    # brew lists every directory it cannot write; the list says nothing to a person.
+    if "not writable" in output:
+        return "Homebrew's folders belong to another macOS account on this Mac"
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1][:200] if lines else "no output"
+
+
 def install_exo(on_output: Callable[[str], None], *, run=subprocess.run) -> None:
+    """brew's cask, else exo's own DMG (brew can be missing or owned by another account)."""
     brew = _brew()
-    if brew is None:
-        raise ClusterError(f"Homebrew is not installed; install exo by hand from {EXO_DMG_URL}")
-    on_output("Installing exo with Homebrew...")
-    result = run([brew, "install", "--cask", "exo"], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise ClusterError(f"brew install --cask exo failed: {(result.stderr or result.stdout or '').strip()[-300:]}")
+    if brew is not None:
+        # stdout stays on the terminal: the download takes minutes, and a
+        # silent wait looked like a hang (node4, 2026-10-30).
+        on_output("Installing exo with Homebrew (about 400 MB, this can take a few minutes)...")
+        result = run([brew, "install", "--cask", "exo"], stderr=subprocess.PIPE, text=True, check=False)
+        if result.returncode == 0:
+            return
+        on_output(f"Homebrew could not install exo ({_brew_failure_reason(result.stderr or '')}); "
+                  f"downloading it from {EXO_DMG_URL} instead...")
+    else:
+        on_output(f"Downloading exo from {EXO_DMG_URL} (about 400 MB)...")
+    _install_exo_dmg(run)
+    on_output(f"exo installed in {EXO_APP_PATH.parent}.")
+
+
+def _install_exo_dmg(run) -> None:
+    # Copied with ditto, so the app carries no quarantine flag (curl sets none).
+    with tempfile.TemporaryDirectory(prefix="omm-exo-") as scratch:
+        dmg, mount = Path(scratch) / "EXO.dmg", Path(scratch) / "mount"
+        if run(["/usr/bin/curl", "-fL", "--progress-bar", "-o", str(dmg), EXO_DMG_URL], check=False).returncode != 0:
+            raise ClusterError(f"could not download exo; install it by hand from {EXO_DMG_URL}")
+        attach = ["/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-quiet", "-mountpoint", str(mount), str(dmg)]
+        if run(attach, capture_output=True, text=True, check=False).returncode != 0:
+            raise ClusterError(f"could not open the exo disk image; install it by hand from {EXO_DMG_URL}")
+        try:
+            copy = run(["/usr/bin/ditto", str(mount / "EXO.app"), str(EXO_APP_PATH)],
+                       capture_output=True, text=True, check=False)
+        finally:
+            run(["/usr/bin/hdiutil", "detach", "-quiet", str(mount)], capture_output=True, text=True, check=False)
+        if copy.returncode != 0:
+            raise ClusterError(f"could not copy EXO.app into {EXO_APP_PATH.parent}: {(copy.stderr or '').strip()}")
 
 
 def runtime_dir() -> Path:

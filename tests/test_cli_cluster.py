@@ -2003,3 +2003,21 @@ def test_bare_cluster_json_lists_steps(cluster_fakes, monkeypatch):
     assert data["role"] == "head"
     assert {"kind": "run", "text": "this Mac sleeps after 1 min idle; run omm cluster on this Mac to fix it",
             "where": None, "fix": "keep_awake"} in data["steps"]
+
+
+@pytest.mark.parametrize("args", [["cluster", "init"], ["cluster", "join", "omm-" + "b" * 32]])
+def test_failed_exo_install_leaves_this_mac_out_of_the_cluster(cluster_fakes, monkeypatch, args):
+    # node3, 2026-10-30: join saved the name before brew failed, so the next
+    # bare `omm cluster` treated the Mac as joined and never installed exo.
+    from omm.cluster import commands, preflight
+
+    def fail(on_output, **kwargs):
+        raise commands.ClusterError("could not download exo")
+
+    monkeypatch.setattr(preflight, "exo_installed", lambda: False)
+    monkeypatch.setattr(preflight, "install_exo", fail)
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 1, result.output
+    assert "could not download exo" in result.output
+    assert settings.load() is None
+    assert cluster_fakes.exo_service_installs == []
