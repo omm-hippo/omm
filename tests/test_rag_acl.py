@@ -73,7 +73,7 @@ def test_owner_only_by_default_then_person_share_and_unshare(people):
     rag_acl.import_document(kim, "인사규정", "hr.txt", HR)
     assert _names(kim) == ["인사규정"] and _names(lee) == []
     assert _search(kim, collection="인사규정")["found"] is True
-    assert _search(lee)["found"] is False and _search(lee)["message"] == rag_acl.NO_SHARED_DOCUMENTS
+    assert _search(lee)["found"] is False and _search(lee)["message"] == rag_acl.no_shared_documents()
     with pytest.raises(ValueError, match="No document collection"):
         _search(lee, collection="인사규정")  # Same answer as a name that does not exist.
     assert rag_acl.share(kim, "인사규정", person="lee")["added"] is True
@@ -217,6 +217,15 @@ def test_rest_permission_matrix_and_revoke(head):
     assert _call(server, "GET", "/rag/v1/nothing", t["kim"])[0] == 404
 
 
+def test_rest_messages_follow_accept_language(head):
+    server, t = head
+    path = "/rag/v1/documents?collection=missing"
+    korean = _call(server, "GET", path, t["kim"])[2]["error"]["message"]
+    english = _call(server, "GET", path, t["kim"], headers={"Accept-Language": "en"})[2]["error"]["message"]
+    assert "찾지 못했어요" in korean  # Older employee PCs send no header and keep Korean.
+    assert english == "Collection 'missing' was not found. Check the name with `omm rag collection list`."
+
+
 def test_upload_size_limits(head, monkeypatch):
     server, t = head
     _call(server, "POST", "/rag/v1/collections", t["kim"], {"name": "c"})
@@ -306,7 +315,7 @@ def employee_pc(head, tmp_path, monkeypatch):
 def test_remote_cli_end_to_end(employee_pc, tmp_path):
     url, t, pc_home = employee_pc
     bad = _cli("rag", "remote", "set", url, "--yes", input="omm_wrong\n")
-    assert bad.exit_code == 1 and "토큰" in bad.output
+    assert bad.exit_code == 1 and "rejected the token" in bad.output
     assert not (pc_home / "rag-remote.json").exists()
     assert not rag_remote.ca_path().exists()  # nothing is pinned for a refused token
     ok = _cli("rag", "remote", "set", url, "--yes", input=t["kim"] + "\n")
@@ -320,18 +329,18 @@ def test_remote_cli_end_to_end(employee_pc, tmp_path):
     (folder / "skip.bin").write_bytes(b"x")
     added = _cli("rag", "add", "인사규정", str(folder))
     assert added.exit_code == 0, added.output
-    assert "등록: hr.txt" in added.output and "건너뛰었어요" in added.output
+    assert "Added: hr.txt" in added.output and "Skipped 1 file" in added.output
     found = _cli("rag", "search", "연차 휴가 신청", "--collection", "인사규정")
     assert found.exit_code == 0 and "hr.txt" in found.output and "연차 휴가 신청은" in found.output
     listed = _cli("rag", "collection", "list")
-    assert "만든 사람 kim" in listed.output and "공유 없음" in listed.output
+    assert "created by kim" in listed.output and "not shared" in listed.output
     assert _cli("rag", "share", "인사규정", "lee").exit_code == 0
-    assert "공유: lee" in _cli("rag", "collection", "list").output
+    assert "shared with: lee" in _cli("rag", "collection", "list").output
     # lee sees it now, from their own PC.
     assert _cli("rag", "remote", "set", url, "--token", t["lee"]).exit_code == 0
     assert "hr.txt" in _cli("rag", "search", "연차 휴가 신청").output
     denied = _cli("rag", "share", "인사규정", "park")
-    assert denied.exit_code == 1 and "만든 사람(kim)" in denied.output
+    assert denied.exit_code == 1 and "Only the creator of '인사규정' (kim)" in " ".join(denied.output.split())
     assert _cli("rag", "team", "list").exit_code == 1  # Teams are managed on the head.
     _cli("rag", "remote", "set", url, "--token", t["kim"])
     assert _cli("rag", "unshare", "인사규정", "lee").exit_code == 0
@@ -352,7 +361,7 @@ def test_head_admin_cli_share_team_and_list(people):
     assert _cli("rag", "share", "규정", "--team", "hr").exit_code == 0
     assert _cli("rag", "share", "규정", "lee").exit_code == 0
     listed = _cli("rag", "collection", "list").output
-    assert "만든 사람 관리자" in listed and "공유: lee, 팀 hr" in listed
+    assert "created by administrator" in listed and "shared with: lee, team hr" in listed
     assert _cli("rag", "share", "규정", "nobody").exit_code == 1
     assert _cli("rag", "unshare", "규정", "--team", "hr").exit_code == 0
     assert _cli("rag", "team", "delete", "hr").exit_code == 0

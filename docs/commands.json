@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.93",
+  "omm_version": "0.4.95",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -2665,7 +2665,7 @@
       "arguments": [
         {
           "name": "name",
-          "help": "Collection name, e.g. 인사규정.",
+          "help": "Collection name, e.g. handbook.",
           "required": true
         }
       ],

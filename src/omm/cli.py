@@ -968,7 +968,17 @@ rag_embedding_app = typer.Typer(
 )
 rag_app.add_typer(rag_embedding_app)
 
-_RAG_METHOD_LABEL = {"hybrid": "의미+단어", "lexical": "단어만"}
+
+@rag_app.callback()
+def rag_callback(ctx: typer.Context) -> None:
+    # The document modules also serve the Korean web UI; under `omm rag`
+    # their messages come out in English like the rest of the CLI.
+    from omm import lang
+    token = lang.use(lang.ENGLISH)
+    ctx.call_on_close(lambda: lang.reset(token))
+
+
+_RAG_METHOD_LABEL = {"hybrid": "semantic + words", "lexical": "words only"}
 _RAG_SEMANTIC_LABEL = {"ready": "semantic index ready", "missing": "no semantic index (reindex needed)",
                        "stale": "embedding model changed (reindex needed)", "reregister": "re-register the original"}
 
@@ -992,8 +1002,8 @@ def _rag_progress():
         task_id = bar.add_task("", total=None)
 
         def progress(name: str, stage: str, done: int, total: int) -> None:
-            label = {"extract": "텍스트 추출 중", "upload": "헤드로 보내고 색인하는 중"}.get(
-                stage, f"의미 색인 만드는 중 {done}/{total} 조각")
+            label = {"extract": "extracting text", "upload": "sending to the head and indexing"}.get(
+                stage, f"building semantic index {done}/{total} chunks")
             bar.update(task_id, description=escape(f"{name}: {label}"))
 
         yield progress
@@ -1003,10 +1013,10 @@ def _rag_confirm(message: str) -> None:
     if _global_opts().yes:
         return
     if not _stdin_is_tty():
-        err_console.print("확인이 필요해요. 다시 실행할 때 --yes를 붙여 주세요.")
+        err_console.print("Confirmation needed. Run it again with --yes.")
         raise typer.Exit(1)
     if not _ask_confirm(message):
-        err_console.print("취소했어요.")
+        err_console.print("Cancelled.")
         raise typer.Exit(0)
 
 
@@ -1059,7 +1069,7 @@ def rag_status_cmd() -> None:
 
 
 @rag_collection_app.command(name="create")
-def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection name, e.g. 인사규정.")) -> None:
+def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection name, e.g. handbook.")) -> None:
     """Create an empty named collection (on the cluster head when `omm rag remote` is set)."""
     from omm import rag_acl
     remote = _rag_cli.remote_client()
@@ -1067,17 +1077,17 @@ def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection n
         remote.create_collection(name) if remote else rag_acl.create_collection(rag_acl.ADMIN, name)
     except ValueError as error:
         _rag_fail(error)
-    console.print(f"'{escape(name)}' 컬렉션을 만들었어요. `omm rag add {escape(name)} <파일 또는 폴더>`로 문서를 넣어 주세요.")
+    console.print(f"Created collection '{escape(name)}'. Add documents with `omm rag add {escape(name)} <file or folder>`.")
     if remote:
-        console.print("지금은 나만 검색할 수 있어요. `omm rag share <컬렉션> <직원>` 또는 `--team <팀>`으로 공유해요.")
+        console.print("Only you can search it for now. Share it with `omm rag share <collection> <employee>` or `--team <team>`.")
 
 
 def _rag_share_label(shares) -> str:
     if shares is None:
         return ""
     if not shares:
-        return " · 공유 없음"
-    return " · 공유: " + ", ".join(f"팀 {s['target']}" if s["kind"] == "team" else s["target"] for s in shares)
+        return " · not shared"
+    return " · shared with: " + ", ".join(f"team {s['target']}" if s["kind"] == "team" else s["target"] for s in shares)
 
 
 @rag_collection_app.command(name="list")
@@ -1095,9 +1105,9 @@ def rag_collection_list_cmd() -> None:
         _print_json(data={"collections": [{k: row.get(k) for k in keys} for row in rows]})
         return
     if remote and not rows:
-        console.print("검색할 수 있는 컬렉션이 없어요. `omm rag collection create <이름>`으로 만들거나 공유를 받아 주세요.")
+        console.print("No collections you can search. Create one with `omm rag collection create <name>` or ask for a share.")
     for row in rows:
-        console.print(f"{escape(row['name'])}  문서 {row['documents']}개 · 만든 사람 {escape(rag_acl.owner_label(row['owner']))}"
+        console.print(f"{escape(row['name'])}  {row['documents']} documents · created by {escape(rag_acl.owner_label(row['owner']))}"
                       f"{escape(_rag_share_label(row.get('shares')))}")
 
 
@@ -1111,12 +1121,12 @@ def rag_collection_delete_cmd(name: str = typer.Argument(..., help="Collection t
         rows = remote.collections() if remote else rag_acl.collections(rag_acl.ADMIN)
         count = next((row["documents"] for row in rows if row["name"] == name), None)
         if count is None:
-            raise ValueError(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.")
-        _rag_confirm(f"'{name}' 컬렉션과 문서 {count}개의 저장된 텍스트·색인을 지울까요? 원본 파일은 그대로예요.")
+            raise ValueError(f"Collection '{name}' was not found. Check the name with `omm rag collection list`.")
+        _rag_confirm(f"Delete collection '{name}' and the stored text and index of its {count} documents? Original files are kept.")
         result = remote.delete_collection(name) if remote else rag_acl.delete_collection(rag_acl.ADMIN, name)
     except ValueError as error:
         _rag_fail(error)
-    console.print(f"'{escape(name)}' 컬렉션을 지웠어요 (문서 {result['documents']}개). 이전 문서 답변 기록도 지웠어요.")
+    console.print(f"Deleted collection '{escape(name)}' ({result['documents']} documents) and its past document answers.")
 
 
 @rag_app.command(name="add")
@@ -1148,17 +1158,17 @@ def rag_add_cmd(
     for row in report["results"]:
         if "error" in row:
             failed += 1
-            err_console.print(f"실패: {escape(row['path'])} - {escape(row['error'])}")
+            err_console.print(f"Failed: {escape(row['path'])} - {escape(row['error'])}")
             continue
-        label = "변경 없음" if row.get("unchanged") else f"구간 {row['chunks']}개"
-        mode = "의미+단어 색인" if row["semantic"] else "단어 색인만"
-        console.print(f"등록: {escape(row['name'])} ({label}, {mode})")
+        label = "unchanged" if row.get("unchanged") else f"{row['chunks']} chunks"
+        mode = "semantic + word index" if row["semantic"] else "word index only"
+        console.print(f"Added: {escape(row['name'])} ({label}, {mode})")
         if row.get("semantic_notice"):
             notices.add(row["semantic_notice"])
     for notice in notices:
         console.print(escape(notice))
     if report["skipped"]:
-        console.print(f"지원하지 않는 형식 {report['skipped']}개는 건너뛰었어요.")
+        console.print(f"Skipped {report['skipped']} file(s) in unsupported formats.")
     if failed:
         raise typer.Exit(1)
 
@@ -1172,12 +1182,12 @@ def rag_remove_cmd(
     """Remove one document's stored text and index. The original file is kept."""
     from omm.documents import DocumentStore
     remote = _rag_cli.remote_client()
-    _rag_confirm(f"'{collection}' 컬렉션의 '{name}' 문서와 색인을 지울까요? 원본 파일은 그대로예요.")
+    _rag_confirm(f"Remove document '{name}' and its index from collection '{collection}'? The original file is kept.")
     try:
         remote.remove_document(collection, name) if remote else DocumentStore().remove_document(collection, name)
     except ValueError as error:
         _rag_fail(error)
-    console.print(f"'{escape(name)}' 문서를 지웠어요. 이전 문서 답변 기록도 지웠어요.")
+    console.print(f"Removed document '{escape(name)}' and its past document answers.")
 
 
 @rag_app.command(name="search")
@@ -1188,7 +1198,7 @@ def rag_search_cmd(
     limit: int = typer.Option(3, "--limit", min=1, max=10, help="Maximum passages to show (1-10)."),
 ) -> None:
     """Find source passages with hybrid search; falls back to words only and says why."""
-    from omm.documents import DocumentStore, NO_EVIDENCE
+    from omm.documents import DocumentStore, no_evidence
     remote = _rag_cli.remote_client()
     if remote:
         _rag_remote_search(remote, question, collection, limit)
@@ -1200,15 +1210,15 @@ def rag_search_cmd(
     if _global_opts().json:
         _print_json(data=result)
         return
-    console.print(f"검색 방식: {_RAG_METHOD_LABEL[result['method']]}")
+    console.print(f"Search method: {_RAG_METHOD_LABEL[result['method']]}")
     if result["notice"]:
         console.print(escape(result["notice"]))
     if not result["sources"]:
-        console.print(NO_EVIDENCE)
+        console.print(no_evidence())
         return
     for source in result["sources"]:
         console.print(f"\n[{source['citation']}] {escape(source['name'])} ({escape(source['collection'])}) · "
-                      f"{source['page']}쪽 · {source['start']}-{source['end']}자", markup=False)
+                      f"p.{source['page']} · chars {source['start']}-{source['end']}", markup=False)
         console.print(source["text"].strip(), markup=False, highlight=False)
 
 
@@ -1222,16 +1232,16 @@ def _rag_remote_search(remote, question: str, collection: str | None, limit: int
         _print_json(data=result)
         return
     if result.get("method"):
-        console.print(f"검색 방식: {_RAG_METHOD_LABEL.get(result['method'], result['method'])} (헤드)")
+        console.print(f"Search method: {_RAG_METHOD_LABEL.get(result['method'], result['method'])} (head)")
     if result.get("notice"):
         console.print(escape(result["notice"]))
     console.print(escape(result["message"]))
     for item in result["results"]:
-        console.print(f"\n[{item['rank']}] {item['document']} ({item['collection']}) · {item['page']}쪽 · "
-                      f"{item['start']}-{item['end']}자", markup=False)
+        console.print(f"\n[{item['rank']}] {item['document']} ({item['collection']}) · p.{item['page']} · "
+                      f"chars {item['start']}-{item['end']}", markup=False)
         console.print(item["quote"].strip(), markup=False, highlight=False)
     if result.get("skipped_stale"):
-        console.print("색인을 다시 만들어야 해서 검색하지 않은 문서: " + escape(", ".join(result["skipped_stale"])))
+        console.print("Not searched because their index must be rebuilt: " + escape(", ".join(result["skipped_stale"])))
 
 
 @rag_app.command(name="reindex")
@@ -1253,17 +1263,18 @@ def rag_reindex_cmd(
             raise typer.Exit(1)
         return
     for name in result["reindexed"]:
-        console.print(f"재색인: {escape(name)}")
-    console.print(f"{escape(result['model'])}로 {len(result['reindexed'])}개 문서를 색인했어요. 이미 최신 {result['already_current']}개.")
+        console.print(f"Reindexed: {escape(name)}")
+    console.print(f"Indexed {len(result['reindexed'])} document(s) with {escape(result['model'])}; "
+                  f"{result['already_current']} already current.")
     if result["reregister"]:
-        console.print("단어 색인 방식이 바뀌어 원본을 다시 등록해야 하는 문서: " + escape(", ".join(result["reregister"])))
+        console.print("The word index format changed; register these originals again: " + escape(", ".join(result["reregister"])))
     if result["failed"]:
         err_console.print(f"[error]{escape(result['failed']['name'])}: {escape(result['failed']['notice'])}[/error]")
         raise typer.Exit(1)
 
 
 def _rag_keep_alive_label(value: str) -> str:
-    return "없음 (바로 내림)" if str(value) == "0" else str(value)
+    return "none (unloads immediately)" if str(value) == "0" else str(value)
 
 
 def _rag_model_hint(store) -> None:
@@ -1281,8 +1292,8 @@ def rag_embedding_show(ctx: typer.Context) -> None:
     store = DocumentStore()
     try:
         settings = store.embedding_settings()
-        console.print(f"임베딩 모델: {escape(settings['model'])} ({escape(settings['base_url'])}) · "
-                      f"메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}")
+        console.print(f"Embedding model: {escape(settings['model'])} ({escape(settings['base_url'])}) · "
+                      f"keep-alive {escape(_rag_keep_alive_label(settings['keep_alive']))}")
         _rag_model_hint(store)
     except ValueError as error:
         _rag_fail(error)
@@ -1304,11 +1315,11 @@ def rag_embedding_set_cmd(
         status = store.status()
     except ValueError as error:
         _rag_fail(error)
-    console.print(f"임베딩 모델을 {escape(settings['model'])}로 정했어요 (메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}). "
-                  "등록한 문서와 단어 색인은 그대로예요.")
+    console.print(f"Embedding model set to {escape(settings['model'])} (keep-alive {escape(_rag_keep_alive_label(settings['keep_alive']))}). "
+                  "Registered documents and the word index are unchanged.")
     _rag_model_hint(store)
     if status["reindex_needed"]:
-        console.print(f"문서 {status['reindex_needed']}개는 재색인이 필요해요. `omm rag reindex`를 실행해 주세요.")
+        console.print(f"{status['reindex_needed']} document(s) need reindexing. Run `omm rag reindex`.")
 from omm import rag_cli as _rag_cli  # noqa: E402  (agent bridge commands live in their own module)
 
 _rag_cli.register(rag_app)
