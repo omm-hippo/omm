@@ -6,9 +6,9 @@ separately, then install a local Ollama model with tool support and at least
 download a model in these commands.
 
 ```sh
-omm setting agent local claude --model YOUR_INSTALLED_MODEL
-omm setting agent status claude
-omm setting agent cloud claude
+omm agent local claude --model YOUR_INSTALLED_MODEL
+omm agent status claude
+omm agent cloud claude
 ```
 
 Use `codex` or `pi` in place of `claude`. A custom Ollama port can be selected

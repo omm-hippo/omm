@@ -439,7 +439,7 @@ def harness_trust_hint(harness: str, ca_file: str | Path) -> tuple[str, str]:
     command = launch_command(harness, ca_file)
     if harness in ("claude", "claude-code"):
         return ("Claude Code trusts the cluster head only with env.NODE_EXTRA_CA_CERTS set to that file in "
-                "~/.claude/settings.json (omm setting agent cluster claude adds it), or when started like this:",
+                "~/.claude/settings.json (omm agent cluster claude adds it), or when started like this:",
                 command)
     if harness == "cursor":
         return ("Cursor trusts the cluster head only when NODE_EXTRA_CA_CERTS is in the environment it starts in "

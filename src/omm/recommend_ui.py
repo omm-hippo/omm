@@ -349,29 +349,6 @@ def evidence_detail_lines(evidence: dict) -> list[str]:
     return lines
 
 
-def wiki_detail_lines(wiki: dict | None) -> list[tuple[str, str]]:
-    """Model wiki lines for an exact checkpoint match, or an explicit absence."""
-    if not wiki:
-        return [("Model wiki: 정보 없음 (no entry for this exact checkpoint).", MUTED)]
-    lines = [(wiki["summary"], "value")]
-    tasks = ", ".join(str(task) for task in wiki.get("tasks") or []) or "정보 없음"
-    lines.append((f"Use cases: {tasks}", MUTED))
-    cautions = [claim["text"] for claim in wiki.get("cautions") or []]
-    lines.append(("Limits: " + (" / ".join(cautions) if cautions else "정보 없음"), MUTED))
-    lines.append((
-        f"Model wiki {wiki['contentVersion']} / reviewed {wiki['reviewedAt']}; "
-        "descriptions are publisher/editorial claims, not OMM quality measurements.", MUTED,
-    ))
-    if wiki.get("match") == "declared_base_repository":
-        lines.append((f"Describes the base checkpoint {wiki['repository']}; this package's quantization "
-                      "and runtime compatibility are checked separately.", MUTED))
-    if wiki.get("stale"):
-        lines.append(("Wiki review is older than 30 days; recheck the source.", WARNING))
-    for source in wiki.get("sources") or []:
-        lines.append((source["url"], MUTED))
-    return lines
-
-
 def evidence_marker(candidate: dict) -> str:
     evidence = candidate.get("recommendation_evidence")
     if not isinstance(evidence, dict):
@@ -550,9 +527,6 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     if isinstance(evidence, dict):
         for line in evidence_detail_lines(evidence):
             console.print(Text(line, style=MUTED))
-    from omm import model_wiki
-    for line, style in wiki_detail_lines(model_wiki.describe(row.candidate, "en")):
-        console.print(Text(line, style=style))
     basis = predictor.memory_estimate_basis(row.candidate)
     if basis == "model_name":
         console.print(Text(

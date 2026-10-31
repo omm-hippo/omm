@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createServer} from 'vite';
-import {searchDestinations,readAppearance,shouldSend,measurementSummary,wikiSummary} from '../src/workspace-state.js';
+import {searchDestinations,readAppearance,shouldSend,measurementSummary} from '../src/workspace-state.js';
 
 // Composition Enter commits Korean/Japanese input; it must never submit a chat.
 test('composition and multiline shortcuts never submit a message',()=>{
@@ -59,8 +59,3 @@ test('recommendation evidence keeps counts separate and never invents accuracy',
   assert.match(measurementSummary({}),/원시 측정 확인 불가\(유효 확인 불가\)/);
 });
 
-test('recommendation rows show exact wiki use cases or an explicit absence',()=>{
-  assert.equal(wikiSummary(null),'위키 정보 없음');
-  assert.equal(wikiSummary({tasks:['coding','agents'],reviewedAt:'2026-10-02'}),'용도: 코딩 · 에이전트 · 검토 2026-10-02');
-  assert.equal(wikiSummary({tasks:[]}),'용도: 정보 없음 · 검토 정보 없음');
-});

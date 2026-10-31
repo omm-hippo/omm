@@ -247,8 +247,6 @@ omm은 모델 파일을 Hugging Face 등 원래 배포처에서 사용자 컴퓨
 
 - `omm info`: 모델 저장소가 알려 준 라이선스를 `License` 줄에 보여 준다
   (`src/omm/providers/huggingface.py`가 모델 카드의 `license`나 `license:` 태그에서 읽음).
-- 로컬 웹 화면: 모델 위키(`src/omm/model-wiki.json`, 114개 모델)의 라이선스 이름과 원문 링크를
-  "라이선스 표기"로 보여 준다. 그중 17개는 아직 "미확인"이다.
 - 품질 측정 기록: GGUF 파일 안의 `general.license` 값을 함께 저장한다(`src/omm/quality.py`).
 
 Llama 커뮤니티 라이선스처럼 사용 조건이 있는 모델이나, EXAONE "NC"처럼 상업적 사용을 막는

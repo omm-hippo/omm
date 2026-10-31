@@ -1,7 +1,6 @@
 import {L} from './i18n.js';
 
 export const destinations = [
-  {id:'wiki', label:L('모델 찾기','Find models'), detail:L('위키에서 용도와 특징 살펴보기','Browse uses and features in the wiki'), icon:'wiki'},
   {id:'recommend', label:L('추천','Recommend'), detail:L('내 컴퓨터에 맞는 모델 고르기','Pick models that fit this computer'), icon:'recommend'},
   {id:'models', label:L('내 모델','My models'), detail:L('설치·연결·실행 관리','Manage installs, links, and runs'), icon:'models'},
   {id:'chat', label:L('채팅','Chat'), detail:L('로컬 모델과 대화','Chat with a local model'), icon:'chat'},
@@ -31,15 +30,9 @@ export function shouldSend(event) {
     !event.nativeEvent?.isComposing && event.keyCode!==229;
 }
 
-// Recommendation evidence and wiki summaries. Counts stay separate and no
+// Recommendation evidence summaries. Counts stay separate and no
 // accuracy figure is shown because none is calibrated.
-const wikiTasks = {general:L('일반 텍스트','General text'),agents:L('에이전트','Agents'),coding:L('코딩','Coding'),reasoning:L('추론','Reasoning'),vision:L('이미지 입력','Image input'),multilingual:L('다국어','Multilingual'),compact:L('경량','Lightweight')};
 const count = (value, unit) => Number.isInteger(value) ? `${value.toLocaleString()}${unit}` : L('확인 불가','Unknown');
 export function measurementSummary(m) {
   return L(`원시 측정 ${count(m.raw_rows,'행')}(유효 ${count(m.valid_rows,'행')}) · 반복 측정 병합 ${count(m.repeat_samples_collapsed,'회')} · 서로 다른 구성 ${count(m.distinct_configurations,'개')} · 독립 장비 수 확인 불가 · 보정된 신뢰구간 없음`, `Raw measurements ${count(m.raw_rows,' rows')} (${count(m.valid_rows,' valid')}) · Repeat runs merged ${count(m.repeat_samples_collapsed,' times')} · Distinct setups ${count(m.distinct_configurations,'')} · Independent machine count unknown · No calibrated confidence interval`);
-}
-export function wikiSummary(wiki) {
-  if (!wiki) return L('위키 정보 없음','No wiki info');
-  const tasks = (wiki.tasks || []).map(x=>wikiTasks[x] || x).join(' · ') || L('정보 없음','No info');
-  return L(`용도: ${tasks} · 검토 ${wiki.reviewedAt || '정보 없음'}`, `Uses: ${tasks} · Reviewed ${wiki.reviewedAt || 'No info'}`);
 }

@@ -1,9 +1,134 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.86",
+  "omm_version": "0.4.93",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
+    {
+      "path": [
+        "agent"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Connect Claude Code, Codex or pi to local Ollama or the company cluster, and restore original settings.",
+      "description": "",
+      "usage": "omm agent [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/agent"
+    },
+    {
+      "path": [
+        "agent",
+        "cloud"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Restore original routing while preserving unrelated settings edits.",
+      "description": "",
+      "usage": "omm agent cloud [OPTIONS] [harness]",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/agent#cloud"
+    },
+    {
+      "path": [
+        "agent",
+        "cluster"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Back up settings and connect a harness to the company cluster gateway.",
+      "description": "",
+      "usage": "omm agent cluster [OPTIONS] [harness]",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--model"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "exo model id the cluster serves (omm cluster status on the head). Asked for on a terminal when omitted.",
+          "default": null,
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/agent#cluster"
+    },
+    {
+      "path": [
+        "agent",
+        "local"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Back up settings and connect a harness to a downloaded local Ollama model.",
+      "description": "",
+      "usage": "omm agent local [OPTIONS] [harness]",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--model"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--base-url"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Local Ollama HTTP(S) loopback origin.",
+          "default": "http://127.0.0.1:11434",
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/agent#local"
+    },
+    {
+      "path": [
+        "agent",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show saved connection state without loading a model or exposing credentials.",
+      "description": "",
+      "usage": "omm agent status [OPTIONS] [harness]",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
+          "required": false
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/agent#status"
+    },
     {
       "path": [
         "arena"
@@ -335,7 +460,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],
@@ -440,7 +565,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id",
+          "help": "exo model id or number from omm cluster search/recommend/list",
           "required": true
         }
       ],
@@ -522,13 +647,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Download a model to every Mac in the cluster without loading it (head Mac only).",
+      "summary": "Download models to every Mac in the cluster without loading them (head Mac only).",
       "description": "",
-      "usage": "omm cluster install [OPTIONS] {model}",
+      "usage": "omm cluster install [OPTIONS] {models}",
       "arguments": [
         {
-          "name": "model",
-          "help": "exo model id, from omm cluster recommend or search",
+          "name": "models",
+          "help": "exo model id or number from omm cluster search/recommend; comma-separate several",
           "required": true
         }
       ],
@@ -705,7 +830,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],
@@ -859,7 +984,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id; omit when the cluster serves one",
+          "help": "exo model id or number from omm cluster list; omit when the cluster serves one",
           "required": false
         }
       ],
@@ -1130,13 +1255,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Delete a model's files from every Mac, unloading it first (head Mac only).",
+      "summary": "Delete models' files from every Mac, unloading them first (head Mac only).",
       "description": "",
-      "usage": "omm cluster uninstall [OPTIONS] {model}",
+      "usage": "omm cluster uninstall [OPTIONS] {models}",
       "arguments": [
         {
-          "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "name": "models",
+          "help": "exo model id or number from omm cluster list; comma-separate several",
           "required": true
         }
       ],
@@ -1189,7 +1314,7 @@
       "arguments": [
         {
           "name": "model",
-          "help": "exo model id (see omm cluster list)",
+          "help": "exo model id or number from omm cluster list",
           "required": true
         }
       ],
@@ -3606,136 +3731,6 @@
       "arguments": [],
       "options": [],
       "docs_url": "https://omm.run/commands/setting"
-    },
-    {
-      "path": [
-        "setting",
-        "agent"
-      ],
-      "kind": "group",
-      "aliases": [],
-      "summary": "Connect Claude Code, Codex or pi to local Ollama or the company cluster, and restore original settings.",
-      "description": "",
-      "usage": "omm setting agent [OPTIONS] COMMAND [ARGS]...",
-      "arguments": [],
-      "options": [],
-      "docs_url": "https://omm.run/commands/setting#agent"
-    },
-    {
-      "path": [
-        "setting",
-        "agent",
-        "cloud"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Restore original routing while preserving unrelated settings edits.",
-      "description": "",
-      "usage": "omm setting agent cloud [OPTIONS] [harness]",
-      "arguments": [
-        {
-          "name": "harness",
-          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
-          "required": false
-        }
-      ],
-      "options": [],
-      "docs_url": "https://omm.run/commands/setting#agent"
-    },
-    {
-      "path": [
-        "setting",
-        "agent",
-        "cluster"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Back up settings and connect a harness to the company cluster gateway.",
-      "description": "",
-      "usage": "omm setting agent cluster [OPTIONS] [harness]",
-      "arguments": [
-        {
-          "name": "harness",
-          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
-          "required": false
-        }
-      ],
-      "options": [
-        {
-          "flags": [
-            "--model"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "exo model id the cluster serves (omm cluster status on the head). Asked for on a terminal when omitted.",
-          "default": null,
-          "global": false
-        }
-      ],
-      "docs_url": "https://omm.run/commands/setting#agent"
-    },
-    {
-      "path": [
-        "setting",
-        "agent",
-        "local"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Back up settings and connect a harness to a downloaded local Ollama model.",
-      "description": "",
-      "usage": "omm setting agent local [OPTIONS] [harness]",
-      "arguments": [
-        {
-          "name": "harness",
-          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
-          "required": false
-        }
-      ],
-      "options": [
-        {
-          "flags": [
-            "--model"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Installed tool-capable Ollama model tag (32K+ context). Picked from a list on a terminal when omitted.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
-            "--base-url"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Local Ollama HTTP(S) loopback origin.",
-          "default": "http://127.0.0.1:11434",
-          "global": false
-        }
-      ],
-      "docs_url": "https://omm.run/commands/setting#agent"
-    },
-    {
-      "path": [
-        "setting",
-        "agent",
-        "status"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Show saved connection state without loading a model or exposing credentials.",
-      "description": "",
-      "usage": "omm setting agent status [OPTIONS] [harness]",
-      "arguments": [
-        {
-          "name": "harness",
-          "help": "claude, codex or pi. Asked for on a terminal when omitted.",
-          "required": false
-        }
-      ],
-      "options": [],
-      "docs_url": "https://omm.run/commands/setting#agent"
     },
     {
       "path": [

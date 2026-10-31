@@ -370,7 +370,7 @@ def test_benchmark_uploads_without_confirm_when_policy_always(isolated_omm_home,
 def test_benchmark_resolves_numeric_arg_to_ollama_tag(isolated_omm_home, monkeypatch):
     filename = "small.gguf"
     registry.save_registry({filename: {"ollama_name": "small:latest", "linked": {}}})
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: [filename])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: [filename])
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
@@ -390,7 +390,7 @@ def test_benchmark_resolves_numeric_arg_to_ollama_tag(isolated_omm_home, monkeyp
 def test_benchmark_numeric_arg_without_ollama_tag(isolated_omm_home, monkeypatch):
     filename = "small.gguf"
     registry.save_registry({filename: {"linked": {}}})
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: [filename])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: [filename])
 
     result = runner.invoke(cli.app, ["benchmark", "1"])
 

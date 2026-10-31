@@ -42,7 +42,7 @@ if ((Test-Path -LiteralPath $resolvedHome -PathType Container) -and $resolvedHom
 $agentBackupRoot = Join-Path $resolvedHome "agent-connections"
 if ($Purge -and (Test-Path -LiteralPath $agentBackupRoot -PathType Container)) {
     if (Get-ChildItem -LiteralPath $agentBackupRoot -Filter "*.json" -Force -ErrorAction Stop | Select-Object -First 1) {
-        throw "Agent connection backups remain. Run 'omm setting agent cloud HARNESS' for each connection before -Purge."
+        throw "Agent connection backups remain. Run 'omm agent cloud HARNESS' for each connection before -Purge."
     }
 }
 $ragBackupRoot = Join-Path $resolvedHome "rag-connections"

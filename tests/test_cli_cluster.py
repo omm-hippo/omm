@@ -1290,7 +1290,8 @@ def test_recommend_marks_installed_models(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     result = runner.invoke(cli.app, ["cluster", "recommend"])
     assert result.exit_code == 0, result.output
-    assert "[not installed]" in result.output and "Install one with: omm cluster install <model>" in result.output
+    text = " ".join(result.output.split())
+    assert "not installed" in text and "Install with: omm cluster install <number>" in text
 
 
 def test_install_downloads_to_every_mac_without_loading(cluster_fakes):
@@ -1334,7 +1335,8 @@ def test_list_text_and_empty(cluster_fakes):
     cluster_fakes.state["downloads"] = {}
     assert "No models on this cluster yet" in runner.invoke(cli.app, ["cluster", "list"]).output
     _on_every_mac(cluster_fakes)
-    assert "4/4 Macs  installed" in runner.invoke(cli.app, ["cluster", "list"]).output
+    text = " ".join(runner.invoke(cli.app, ["cluster", "list"]).output.split())
+    assert LIVE_MODEL in text and "4/4" in text and "installed" in text
 
 
 def test_info_shows_macs_and_fit(cluster_fakes):
@@ -1351,6 +1353,86 @@ def test_search_lists_hits(cluster_fakes):
     assert result.exit_code == 0, result.output
     # The fixture's one repo outside exo's list is a speech model, which search leaves out.
     assert "mlx-community/Qwen3-0.6B-8bit" in result.output and "Qwen3-ASR" not in result.output
+
+
+def _cluster_tty(monkeypatch):
+    from omm import session_cache
+
+    monkeypatch.setattr(session_cache.os, "ttyname", lambda fd: "/dev/faketty-cluster", raising=False)
+
+
+def test_search_numbers_rows_and_install_takes_the_number(cluster_fakes, monkeypatch):
+    _cluster_tty(monkeypatch)
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "search", "qwen3"])
+    assert result.exit_code == 0, result.output
+    assert "Install with: omm cluster install <number>" in " ".join(result.output.split())
+    picked = []
+    from omm.cluster import models as cluster_models
+
+    monkeypatch.setattr(cluster_models, "install", lambda model, out: picked.append(model) or 4)
+    result = runner.invoke(cli.app, ["cluster", "install", "1"])
+    assert result.exit_code == 0, result.output
+    assert picked == ["mlx-community/Qwen3-0.6B-8bit"]
+
+
+def test_install_takes_several_numbers(cluster_fakes, monkeypatch):
+    _cluster_tty(monkeypatch)
+    from omm import session_cache
+    from omm.cluster import models as cluster_models
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    session_cache.record_results(["mlx-community/a", "mlx-community/b", "mlx-community/c"],
+                                 scope=session_cache.CLUSTER)
+    picked = []
+    monkeypatch.setattr(cluster_models, "install", lambda model, out: picked.append(model) or 0)
+    result = runner.invoke(cli.app, ["cluster", "install", "3,1"])
+    assert result.exit_code == 0, result.output
+    assert picked == ["mlx-community/c", "mlx-community/a"]
+
+
+def test_list_number_names_the_model_for_info(cluster_fakes, monkeypatch):
+    _cluster_tty(monkeypatch)
+    runner.invoke(cli.app, ["cluster", "init"])
+    _on_every_mac(cluster_fakes)
+    runner.invoke(cli.app, ["cluster", "list"])
+    result = runner.invoke(cli.app, ["cluster", "info", "1"])
+    assert result.exit_code == 0, result.output
+    assert LIVE_MODEL in result.output and "mac-a installed" in result.output
+
+
+def test_cluster_numbers_stay_apart_from_top_level_numbers(cluster_fakes, monkeypatch):
+    _cluster_tty(monkeypatch)
+    from omm import session_cache
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    session_cache.record_results(["some-model.gguf"])
+    result = runner.invoke(cli.app, ["cluster", "info", "1"])
+    assert result.exit_code == 1
+    assert "omm cluster search" in " ".join(result.output.split())
+    runner.invoke(cli.app, ["cluster", "search", "qwen3"])
+    assert session_cache.load_last_results() == ["some-model.gguf"]
+
+
+def test_cluster_number_out_of_range(cluster_fakes, monkeypatch):
+    _cluster_tty(monkeypatch)
+    from omm import session_cache
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    session_cache.record_results([LIVE_MODEL], scope=session_cache.CLUSTER)
+    result = runner.invoke(cli.app, ["cluster", "unload", "5"])
+    assert result.exit_code == 1 and "No result #5 (1-1)." in result.output
+
+
+def test_cluster_model_completion_offers_seen_ids(isolated_omm_home, monkeypatch):
+    _cluster_tty(monkeypatch)
+    from omm import completion, session_cache
+
+    session_cache.record_results(["local.gguf"])
+    session_cache.record_results(["mlx-community/Qwen3-0.6B-8bit", "mlx-community/Llama-3"],
+                                 scope=session_cache.CLUSTER)
+    assert completion.complete_cluster_model("mlx-community/Q") == ["mlx-community/Qwen3-0.6B-8bit"]
+    assert completion.complete_cluster_model("local") == []
 
 
 def test_unload_of_a_model_that_is_not_loaded_exits_1(cluster_fakes):
@@ -2003,3 +2085,21 @@ def test_bare_cluster_json_lists_steps(cluster_fakes, monkeypatch):
     assert data["role"] == "head"
     assert {"kind": "run", "text": "this Mac sleeps after 1 min idle; run omm cluster on this Mac to fix it",
             "where": None, "fix": "keep_awake"} in data["steps"]
+
+
+@pytest.mark.parametrize("args", [["cluster", "init"], ["cluster", "join", "omm-" + "b" * 32]])
+def test_failed_exo_install_leaves_this_mac_out_of_the_cluster(cluster_fakes, monkeypatch, args):
+    # node3, 2026-10-30: join saved the name before brew failed, so the next
+    # bare `omm cluster` treated the Mac as joined and never installed exo.
+    from omm.cluster import commands, preflight
+
+    def fail(on_output, **kwargs):
+        raise commands.ClusterError("could not download exo")
+
+    monkeypatch.setattr(preflight, "exo_installed", lambda: False)
+    monkeypatch.setattr(preflight, "install_exo", fail)
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 1, result.output
+    assert "could not download exo" in result.output
+    assert settings.load() is None
+    assert cluster_fakes.exo_service_installs == []

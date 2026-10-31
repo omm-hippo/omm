@@ -589,7 +589,7 @@ def test_find_supported_python_considers_versioned_and_homebrew_interpreters(tmp
     tools.mkdir()
     for system_dir in ("/usr/bin", "/bin"):
         for entry in Path(system_dir).iterdir():
-            if not entry.name.startswith("python") and not (tools / entry.name).exists():
+            if not entry.name.startswith("python") and not (tools / entry.name).is_symlink():
                 (tools / entry.name).symlink_to(entry)
 
     def find(path_dirs: list[str], brew_dirs: list[Path], function: str = "find_supported_python"):
