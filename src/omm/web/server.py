@@ -168,17 +168,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/imports":
                 from omm.web.maintenance import read_import_preview
                 return self._json(200, [{k: v for k, v in x.items() if k != "locations"} for x in read_import_preview()])
-            if parsed.path == "/api/wiki/packages":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if set(query) - {"id", "profile"} or any(len(values) != 1 for values in query.values()):
-                    raise ValueError("Unsupported query parameters")
-                return self._json(200, self.server.service.wiki_packages(query.get("id", [""])[0], query.get("profile", ["balanced"])[0]))
             parts = parsed.path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "models"] and parts[3] == "settings":
                 return self._json(200, self.server.service.model_settings(parts[2]))
-            if parsed.path == "/api/wiki":
-                from omm import model_wiki
-                return self._json(200, model_wiki.catalog())
             if parsed.path == "/api/models":
                 return self._json(200, self.server.service.models())
             if parsed.path == "/api/recommendations":
@@ -186,11 +178,6 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"profile", "q"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Unsupported query parameters")
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
-            if parsed.path == "/api/guide":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if set(query) - {"purpose", "profile"} or any(len(values) != 1 for values in query.values()):
-                    raise ValueError("Unsupported query parameters")
-                return self._json(200, self.server.service.guide(query.get("purpose", [""])[0], query.get("profile", ["balanced"])[0]))
             if parsed.path == "/api/documents":
                 from omm.documents import DocumentStore
                 from omm.web import document_settings
@@ -269,10 +256,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("설정 변경을 확인해 주세요.")
                 from omm.web import management
                 return self._json(200, management.save_settings(body["changes"]))
-            if path == "/api/wiki/discover":
-                if not isinstance(body, dict) or set(body) != {"id", "profile"} or not isinstance(body["id"], str) or not isinstance(body["profile"], str):
-                    raise ValueError("위키에서 모델을 선택해 주세요.")
-                return self._json(200, self.server.service.discover_packages(body["id"], body["profile"]))
             if path == "/api/documents/settings":
                 from omm.web.document_requests import settings_change
                 return self._json(200, settings_change(body, self.server.service))

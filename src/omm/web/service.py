@@ -5,7 +5,7 @@ from dataclasses import asdict
 import hashlib
 import threading
 
-from omm import config, hardware, hub, linker, model_wiki, predictor, recommend_evidence, recommend_facts, recommend_status, registry, rules
+from omm import config, hardware, hub, linker, predictor, recommend_evidence, recommend_facts, recommend_status, registry, rules
 from omm import recommend_metadata, recommend_selection, search
 
 
@@ -26,60 +26,6 @@ class WebService:
         self.candidates: dict[str, dict] = {}
         self.lock = threading.RLock()
         self.partial_files: dict[str, dict] = {}
-        self.discovered: dict[str, list[dict]] = {}
-
-    def wiki_packages(self, model_id: str, profile: str = "balanced") -> dict:
-        if profile not in predictor.RECOMMEND_PROFILES:
-            raise ValueError("Unknown memory profile")
-        selected = next((x for x in model_wiki.catalog()["models"] if x["id"] == model_id), None)
-        if not selected:
-            raise ValueError("위키에서 모델을 선택해 주세요.")
-        artifact = predictor.load_cached_model()
-        candidates = list(artifact["candidates"]) if artifact else []
-        if not artifact:
-            for rule in rules.load_rules():
-                coordinates = hub.CURATED_INDEX.get(rule.get("name"))
-                if coordinates:
-                    repo, filename = coordinates
-                    candidates.append({**rule, "repo_id": repo, "filename": filename, "provider": "huggingface"})
-        with self.lock:
-            candidates.extend(self.discovered.get(model_id, []))
-        matches = {}
-        for candidate in candidates:
-            description = candidate.get("wiki") or model_wiki.describe(candidate)
-            if description and description["id"] == model_id:
-                matches[search.exact_install_ref(candidate)] = (candidate, description)
-        info = hardware.scan_hardware()
-        rows = []
-        budget = min(predictor.profile_memory_cap_gb(info, profile), hardware.calculate_memory_budget(info).install_budget_gb)
-        for ref, (candidate, description) in list(matches.items())[:100]:
-            memory = predictor.estimate_required_memory_gb(candidate)
-            fit = predictor.candidate_fits_memory(info, candidate)
-            fits = None if fit is None or memory is None else fit is True and memory <= budget
-            cid = identifier(ref)
-            with self.lock:
-                self.candidates[cid] = {"ref": ref, "filename": candidate["filename"]}
-            rows.append({"id": cid, "ref": ref, "filename": candidate["filename"], "name": selected["name"],
-                         "quantization": recommend_selection.quantization_label(candidate), "fits": fits,
-                         "memory_required_gb": memory, "size_bytes": candidate.get("size_bytes"),
-                         "wiki": description})
-        rows.sort(key=lambda x: (x["fits"] is not True, x["memory_required_gb"] or float("inf")))
-        return {"model": selected, "packages": rows, "budget_gb": budget}
-
-    def discover_packages(self, model_id: str, profile: str = "balanced") -> dict:
-        from omm.web.discovery import discover
-        selected = next((x for x in model_wiki.catalog()["models"] if x["id"] == model_id), None)
-        if not selected:
-            raise ValueError("위키에서 모델을 선택해 주세요.")
-        import requests
-        try:
-            candidates = discover(selected)
-        except requests.RequestException:
-            # Offline or blocked: the bundled wiki and cached packages stay usable.
-            raise ValueError("Hugging Face에 연결하지 못했어요. 지금은 이 컴퓨터에 있는 위키·추천 자료의 설치 파일만 보여줘요.") from None
-        with self.lock:
-            self.discovered[model_id] = candidates
-        return self.wiki_packages(model_id, profile)
 
     def files(self) -> dict:
         from omm.web import management
@@ -135,25 +81,7 @@ class WebService:
                                                   settings.get("catalog_public_key"))
         return {"updated": artifact != previous}
 
-    def guide(self, purpose: str, profile: str = "balanced") -> dict:
-        from omm.web import guide
-        if purpose not in guide.PURPOSES:
-            raise ValueError("한국어 대화, 코딩 또는 문서 질문을 선택해 주세요.")
-        value = self.recommendations(profile, purpose=purpose)
-        rows, seen = [], set()
-        for row in value["models"]:
-            key = row["wiki"]["id"]
-            if key not in seen:
-                rows.append(row)
-                seen.add(key)
-            if len(rows) == 3:
-                break
-        return {**value, "models": [{**row, "reasons": guide.reasons(row, purpose)} for row in rows],
-                "wiki_options": [] if rows else guide.wiki_options(purpose),
-                "purpose": purpose,
-                "limitation": "위키의 용도 분류로 고른 후보예요. 설치 파일이 확인된 경우에만 메모리 조건을 비교해요. 답변 품질 순위가 아니며, 개발사 설명과 내 컴퓨터의 실측은 구별해요."}
-
-    def recommendations(self, profile: str = "balanced", query: str = "", *, purpose: str | None = None) -> dict:
+    def recommendations(self, profile: str = "balanced", query: str = "") -> dict:
         if profile not in predictor.RECOMMEND_PROFILES:
             raise ValueError("Unknown memory profile")
         if not isinstance(query, str) or len(query) > 160:
@@ -171,11 +99,6 @@ class WebService:
                 if coordinates:
                     repo, filename = coordinates
                     candidates.append({**rule, "repo_id": repo, "filename": filename, "provider": "huggingface"})
-        if purpose is not None:
-            with self.lock:
-                extra = [c for group in self.discovered.values() for c in group]
-            seen = {(c.get("repo_id"), c.get("filename")) for c in candidates}
-            candidates = [*candidates, *(c for c in extra if (c.get("repo_id"), c.get("filename")) not in seen)]
         if query.strip():
             terms = query.casefold().split()
             candidates = [c for c in candidates if all(t in (str(c.get("name", "")) + " " + c["repo_id"] + " " + c["filename"]).casefold() for t in terms)]
@@ -187,11 +110,6 @@ class WebService:
         ranked = [(c, speed) for c, speed in ranked if predictor.candidate_fits_memory(info, c) is True
                   and (predictor.estimate_required_memory_gb(c) or float("inf")) <= budget]
         ranked.sort(key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0, reverse=True)
-        if purpose is not None:
-            from omm.web import guide
-            if purpose not in guide.PURPOSES:
-                raise ValueError("Unknown model purpose")
-            ranked = [(c, speed) for c, speed in ranked if guide.matches({"wiki": c.get("wiki") or model_wiki.describe(c)}, purpose)]
         eligible = len(ranked)
         ranked = recommend_selection.shortlist(ranked)
         statuses = recommend_status.detect_installation_statuses([c for c, _ in ranked])
@@ -211,7 +129,6 @@ class WebService:
                              "installed": status.installed, "installed_engines": list(status.engines),
                              "managed_by_omm": status.managed_by_omm, "installation_match": status.match_kind,
                              "variant_warning": recommend_selection.variant_warning(candidate),
-                             "wiki": candidate.get("wiki") or model_wiki.describe(candidate),
                              "evidence": {**recommend_evidence.describe(artifact, info, candidate), "memory_basis": predictor.memory_estimate_basis(candidate)}})
             if len(self.candidates) > 4096:
                 self.candidates = {row["id"]: self.candidates[row["id"]] for row in rows}

@@ -4,7 +4,6 @@ import {L,lang,languages,setLanguage} from './i18n.js';
 
 export function WorkspaceIcon({name,size=18}) {
   const paths={
-    wiki:<><path d="M3 4h6l3 2 3-2h6v15h-6l-3 2-3-2H3Z"/><path d="M12 6v15"/></>,
     recommend:<><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></>,
     models:<><path d="m12 3 9 5-9 5-9-5ZM3 8v10l9 5 9-5V8M12 13v10"/></>,
     chat:<path d="M21 14a4 4 0 0 1-4 4H8l-5 4V6a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>,
@@ -25,7 +24,7 @@ export function WorkspaceIcon({name,size=18}) {
 
 export function Sidebar({tab,onNavigate,onSearch,appearance,onAppearance,activeJobs}) {
   return <>
-    <a className="brand" href="#wiki" onClick={e=>{e.preventDefault();onNavigate('wiki');}}>omm<span>{L('로컬 모델 작업 공간','Local model workspace')}</span></a>
+    <a className="brand" href="#recommend" onClick={e=>{e.preventDefault();onNavigate('recommend');}}>omm<span>{L('로컬 모델 작업 공간','Local model workspace')}</span></a>
     <button className="workspace-search" onClick={onSearch}><WorkspaceIcon name="search"/><span>{L('메뉴 검색','Search menu')}</span><kbd>⌘/Ctrl K</kbd></button>
     <nav aria-label={L('주 메뉴','Main menu')}>{destinations.filter(x=>!x.secondary).map(item=><button aria-current={tab===item.id?'page':undefined} className={tab===item.id?'selected':''} key={item.id} onClick={()=>onNavigate(item.id)}><WorkspaceIcon name={item.icon}/><span>{item.label}</span>{item.id==='jobs' && activeJobs>0 && <span className="nav-count">{activeJobs}</span>}</button>)}</nav>
     <nav className="secondary-nav" aria-label={L('관리 메뉴','Management menu')}>{destinations.filter(x=>x.secondary).map(item=><button aria-current={tab===item.id?'page':undefined} className={tab===item.id?'selected':''} key={item.id} onClick={()=>onNavigate(item.id)}><WorkspaceIcon name={item.icon}/>{item.label}</button>)}</nav>

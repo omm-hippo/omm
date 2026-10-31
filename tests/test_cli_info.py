@@ -30,7 +30,7 @@ def test_info_mixes_installed_and_remote_packages(isolated_omm_home, monkeypatch
 
 def test_info_multiple_numeric_references_and_duplicate_alias(isolated_omm_home, monkeypatch):
     registry.save_registry({"small.gguf": _entry(), "large.gguf": _entry()})
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["small.gguf", "large.gguf"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["small.gguf", "large.gguf"])
     result = runner.invoke(cli.app, ["info", "1", "2", "--json"])
     assert result.exit_code == 0, result.output
     assert [row["filename"] for row in json.loads(result.stdout)["models"]] == ["small.gguf", "large.gguf"]
@@ -143,7 +143,7 @@ def test_info_errors_for_uninstalled_model(isolated_omm_home):
 
 def test_info_accepts_numeric_index_from_last_results(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": _entry()})
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["model.gguf"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["model.gguf"])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
 
     result = runner.invoke(cli.app, ["info", "1"])
@@ -231,7 +231,7 @@ def test_info_resolves_a_model_that_is_not_installed(isolated_omm_home, monkeypa
 
 
 def test_info_shows_provider_metadata_for_a_search_result(isolated_omm_home, monkeypatch):
-    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["org/repo"])
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda **_: ["org/repo"])
     _stub_remote(monkeypatch)
 
     result = runner.invoke(cli.app, ["info", "1"])

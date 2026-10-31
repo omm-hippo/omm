@@ -86,20 +86,29 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
+#: `omm cluster` numbers exo model ids, which mean nothing to the top-level
+#: `omm install`/`omm run` (and a GGUF ref means nothing to exo), so the
+#: cluster keeps its own "seen" and "last results" under these keys.
+CLUSTER = "cluster"
+_KEYS = ("seen", "last_results", "cluster_seen", "cluster_last_results")
+
+
+def _key(name: str, scope: str | None) -> str:
+    return f"{scope}_{name}" if scope else name
+
+
 def _load(path: Path | None = None) -> dict[str, list[str]]:
     path = path or _session_path()
+    empty = {key: [] for key in _KEYS}
     if path is None or not path.exists():
-        return {"seen": [], "last_results": []}
+        return empty
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"seen": [], "last_results": []}
+        return empty
     if not isinstance(data, dict):
-        return {"seen": [], "last_results": []}
-    return {
-        "seen": _string_list(data.get("seen")),
-        "last_results": _string_list(data.get("last_results")),
-    }
+        return empty
+    return {key: _string_list(data.get(key)) for key in _KEYS}
 
 
 def _save(data: dict[str, list[str]], path: Path | None = None) -> None:
@@ -112,41 +121,43 @@ def _save(data: dict[str, list[str]], path: Path | None = None) -> None:
         pass
 
 
-def record_seen(refs: list[str]) -> None:
+def record_seen(refs: list[str], *, scope: str | None = None) -> None:
     if not refs:
         return
     path = _session_path()
     if path is None:
         return
+    seen = _key("seen", scope)
     try:
         with locked(path):
             data = _load(path)
-            merged = list(refs) + [r for r in data["seen"] if r not in refs]
-            data["seen"] = merged[:_MAX_SEEN]
+            merged = list(refs) + [r for r in data[seen] if r not in refs]
+            data[seen] = merged[:_MAX_SEEN]
             _save(data, path)
     except (OSError, FileLockTimeout):
         pass
 
 
-def record_results(refs: list[str]) -> None:
+def record_results(refs: list[str], *, scope: str | None = None) -> None:
     path = _session_path()
     if path is None:
         return
+    seen = _key("seen", scope)
     try:
         with locked(path):
             data = _load(path)
-            data["last_results"] = list(refs)
+            data[_key("last_results", scope)] = list(refs)
             completable = [r for r in refs if not r.startswith(UNSOURCED_REF_PREFIX)]
-            merged = completable + [r for r in data["seen"] if r not in refs]
-            data["seen"] = merged[:_MAX_SEEN]
+            merged = completable + [r for r in data[seen] if r not in refs]
+            data[seen] = merged[:_MAX_SEEN]
             _save(data, path)
     except (OSError, FileLockTimeout):
         pass
 
 
-def load_seen() -> list[str]:
-    return _load()["seen"]
+def load_seen(*, scope: str | None = None) -> list[str]:
+    return _load()[_key("seen", scope)]
 
 
-def load_last_results() -> list[str]:
-    return _load()["last_results"]
+def load_last_results(*, scope: str | None = None) -> list[str]:
+    return _load()[_key("last_results", scope)]

@@ -169,3 +169,19 @@ def test_restart_waits_for_exo_before_looking_again(mac):
               status=_reports([Problem("exo is not running on this Mac", "run", fix="restart")], []))
     assert calls == ["restart", "wait"]
     assert any(line.startswith("exo has not answered for 60 seconds.") for line in lines)
+
+
+def test_omm_behind_is_false_when_the_channel_tip_holds_the_same_files(monkeypatch):
+    # 2026-10-30: the head's guide ran `omm update` right after install.sh
+    # (installed: PR tip; main: its merge commit), and every member followed.
+    from omm import cli, package_metadata
+
+    monkeypatch.setattr(package_metadata, "install_source", lambda: package_metadata.InstallSource.GIT)
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "pr_tip")
+    monkeypatch.setattr(cli, "_channel_branch", lambda: "main")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda branch, timeout=5: "merge")
+    monkeypatch.setattr(cli, "_same_tree", lambda first, second: True)
+    assert guide.omm_behind() is False
+    monkeypatch.setattr(cli, "_same_tree", lambda first, second: False)
+    monkeypatch.setattr("omm.cluster.version_follow._is_ancestor", lambda ancestor, descendant: False)
+    assert guide.omm_behind() is True

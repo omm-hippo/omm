@@ -45,13 +45,13 @@ def test_reference_is_sorted_and_hides_hidden_commands():
 
 def test_deeply_nested_agent_commands_keep_model_and_endpoint_flags():
     reference = build_reference(cli.app)
-    local = _by_path(reference, "setting", "agent", "local")
+    local = _by_path(reference, "agent", "local")
     assert local["kind"] == "command"
-    assert local["usage"].startswith("omm setting agent local")
+    assert local["usage"].startswith("omm agent local")
     flags = {flag for option in local["options"] for flag in option["flags"]}
     assert {"--model", "--base-url"} <= flags
-    assert _by_path(reference, "setting", "agent", "cloud")["arguments"]
-    assert _by_path(reference, "setting", "agent", "status")["arguments"]
+    assert _by_path(reference, "agent", "cloud")["arguments"]
+    assert _by_path(reference, "agent", "status")["arguments"]
 
 
 def test_summary_description_and_aliases_come_from_the_docstring():

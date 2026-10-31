@@ -32,3 +32,10 @@ def complete_remove_filename(incomplete: str) -> list[str]:
 
 def complete_engine_key(incomplete: str) -> list[str]:
     return sorted(spec.key for spec in linker.ENGINES if spec.key.startswith(incomplete))
+
+
+def complete_cluster_model(incomplete: str) -> list[str]:
+    # Only ids `omm cluster search`/`recommend`/`list` showed in this terminal:
+    # asking exo or the head's gateway on every keypress would be too slow.
+    seen = session_cache.load_seen(scope=session_cache.CLUSTER)
+    return sorted(m for m in seen if m.startswith(incomplete))
