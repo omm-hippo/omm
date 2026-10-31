@@ -338,7 +338,7 @@ def test_cli_collection_add_search_status_reindex(ollama, tmp_path):
 
 def test_cli_embedding_model_set_hints_pull_when_missing(ollama):
     result = _cli('embedding-model', 'set', 'not-pulled')
-    assert result.exit_code == 0 and 'ollama pull not-pulled' in result.output
+    assert result.exit_code == 0 and 'ollama pull not-pulled' in ' '.join(result.output.split())
     shown = _cli('embedding-model')
     assert 'not-pulled' in shown.output
 
