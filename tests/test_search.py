@@ -637,3 +637,10 @@ def test_filename_query_fallback_none_for_plain_names():
     assert search_mod.filename_query_fallback("qwen3") is None
     assert search_mod.filename_query_fallback("Qwen3.8-27B") is None
     assert search_mod.filename_query_fallback(".gguf") is None
+
+
+def test_match_candidates_without_fuzzy_returns_only_substring_hits():
+    pool = [{"name": "mistral-7b-instruct-q4", "repo_id": "org/mistral-7b-instruct-q4"}]
+    assert search_mod.match_candidates(pool, "mistrall", fuzzy=False) == []
+    assert search_mod.match_candidates(pool, "mistrall") == pool
+    assert search_mod.match_candidates(pool, "mistral", fuzzy=False) == pool

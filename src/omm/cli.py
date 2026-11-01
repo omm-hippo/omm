@@ -11564,7 +11564,7 @@ def search(
         verified=predictor.cached_model_signature_is_valid(config.get("catalog_public_key")),
     )
     def _collect(q: str) -> tuple[list[dict], bool]:
-        local_matches = search_mod.match_candidates(pool, q)
+        local_matches = search_mod.match_candidates(pool, q, fuzzy=False)
 
         local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
         from concurrent.futures import ThreadPoolExecutor
@@ -11593,6 +11593,10 @@ def search(
                 if c.get("repo_id") not in local_repo_ids
             ]
 
+        if not (hf_matches or ms_matches):
+            # Look-alike names only when the providers found nothing, so
+            # they never crowd out real results (see match_candidates).
+            local_matches = search_mod.match_candidates(pool, q)
         combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
         if provider is not None:
             if provider == "curated":

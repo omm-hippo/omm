@@ -313,7 +313,9 @@ def test_search_file_name_hint_shows_beside_loose_local_matches(monkeypatch):
             {"name": "other-Q4_K_M", "repo_id": "org/other-Q4_K_M", "description": "d"}
         ],
     )
-    monkeypatch.setattr(search_mod, "match_candidates", lambda pool, query: list(pool))
+    monkeypatch.setattr(
+        search_mod, "match_candidates", lambda pool, query, fuzzy=True: list(pool) if fuzzy else []
+    )
     queries = []
     monkeypatch.setattr(
         search_mod, "search_huggingface", lambda query, **kwargs: queries.append(query) or []
@@ -333,14 +335,88 @@ def test_search_curated_only_does_not_retry_a_file_name(monkeypatch):
     pool_queries = []
     monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
     monkeypatch.setattr(
-        search_mod, "match_candidates", lambda pool, query: pool_queries.append(query) or []
+        search_mod,
+        "match_candidates",
+        lambda pool, query, fuzzy=True: pool_queries.append(query) or [],
     )
 
     result = runner.invoke(cli.app, ["search", "Short-Name-Q4_K_M.gguf", "--provider", "curated"])
 
     assert result.exit_code == 1
-    assert pool_queries == ["Short-Name-Q4_K_M.gguf"]
+    assert set(pool_queries) == {"Short-Name-Q4_K_M.gguf"}
     assert "repository names" not in result.stderr
+
+
+def _hf_hit(repo_id):
+    return {
+        "name": repo_id,
+        "repo_id": repo_id,
+        "filename": "model-Q4_K_M.gguf",
+        "description": "1 download on HuggingFace",
+        "provider": "huggingface",
+    }
+
+
+def test_search_hides_look_alike_local_names_when_providers_found_results(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "Qwen/Qwen3-VL-8B-Instruct-GGUF", "repo_id": "Qwen/Qwen3-VL-8B-Instruct-GGUF"}
+        ],
+    )
+    monkeypatch.setattr(
+        search_mod,
+        "search_huggingface",
+        lambda query, **kwargs: [_hf_hit("org/Qwen3.8-27B-Turbo-Reasoning-Instruct-GGUF")],
+    )
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["search", "Qwen3.8-27B-Turbo-Reasoning-Instruct-GGUF"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "org/Qwen3.8-27B-Turbo-Reasoning-Instruct-GGUF" in result.stdout
+    assert "Qwen3-VL-8B" not in result.stdout
+
+
+def test_search_falls_back_to_look_alike_local_names_when_providers_found_nothing(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "mistral-7b-instruct-q4", "repo_id": "org/mistral-7b-instruct-q4"}
+        ],
+    )
+    monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["search", "mistrall"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "mistral-7b-instruct-q4" in result.stdout
+
+
+def test_search_keeps_substring_local_matches_first(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [{"name": "qwen3-8b", "repo_id": "org/qwen3-8b"}],
+    )
+    monkeypatch.setattr(
+        search_mod, "search_huggingface", lambda query, **kwargs: [_hf_hit("other/qwen3-14b")]
+    )
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["search", "qwen3"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.index("qwen3-8b") < result.stdout.index("other/qwen3-14b")
 
 
 def test_search_plain_miss_has_no_file_name_hint(monkeypatch):

@@ -387,14 +387,21 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
         return [r for r in resolved if r is not None]
 
 
-def match_candidates(pool: list[dict], query: str) -> list[dict]:
+def match_candidates(pool: list[dict], query: str, fuzzy: bool = True) -> list[dict]:
+    """Pool entries whose name or repo contains the query; failing that, and
+    only when `fuzzy`, the closest names by difflib.
+
+    The fuzzy step is a typo net ("mistrall"), not a ranking: a long name
+    scores ~0.45 against unrelated repos that merely share "Qwen",
+    "Instruct" and "GGUF", so callers with real search results pass
+    fuzzy=False."""
     q = query.lower()
     substring = [
         c
         for c in pool
         if q in _label(c).lower() or q in (c.get("repo_id") or "").lower()
     ]
-    if substring:
+    if substring or not fuzzy:
         return substring
 
     labels = [_label(c) for c in pool]
