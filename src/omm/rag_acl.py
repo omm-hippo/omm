@@ -21,6 +21,7 @@ import re
 import uuid
 
 from omm import documents
+from omm.lang import t
 
 ADMIN_OWNER = "@admin"  # '@' cannot appear in a cluster token name.
 _NAME_RE = re.compile(r"^[\w.-]{1,40}$")
@@ -58,18 +59,21 @@ class Caller:
 
 
 ADMIN = Caller()
-NO_SHARED_DOCUMENTS = ("검색할 수 있는 문서가 없어요. 내가 만든 컬렉션에 문서를 넣거나(`omm rag add <컬렉션> <파일>`), "
-                       "컬렉션 주인에게 공유(`omm rag share`)를 부탁해 주세요.")
+def no_shared_documents() -> str:
+    return t("검색할 수 있는 문서가 없어요. 내가 만든 컬렉션에 문서를 넣거나(`omm rag add <컬렉션> <파일>`), "
+             "컬렉션 주인에게 공유(`omm rag share`)를 부탁해 주세요.",
+             "No documents you can search. Add documents to a collection you created "
+             "(`omm rag add <collection> <file>`) or ask a collection's owner to share it (`omm rag share`).")
 
 
 def employee(name: str) -> Caller:
     if not isinstance(name, str) or not _NAME_RE.match(name):
-        raise AccessError("직원 이름(토큰 이름)을 확인해 주세요.")
+        raise AccessError(t("직원 이름(토큰 이름)을 확인해 주세요.", "Check the employee name (token name)."))
     return Caller(name)
 
 
 def owner_label(owner: str) -> str:
-    return "관리자" if owner == ADMIN_OWNER else owner
+    return t("관리자", "administrator") if owner == ADMIN_OWNER else owner
 
 
 def _now() -> str:
@@ -78,7 +82,7 @@ def _now() -> str:
 
 def _not_found(name) -> AccessError:
     # The same answer for a missing collection and one the caller cannot see.
-    return AccessError(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.", 404)
+    return AccessError(t(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.", f"Collection '{name}' was not found. Check the name with `omm rag collection list`."), 404)
 
 
 class _Access:
@@ -134,7 +138,7 @@ def _find(db, caller: Caller, name, *, manage=False) -> dict:
     if row is None:
         raise _not_found(name)
     if manage and not _can_manage(caller, row):
-        raise AccessError(f"'{name}' 컬렉션은 만든 사람({owner_label(row['owner'])})이나 관리자만 바꿀 수 있어요.", 403)
+        raise AccessError(t(f"'{name}' 컬렉션은 만든 사람({owner_label(row['owner'])})이나 관리자만 바꿀 수 있어요.", f"Only the creator of '{name}' ({owner_label(row['owner'])}) or the administrator can change it."), 403)
     return row
 
 
@@ -162,7 +166,7 @@ def create_collection(caller: Caller, name, *, store=None) -> dict:
         db.execute("BEGIN IMMEDIATE")
         if db.execute("SELECT 1 FROM collections WHERE name=?", (name,)).fetchone():
             # Names are unique on the head; the message does not say whose it is.
-            raise AccessError(f"'{name}' 이름은 쓸 수 없어요. 이미 있는 이름이에요. 다른 이름을 골라 주세요.", 409)
+            raise AccessError(t(f"'{name}' 이름은 쓸 수 없어요. 이미 있는 이름이에요. 다른 이름을 골라 주세요.", f"The name '{name}' is already taken. Choose another name."), 409)
         key = str(uuid.uuid4())
         db.execute("INSERT INTO collections VALUES(?,?,?)", (key, name, _now()))
         db.execute("INSERT INTO rag_owners VALUES(?,?)", (key, caller.owner_key))
@@ -193,7 +197,7 @@ def import_document(caller: Caller, collection, filename, content: bytes, *, rep
     with access.connect() as db:
         _find(db, caller, collection, manage=True)
     if len(content) > documents.MAX_UPLOAD:
-        raise AccessError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.", 413)
+        raise AccessError(t("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.", "Documents that are empty or larger than 6 MiB cannot be registered."), 413)
     return access.store.import_document(filename, content, replace=replace, collection=collection)
 
 
@@ -211,18 +215,18 @@ def _known_people() -> set[str]:
     try:
         return {record.name for record in tokens.list_tokens()}
     except tokens.TokenError as error:
-        raise AccessError("직원 토큰 목록을 읽지 못했어요. 헤드의 `omm cluster token list`를 확인해 주세요.", 500) from error
+        raise AccessError(t("직원 토큰 목록을 읽지 못했어요. 헤드의 `omm cluster token list`를 확인해 주세요.", "Could not read the employee token list. Check `omm cluster token list` on the head."), 500) from error
 
 
 def _target(db, person, team) -> tuple[str, str]:
     if (person is None) == (team is None):
-        raise AccessError("공유할 직원 이름이나 --team 팀 이름 중 하나만 정해 주세요.")
+        raise AccessError(t("공유할 직원 이름이나 --team 팀 이름 중 하나만 정해 주세요.", "Give either an employee name or --team to share with, not both."))
     if person is not None:
         if not isinstance(person, str) or not _NAME_RE.match(person) or person not in _known_people():
-            raise AccessError(f"'{person}' 직원 토큰이 없어요. 토큰 이름(`omm cluster token list`)으로 정해 주세요.", 404)
+            raise AccessError(t(f"'{person}' 직원 토큰이 없어요. 토큰 이름(`omm cluster token list`)으로 정해 주세요.", f"There is no employee token named '{person}'. Use a token name from `omm cluster token list`."), 404)
         return "person", person
     if not isinstance(team, str) or not db.execute("SELECT 1 FROM rag_teams WHERE name=?", (team,)).fetchone():
-        raise AccessError(f"'{team}' 팀이 없어요. 관리자에게 팀 이름을 확인해 주세요.", 404)
+        raise AccessError(t(f"'{team}' 팀이 없어요. 관리자에게 팀 이름을 확인해 주세요.", f"There is no team named '{team}'. Check the team name with the administrator."), 404)
     return "team", team
 
 
@@ -237,7 +241,7 @@ def share(caller: Caller, collection, *, person=None, team=None, store=None) -> 
         row = _find(db, caller, collection, manage=True)
         kind, target = _target(db, person, team)
         if kind == "person" and target == row["owner"]:
-            raise AccessError("만든 사람은 공유하지 않아도 이미 검색할 수 있어요.")
+            raise AccessError(t("만든 사람은 공유하지 않아도 이미 검색할 수 있어요.", "The creator can already search it without a share."))
         db.execute("BEGIN IMMEDIATE")
         added = db.execute("INSERT OR IGNORE INTO rag_shares VALUES(?,?,?,?)",
                            (row["id"], kind, target, _now())).rowcount == 1
@@ -246,7 +250,7 @@ def share(caller: Caller, collection, *, person=None, team=None, store=None) -> 
 
 def unshare(caller: Caller, collection, *, person=None, team=None, store=None) -> dict:
     if (person is None) == (team is None):
-        raise AccessError("공유를 거둘 직원 이름이나 --team 팀 이름 중 하나만 정해 주세요.")
+        raise AccessError(t("공유를 거둘 직원 이름이나 --team 팀 이름 중 하나만 정해 주세요.", "Give either an employee name or --team to stop sharing with, not both."))
     kind, target = ("person", person) if person is not None else ("team", team)
     with _Access(store).connect() as db:
         row = _find(db, caller, collection, manage=True)
@@ -260,12 +264,12 @@ def unshare(caller: Caller, collection, *, person=None, team=None, store=None) -
 
 def _admin_only(caller: Caller) -> None:
     if not caller.is_admin:
-        raise AccessError("팀은 헤드 Mac의 관리자만 관리할 수 있어요.", 403)
+        raise AccessError(t("팀은 헤드 Mac의 관리자만 관리할 수 있어요.", "Only the administrator on the head Mac can manage teams."), 403)
 
 
 def _team_name(name) -> str:
     if not isinstance(name, str) or not _NAME_RE.match(name):
-        raise AccessError("팀 이름은 1~40자의 글자, 숫자, '.', '-', '_' 로 정해 주세요.")
+        raise AccessError(t("팀 이름은 1~40자의 글자, 숫자, '.', '-', '_' 로 정해 주세요.", "Team names must be 1-40 letters, digits, '.', '-' or '_'."))
     return name
 
 
@@ -287,7 +291,7 @@ def team_create(name, caller: Caller = ADMIN, *, store=None) -> dict:
         _Access.tables(db)
         db.execute("BEGIN IMMEDIATE")
         if db.execute("INSERT OR IGNORE INTO rag_teams VALUES(?,?)", (name, _now())).rowcount != 1:
-            raise AccessError(f"'{name}' 팀이 이미 있어요.", 409)
+            raise AccessError(t(f"'{name}' 팀이 이미 있어요.", f"Team '{name}' already exists."), 409)
     return {"name": name}
 
 
@@ -298,7 +302,7 @@ def team_delete(name, caller: Caller = ADMIN, *, store=None) -> dict:
         _Access.tables(db)
         db.execute("BEGIN IMMEDIATE")
         if db.execute("DELETE FROM rag_teams WHERE name=?", (name,)).rowcount != 1:
-            raise AccessError(f"'{name}' 팀이 없어요.", 404)
+            raise AccessError(t(f"'{name}' 팀이 없어요.", f"There is no team named '{name}'."), 404)
         db.execute("DELETE FROM rag_team_members WHERE team=?", (name,))
         shares_removed = db.execute("DELETE FROM rag_shares WHERE kind='team' AND target=?", (name,)).rowcount
     return {"name": name, "shares_removed": shares_removed}
@@ -307,12 +311,12 @@ def team_delete(name, caller: Caller = ADMIN, *, store=None) -> dict:
 def team_add(team, member, caller: Caller = ADMIN, *, store=None) -> dict:
     _admin_only(caller)
     if not isinstance(member, str) or not _NAME_RE.match(member) or member not in _known_people():
-        raise AccessError(f"'{member}' 직원 토큰이 없어요. 토큰 이름(`omm cluster token list`)으로 정해 주세요.", 404)
+        raise AccessError(t(f"'{member}' 직원 토큰이 없어요. 토큰 이름(`omm cluster token list`)으로 정해 주세요.", f"There is no employee token named '{member}'. Use a token name from `omm cluster token list`."), 404)
     with _Access(store).connect() as db:
         _Access.tables(db)
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM rag_teams WHERE name=?", (team,)).fetchone():
-            raise AccessError(f"'{team}' 팀이 없어요. `omm rag team create {team}`로 먼저 만들어 주세요.", 404)
+            raise AccessError(t(f"'{team}' 팀이 없어요. `omm rag team create {team}`로 먼저 만들어 주세요.", f"There is no team named '{team}'. Create it first with `omm rag team create {team}`."), 404)
         added = db.execute("INSERT OR IGNORE INTO rag_team_members VALUES(?,?)", (team, member)).rowcount == 1
     return {"team": team, "member": member, "added": added}
 
@@ -323,7 +327,7 @@ def team_remove(team, member, caller: Caller = ADMIN, *, store=None) -> dict:
         _Access.tables(db)
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM rag_teams WHERE name=?", (team,)).fetchone():
-            raise AccessError(f"'{team}' 팀이 없어요.", 404)
+            raise AccessError(t(f"'{team}' 팀이 없어요.", f"There is no team named '{team}'."), 404)
         removed = db.execute("DELETE FROM rag_team_members WHERE team=? AND member=?", (team, member)).rowcount == 1
     return {"team": team, "member": member, "removed": removed}
 
@@ -362,9 +366,9 @@ class ScopedStore:
         self._check(collection)
         allowed = {row["id"] for row in self.list()}
         if ids is None and collection is None:
-            raise AccessError("검색할 컬렉션을 정해 주세요.")
+            raise AccessError(t("검색할 컬렉션을 정해 주세요.", "Choose a collection to search."))
         if ids is not None and not set(ids) <= allowed:
-            raise AccessError("선택한 문서가 바뀌었어요. 문서 목록을 새로고침해 주세요.", 404)
+            raise AccessError(t("선택한 문서가 바뀌었어요. 문서 목록을 새로고침해 주세요.", "The selected documents changed. Refresh the document list."), 404)
         return self._store.search_detailed(question, ids, collection=collection, limit=limit)
 
 
@@ -386,8 +390,8 @@ class ScopedAdapter:
     def search(self, query, collection=None, limit=None):
         from omm import rag_adapter
         result = rag_adapter.search(query, collection, limit, store=self._view())
-        if not self._caller.is_admin and result["message"] == rag_adapter.NO_DOCUMENTS:
-            result["message"] = NO_SHARED_DOCUMENTS
+        if not self._caller.is_admin and result["message"] == rag_adapter.no_documents():
+            result["message"] = no_shared_documents()
         return result
 
     def list_collections(self):

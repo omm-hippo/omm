@@ -10,14 +10,18 @@ from __future__ import annotations
 import inspect
 
 from omm import documents
+from omm.lang import t
 
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 10
 MAX_QUERY = 2000
 # DocumentStore.search accepts at most this many document ids per call.
 _SEARCH_BATCH = 20
-NO_DOCUMENTS = ("등록된 문서가 없어요. `omm rag add <컬렉션> <파일이나 폴더>` 또는 omm web의 문서 탭에서 "
-                "문서를 먼저 등록해 주세요.")
+def no_documents() -> str:
+    return t("등록된 문서가 없어요. `omm rag add <컬렉션> <파일이나 폴더>` 또는 omm web의 문서 탭에서 "
+             "문서를 먼저 등록해 주세요.",
+             "No documents are registered. Register some first with `omm rag add <collection> <file or folder>` "
+             "or the Documents tab in omm web.")
 
 
 class SearchError(ValueError):
@@ -94,8 +98,9 @@ def search(query, collection=None, limit=None, *, store=None) -> dict:
     base = {"collection": collection, "skipped_stale": stale,
             "searched_documents": len(current)}
     if not current:
-        message = NO_DOCUMENTS if not rows else (
-            "검색할 수 있는 문서가 없어요. 색인 방식이 바뀐 문서는 원본을 다시 등록해 주세요.")
+        message = no_documents() if not rows else t(
+            "검색할 수 있는 문서가 없어요. 색인 방식이 바뀐 문서는 원본을 다시 등록해 주세요.",
+            "No searchable documents. Register the originals again for documents whose index format changed.")
         return {**base, "found": False, "message": message, "results": []}
     ids = [row["id"] for row in current]
     kwargs = {"collection": collection} if collection is not None else {}
@@ -124,8 +129,8 @@ def search(query, collection=None, limit=None, *, store=None) -> dict:
         merged.sort(key=lambda row: -row["score"])
     results = [_result(row, index + 1) for index, row in enumerate(merged[:limit])]
     if not results:
-        return {**base, "found": False, "message": "근거 없음: " + documents.NO_EVIDENCE, "results": []}
-    return {**base, "found": True, "message": f"{len(results)}개 근거를 찾았어요.",
+        return {**base, "found": False, "message": t("근거 없음: ", "No evidence: ") + documents.no_evidence(), "results": []}
+    return {**base, "found": True, "message": t(f"{len(results)}개 근거를 찾았어요.", f"Found {len(results)} supporting passage(s)."),
             "results": results}
 
 

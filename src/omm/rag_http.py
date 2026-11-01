@@ -21,7 +21,8 @@ import json
 import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from omm import documents, rag_acl, rag_mcp, rag_readiness
+from omm import documents, lang, rag_acl, rag_mcp, rag_readiness
+from omm.lang import t
 
 MAX_JSON_BODY = 64 * 1024
 # Imports embed on the head and can take minutes; a few at once is plenty
@@ -58,6 +59,16 @@ def handle(method: str, raw_path: str, headers, body: bytes, name: str):
         caller = rag_acl.employee(name)
     except rag_acl.AccessError:
         return _error(403, "permission_error", "omm rag: this token name cannot use shared documents")
+    # Employee PCs say which language their user reads (Accept-Language);
+    # older ones send none and keep getting Korean.
+    language = lang.use(lang.from_header(headers.get("Accept-Language")))
+    try:
+        return _handle(parts, method, headers, body, caller)
+    finally:
+        lang.reset(language)
+
+
+def _handle(parts, method, headers, body, caller):
     if not _SLOTS.acquire(blocking=False):
         status, extra, payload = _error(429, "rate_limit_error", "omm rag: the head is busy; try again shortly")
         return status, {**extra, "Retry-After": "5"}, payload
@@ -101,6 +112,8 @@ def _mcp(method, headers, body, caller):
         return _rpc_error(400, rag_mcp.INVALID_REQUEST, "Unsupported MCP-Protocol-Version")
     if len(body) > MAX_JSON_BODY:
         return _rpc_error(413, rag_mcp.INVALID_REQUEST, "Message too large")
+    # Agents read the replies, in English like the local MCP server.
+    lang.use(lang.ENGLISH)
     server = rag_mcp.Server(rag_acl.ScopedAdapter(caller), instructions=REMOTE_INSTRUCTIONS)
     # Without the header the transport spec says to assume 2025-03-26;
     # initialize negotiates its own version from the request.
@@ -115,13 +128,13 @@ def _mcp(method, headers, body, caller):
 
 def _json_body(body: bytes) -> dict:
     if len(body) > MAX_JSON_BODY:
-        raise rag_acl.AccessError("요청이 너무 커요.", 413)
+        raise rag_acl.AccessError(t("요청이 너무 커요.", "The request is too large."), 413)
     try:
         data = json.loads(body or b"{}")
     except (ValueError, UnicodeError):
-        raise rag_acl.AccessError("요청 본문은 JSON 객체여야 해요.") from None
+        raise rag_acl.AccessError(t("요청 본문은 JSON 객체여야 해요.", "The request body must be a JSON object.")) from None
     if not isinstance(data, dict):
-        raise rag_acl.AccessError("요청 본문은 JSON 객체여야 해요.")
+        raise rag_acl.AccessError(t("요청 본문은 JSON 객체여야 해요.", "The request body must be a JSON object."))
     return data
 
 
@@ -129,10 +142,10 @@ def _one(query: dict, key: str, required=True):
     values = query.get(key)
     if not values:
         if required:
-            raise rag_acl.AccessError(f"'{key}' 값이 필요해요.")
+            raise rag_acl.AccessError(t(f"'{key}' 값이 필요해요.", f"'{key}' is required."))
         return None
     if len(values) != 1:
-        raise rag_acl.AccessError(f"'{key}' 값은 하나만 주세요.")
+        raise rag_acl.AccessError(t(f"'{key}' 값은 하나만 주세요.", f"Give only one '{key}'."))
     return values[0]
 
 
@@ -173,9 +186,10 @@ def _rest(method, path, query, headers, body, caller):
         try:
             filename = unquote(raw_name, errors="strict")
         except UnicodeError:
-            raise rag_acl.AccessError("문서 파일 이름을 확인해 주세요.") from None
+            raise rag_acl.AccessError(t("문서 파일 이름을 확인해 주세요.", "Check the document file name.")) from None
         if len(body) > documents.MAX_UPLOAD:
-            raise rag_acl.AccessError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.", 413)
+            raise rag_acl.AccessError(t("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.",
+                                       "Documents that are empty or larger than 6 MiB cannot be registered."), 413)
         replace = (headers.get("X-OMM-Replace") or "") == "1"
         result = rag_acl.import_document(caller, collection, filename, body, replace=replace)
         keep = ("id", "name", "collection", "chunks", "sha256", "unchanged", "semantic", "semantic_notice")
@@ -187,7 +201,7 @@ def _rest(method, path, query, headers, body, caller):
         data = _json_body(body)
         unknown = set(data) - {"query", "collection", "limit"}
         if unknown:
-            raise rag_acl.AccessError("알 수 없는 검색 값: " + ", ".join(sorted(unknown)))
+            raise rag_acl.AccessError(t("알 수 없는 검색 값: ", "Unknown search fields: ") + ", ".join(sorted(unknown)))
         return _ok(rag_acl.ScopedAdapter(caller).search(data.get("query"), data.get("collection"), data.get("limit")))
     if route == ("GET", "/rag/v1/shares"):
         return _ok(rag_acl.shares(caller, _one(query, "collection")))

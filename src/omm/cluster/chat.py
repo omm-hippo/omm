@@ -66,9 +66,9 @@ def _english(message: str) -> str:
     # rag_remote speaks Korean; the cluster commands speak English.
     from omm import rag_remote
 
-    if message == rag_remote.PLAIN_HTTP:
+    if message == rag_remote.plain_http():
         return ("The cluster gateway now accepts HTTPS only. Run: omm rag remote set https://<head address>:52440")
-    if message == rag_remote.NOT_PINNED:
+    if message == rag_remote.not_pinned():
         return ("This PC has not checked the cluster head's certificate yet. Run: omm rag remote set "
                 "https://<head address>:52440 and compare the fingerprint with the head's omm cluster status")
     return message
