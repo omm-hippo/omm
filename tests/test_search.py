@@ -623,3 +623,17 @@ def test_search_huggingface_returns_empty_list_when_response_exceeds_size_limit(
     monkeypatch.setattr(requests, "get", lambda *a, **k: _OversizedResponse())
 
     assert search_mod.search_huggingface("qwen") == []
+
+
+def test_filename_query_fallback_strips_gguf_and_quant():
+    name = "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP"
+    assert search_mod.filename_query_fallback(f"{name}-Q4_K_S.gguf") == name
+    assert search_mod.filename_query_fallback(f"{name}-Q4_K_S") == name
+    assert search_mod.filename_query_fallback("model.Q5_K_M.gguf") == "model"
+    assert search_mod.filename_query_fallback("Model-IQ4_XS") == "Model"
+
+
+def test_filename_query_fallback_none_for_plain_names():
+    assert search_mod.filename_query_fallback("qwen3") is None
+    assert search_mod.filename_query_fallback("Qwen3.8-27B") is None
+    assert search_mod.filename_query_fallback(".gguf") is None

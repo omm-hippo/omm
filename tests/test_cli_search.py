@@ -260,6 +260,101 @@ def test_search_exits_nonzero_when_nothing_matches(monkeypatch):
     assert "No models found" in result.stderr
 
 
+def test_search_retries_a_file_name_without_extension_and_quant(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    queries = []
+
+    def fake_hf(query, **kwargs):
+        queries.append(query)
+        if query != "Model-MTP":
+            return []
+        return [
+            {
+                "name": "org/Model-MTP-GGUF",
+                "repo_id": "org/Model-MTP-GGUF",
+                "filename": "Model-MTP-Q4_K_M.gguf",
+                "description": "1 download on HuggingFace",
+                "provider": "huggingface",
+            }
+        ]
+
+    monkeypatch.setattr(search_mod, "search_huggingface", fake_hf)
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["search", "Model-MTP-Q4_K_S.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert queries == ["Model-MTP-Q4_K_S.gguf", "Model-MTP"]
+    assert "org/Model-MTP-GGUF" in result.stdout
+
+
+def test_search_explains_file_names_when_nothing_matches(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(cli.app, ["search", "Short-Name-Q4_K_S.gguf"])
+
+    assert result.exit_code == 1
+    assert "No models found" in result.stderr
+    assert "repository names" in result.stderr
+    assert "omm install org/repo:<file>.gguf" in result.stderr
+
+
+def test_search_file_name_hint_shows_beside_loose_local_matches(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "other-Q4_K_M", "repo_id": "org/other-Q4_K_M", "description": "d"}
+        ],
+    )
+    monkeypatch.setattr(search_mod, "match_candidates", lambda pool, query: list(pool))
+    queries = []
+    monkeypatch.setattr(
+        search_mod, "search_huggingface", lambda query, **kwargs: queries.append(query) or []
+    )
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["search", "Short-Name-Q4_K_M.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert queries == ["Short-Name-Q4_K_M.gguf", "Short-Name"]
+    assert "repository names" in result.stderr
+
+
+def test_search_curated_only_does_not_retry_a_file_name(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    pool_queries = []
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    monkeypatch.setattr(
+        search_mod, "match_candidates", lambda pool, query: pool_queries.append(query) or []
+    )
+
+    result = runner.invoke(cli.app, ["search", "Short-Name-Q4_K_M.gguf", "--provider", "curated"])
+
+    assert result.exit_code == 1
+    assert pool_queries == ["Short-Name-Q4_K_M.gguf"]
+    assert "repository names" not in result.stderr
+
+
+def test_search_plain_miss_has_no_file_name_hint(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(cli.app, ["search", "nonexistent-xyz"])
+
+    assert result.exit_code == 1
+    assert "repository names" not in result.stderr
+
+
 def test_search_limit_stops_mid_family_before_later_candidates(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(
