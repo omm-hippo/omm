@@ -878,14 +878,16 @@ def agent_local(
     harness = _agent_pick_harness(harness)
     model = _agent_pick_model(model, local=True, base_url=base_url)
     try:
-        agent_connection.connect(harness, model, base_url=base_url)
+        metadata = agent_connection.connect(harness, model, base_url=base_url)
     except (agent_connection.ConnectionError, OSError) as error:
         message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Check permissions."
         err_console.print(f"[error]{escape(message)}[/error]")
         raise typer.Exit(1)
     console.print(f"Saved local routing settings for {escape(harness)}. Start a new harness session.")
-    console.print("Tool calling and context were checked from model metadata; the actual agent workflow is not verified.")
-    console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
+    console.print(f"Ollama runs it as {escape(metadata['runtime_model'])} with a {metadata['runtime_context'] // 1024}K-token "
+                  "context sized to this computer's memory; agent cloud deletes that copy.")
+    console.print("Tool calling was checked from model metadata; the actual agent workflow is not verified.")
+    console.print("Project, managed or shell settings may override this user configuration.")
 
 
 @agent_app.command(name="cluster")
@@ -929,6 +931,9 @@ def agent_cloud(harness: str = typer.Argument(None, help="claude, codex or pi. A
         err_console.print(f"[error]{escape(message)}[/error]")
         raise typer.Exit(1)
     console.print("Original routing restored. Start a new harness session." if restored else "No OMM connection backup exists; settings were left unchanged.")
+    if restored and restored.get("left_model"):
+        console.print(f"Ollama was not reachable, so the runtime-context model is still installed. Remove it with: ollama rm {restored['left_model']}",
+                      markup=False, soft_wrap=True)
 
 
 @agent_app.command(name="status")
