@@ -89,7 +89,7 @@ def remote_client():
 
 
 def _target_label(kind: str, target: str) -> str:
-    return f"팀 {target}" if kind == "team" else target
+    return f"team {target}" if kind == "team" else target
 
 
 def share(
@@ -108,9 +108,9 @@ def share(
         _fail(str(error))
     label = _target_label(result["kind"], result["target"])
     if result["added"]:
-        console.print(f"'{escape(result['collection'])}' 컬렉션을 {escape(label)}에게 공유했어요. 이제 검색할 수 있어요.")
+        console.print(f"Shared collection '{escape(result['collection'])}' with {escape(label)}. They can search it now.")
     else:
-        console.print(f"'{escape(result['collection'])}' 컬렉션은 이미 {escape(label)}에게 공유돼 있어요.")
+        console.print(f"Collection '{escape(result['collection'])}' is already shared with {escape(label)}.")
 
 
 def unshare(
@@ -129,9 +129,9 @@ def unshare(
         _fail(str(error))
     label = _target_label(result["kind"], result["target"])
     if result["removed"]:
-        console.print(f"'{escape(result['collection'])}' 컬렉션 공유를 {escape(label)}에게서 거뒀어요.")
+        console.print(f"Stopped sharing collection '{escape(result['collection'])}' with {escape(label)}.")
     else:
-        console.print(f"'{escape(result['collection'])}' 컬렉션은 {escape(label)}에게 공유돼 있지 않았어요. 바뀐 것은 없어요.")
+        console.print(f"Collection '{escape(result['collection'])}' was not shared with {escape(label)}; nothing changed.")
 
 
 team_app = typer.Typer(name="team", help="Manage employee teams for sharing collections (on the cluster head).",
@@ -141,7 +141,7 @@ team_app = typer.Typer(name="team", help="Manage employee teams for sharing coll
 def _team_call(function, *args):
     from omm import rag_remote
     if rag_remote.remote_path().exists():
-        _fail("팀은 헤드 Mac에서만 관리해요. 이 PC는 원격 헤드를 쓰도록 설정돼 있어요(`omm rag remote`).")
+        _fail("Teams are managed on the head Mac only. This PC is set to use a remote head (`omm rag remote`).")
     try:
         return function(*args)
     except ValueError as error:
@@ -154,7 +154,7 @@ def team_create(name: str = typer.Argument(..., help="Team name, e.g. sales.")) 
     from omm import rag_acl
     console, escape = _printers()
     _team_call(rag_acl.team_create, name)
-    console.print(f"'{escape(name)}' 팀을 만들었어요. `omm rag team add {escape(name)} <직원 토큰 이름>`으로 사람을 넣어 주세요.")
+    console.print(f"Created team '{escape(name)}'. Add people with `omm rag team add {escape(name)} <employee token name>`.")
 
 
 @team_app.command(name="delete")
@@ -163,7 +163,7 @@ def team_delete(name: str = typer.Argument(..., help="Team to delete.")) -> None
     from omm import rag_acl
     console, escape = _printers()
     result = _team_call(rag_acl.team_delete, name)
-    console.print(f"'{escape(name)}' 팀을 지웠어요. 이 팀에 준 공유 {result['shares_removed']}개도 거뒀어요.")
+    console.print(f"Deleted team '{escape(name)}' and withdrew its {result['shares_removed']} share(s).")
 
 
 @team_app.command(name="add")
@@ -173,8 +173,8 @@ def team_add(team: str = typer.Argument(..., help="Team name."),
     from omm import rag_acl
     console, escape = _printers()
     result = _team_call(rag_acl.team_add, team, member)
-    done = "넣었어요" if result["added"] else "이미 넣어 두었어요"
-    console.print(f"{escape(member)}을(를) '{escape(team)}' 팀에 {done}.")
+    done = "Added" if result["added"] else "Already added"
+    console.print(f"{done} {escape(member)} to team '{escape(team)}'.")
 
 
 @team_app.command(name="remove")
@@ -184,8 +184,10 @@ def team_remove(team: str = typer.Argument(..., help="Team name."),
     from omm import rag_acl
     console, escape = _printers()
     result = _team_call(rag_acl.team_remove, team, member)
-    done = "뺐어요" if result["removed"] else "찾지 못했어요. 바뀐 것은 없어요"
-    console.print(f"{escape(member)}을(를) '{escape(team)}' 팀에서 {done}.")
+    if result["removed"]:
+        console.print(f"Removed {escape(member)} from team '{escape(team)}'.")
+    else:
+        console.print(f"{escape(member)} is not in team '{escape(team)}'; nothing changed.")
 
 
 @team_app.command(name="list")
@@ -195,9 +197,9 @@ def team_list() -> None:
     console, escape = _printers()
     rows = _team_call(rag_acl.teams)
     if not rows:
-        console.print("팀이 없어요. `omm rag team create <팀 이름>`으로 만들 수 있어요.")
+        console.print("No teams yet. Create one with `omm rag team create <team name>`.")
     for row in rows:
-        members = ", ".join(row["members"]) or "(사람 없음)"
+        members = ", ".join(row["members"]) or "(no members)"
         console.print(f"{escape(row['name'])}: {escape(members)}")
 
 
@@ -217,13 +219,13 @@ def remote_show(ctx: typer.Context) -> None:
     except rag_remote.RemoteError as error:
         _fail(str(error))
     if remote is None:
-        console.print("원격 헤드가 설정돼 있지 않아요. `omm rag` 명령은 이 PC의 문서를 써요.")
+        console.print("No remote head is set. `omm rag` commands use this PC's documents.")
         return
-    console.print(f"원격 헤드: {escape(remote.url)} (토큰 저장됨)")
+    console.print(f"Remote head: {escape(remote.url)} (token saved)")
     from omm import rag_readiness
-    console.print(escape(rag_readiness.remote_line(rag_readiness.remote_view(rag_remote.Client(remote)))))
-    console.print("collection·add·remove·search·share·unshare 명령이 헤드의 문서를 써요. "
-                  "되돌리려면 `omm rag remote clear`.")
+    console.print(escape(rag_readiness.remote_line_en(rag_readiness.remote_view(rag_remote.Client(remote)))))
+    console.print("The collection, add, remove, search, share and unshare commands use the head's documents. "
+                  "Run `omm rag remote clear` to go back.")
 
 
 def _read_token(token: str | None) -> str:
@@ -232,7 +234,7 @@ def _read_token(token: str | None) -> str:
     import sys
     from omm.cli import _stdin_is_tty
     if _stdin_is_tty():
-        token = typer.prompt("직원 토큰 (입력이 보이지 않아요)", hide_input=True)
+        token = typer.prompt("Employee token (input is hidden)", hide_input=True)
     else:
         token = sys.stdin.readline()
     return (token or "").strip()
@@ -257,18 +259,20 @@ def _trust_head_certificate(offered, url: str, yes: bool) -> None:
             return
         saved = rag_remote.load()
         if saved is None or saved.url == url:
-            raise rag_remote.RemoteError(rag_remote.WRONG_CERTIFICATE)
-        console.print(f"새 헤드 주소예요 (이전: {escape(saved.url)}). 새 헤드의 인증서를 다시 확인해요.")
-    console.print("헤드 인증서 지문 (SHA-256):")
+            raise rag_remote.RemoteError(rag_remote.wrong_certificate())
+        console.print(f"This is a new head address (was {escape(saved.url)}). Checking the new head's certificate.")
+    console.print("Head certificate fingerprint (SHA-256):")
     console.print(f"  {offered.fingerprint}", markup=False, soft_wrap=True, emoji=False)
-    console.print("헤드 Mac에서 `omm cluster status` 가 보여 주는 지문(토큰을 받을 때 함께 받은 지문)과 똑같은지 확인해 주세요.")
+    console.print("Check that it matches the fingerprint `omm cluster status` shows on the head Mac "
+                  "(the one you received with your token).")
     if yes:
         return
     from omm.cli import _ask_confirm, _stdin_is_tty
     if not _stdin_is_tty():
-        raise rag_remote.RemoteError("터미널이 아니라 지문을 확인받을 수 없어요. 지문이 같은 것을 직접 확인했다면 --yes 를 붙여 다시 실행해 주세요.")
-    if not _ask_confirm("지문이 같나요? 이 헤드를 신뢰할까요?"):
-        raise rag_remote.RemoteError("헤드 인증서를 신뢰하지 않아서 아무것도 저장하지 않았어요.")
+        raise rag_remote.RemoteError("Not a terminal, so the fingerprint cannot be confirmed here. "
+                                     "If you checked that it matches, run again with --yes.")
+    if not _ask_confirm("Does the fingerprint match? Trust this head?"):
+        raise rag_remote.RemoteError("The head certificate was not trusted; nothing was saved.")
 
 
 @remote_app.command(name="set")
@@ -284,7 +288,7 @@ def remote_set(
     try:
         remote = rag_remote.Remote(rag_remote.normalize_url(url), _read_token(token))
         if not remote.token:
-            raise rag_remote.RemoteError("토큰이 비어 있어요. 관리자에게 받은 omm_... 토큰을 넣어 주세요.")
+            raise rag_remote.RemoteError("The token is empty. Enter the omm_... token from your administrator.")
         # The certificate is settled before the token is sent anywhere.
         offered = tls.fetch_ca(remote.url)
         _trust_head_certificate(offered, remote.url, yes)
@@ -292,10 +296,10 @@ def remote_set(
         rag_remote.save_ca(offered.pem)
         path = rag_remote.save(remote)
     except (ValueError, OSError) as error:
-        _fail(str(error) if isinstance(error, ValueError) else "설정 파일을 쓰지 못했어요. 권한을 확인해 주세요.")
-    console.print(f"{escape(remote.url)} 헤드에 '{escape(name)}'(으)로 연결했어요. 토큰은 {escape(str(path))} 에만 저장했어요.")
-    console.print("이제 `omm rag collection list`, `omm rag add`, `omm rag search` 가 헤드의 문서를 써요. "
-                  "에이전트에 붙이려면 `omm rag connect <하네스> --remote`.")
+        _fail(str(error) if isinstance(error, ValueError) else "Could not write the settings file. Check permissions.")
+    console.print(f"Connected to the head {escape(remote.url)} as '{escape(name)}'. The token is stored only in {escape(str(path))}.")
+    console.print("`omm rag collection list`, `omm rag add` and `omm rag search` now use the head's documents. "
+                  "To connect an agent, run `omm rag connect <harness> --remote`.")
 
 
 @remote_app.command(name="clear")
@@ -305,10 +309,10 @@ def remote_clear() -> None:
     console, _ = _printers()
     removed = rag_remote.clear()
     if not removed:
-        console.print("원격 헤드가 설정돼 있지 않았어요. 바뀐 것은 없어요.")
+        console.print("No remote head was set; nothing changed.")
         return
-    console.print("원격 헤드 설정과 토큰을 지웠어요. 이제 이 PC의 문서를 써요.")
-    console.print("에이전트에 `--remote`로 연결해 두었다면 `omm rag disconnect <하네스>`로 그 설정의 토큰도 지워 주세요.")
+    console.print("Removed the remote head settings and token. `omm rag` uses this PC's documents again.")
+    console.print("If you connected an agent with `--remote`, run `omm rag disconnect <harness>` to remove the token from its settings too.")
 
 
 def register(group: typer.Typer) -> None:

@@ -55,7 +55,7 @@ def test_stdio_round_trip_over_real_pipes(isolated_omm_home):
     assert "전자기학.md p.1" in found["content"][0]["text"]
     missing = replies[3]["result"]
     assert missing["structuredContent"]["found"] is False and missing["structuredContent"]["results"] == []
-    assert missing["content"][0]["text"].startswith("근거 없음")
+    assert missing["content"][0]["text"].startswith("No evidence")
     assert replies[4]["result"] == {}
     # Questions and document text never reach diagnostics.
     stderr = process.stderr.decode("utf-8", "replace")

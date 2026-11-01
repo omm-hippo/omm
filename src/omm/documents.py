@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 import zipfile
 
 from omm import config, document_embeddings
+from omm.lang import t
 
 MAX_UPLOAD = 6 * 1024 * 1024
 MAX_TEXT = 500_000
@@ -29,7 +30,10 @@ MAX_DOCUMENTS = 100
 # retrieval method or chunker would silently mix incompatible indexes.
 RETRIEVAL_METHOD = "local_lexical_v1"
 CHUNKING_VERSION = "chunk900_overlap100_v1"
-NO_EVIDENCE = "등록된 문서에서 질문의 근거를 찾지 못했어요. 질문에 문서의 핵심 단어를 포함해 보세요."
+def no_evidence() -> str:
+    return t("등록된 문서에서 질문의 근거를 찾지 못했어요. 질문에 문서의 핵심 단어를 포함해 보세요.",
+             "No evidence for the question was found in the registered documents. "
+             "Try including key words from the documents in the question.")
 
 
 def terms(text: str) -> list[str]:
@@ -48,38 +52,42 @@ def terms(text: str) -> list[str]:
 def extract(name: str, content: bytes) -> list[tuple[int, str]]:
     suffix = Path(name).suffix.lower()
     if not content or len(content) > MAX_UPLOAD:
-        raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
+        raise ValueError(t("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.", "Documents that are empty or larger than 6 MiB cannot be registered."))
     if suffix not in SUPPORTED_SUFFIXES:
-        raise ValueError("텍스트 PDF, TXT, Markdown, HTML, HWPX만 지원해요. 스캔 PDF와 HWP(한글 97 형식)는 아직 지원하지 않아요.")
+        raise ValueError(t("텍스트 PDF, TXT, Markdown, HTML, HWPX만 지원해요. 스캔 PDF와 HWP(한글 97 형식)는 아직 지원하지 않아요.",
+                           "Only text PDF, TXT, Markdown, HTML and HWPX are supported. Scanned PDFs and HWP (Hangul 97) files are not supported yet."))
     if suffix == ".pdf":
         try:
             from pypdf import PdfReader
         except ImportError:
-            raise ValueError("PDF를 읽으려면 pypdf 패키지가 필요해요. omm을 다시 설치하거나 업데이트한 뒤 시도해 주세요.") from None
+            raise ValueError(t("PDF를 읽으려면 pypdf 패키지가 필요해요. omm을 다시 설치하거나 업데이트한 뒤 시도해 주세요.",
+                               "Reading PDFs needs the pypdf package. Reinstall or update omm and try again.")) from None
         try:
             reader = PdfReader(io.BytesIO(content), strict=True)
             if reader.is_encrypted:
-                raise ValueError("암호가 걸린 PDF는 등록할 수 없어요.")
+                raise ValueError(t("암호가 걸린 PDF는 등록할 수 없어요.", "Password-protected PDFs cannot be registered."))
             if len(reader.pages) > 100:
-                raise ValueError("PDF는 100쪽까지 등록할 수 있어요.")
+                raise ValueError(t("PDF는 100쪽까지 등록할 수 있어요.", "PDFs can have at most 100 pages."))
             pages = []
             length = 0
             for number, page in enumerate(reader.pages, 1):
                 stream = page.get_contents()
                 if stream is not None and len(stream.get_data()) > 4 * 1024 * 1024:
-                    raise ValueError("PDF 페이지의 처리 크기 제한을 넘었어요.")
+                    raise ValueError(t("PDF 페이지의 처리 크기 제한을 넘었어요.", "A PDF page exceeded the processing size limit."))
                 text = page.extract_text() or ""
                 length += len(text)
                 if length > MAX_TEXT:
-                    raise ValueError("문서는 추출된 텍스트 50만 자까지 지원해요.")
+                    raise ValueError(t("문서는 추출된 텍스트 50만 자까지 지원해요.", "Documents can have at most 500,000 characters of extracted text."))
                 if text.strip():
                     pages.append((number, text))
             if not pages:
-                raise ValueError("읽을 수 있는 텍스트가 없어요. 스캔 PDF의 OCR은 아직 지원하지 않아요.")
+                raise ValueError(t("읽을 수 있는 텍스트가 없어요. 스캔 PDF의 OCR은 아직 지원하지 않아요.",
+                                   "No readable text was found. OCR for scanned PDFs is not supported yet."))
         except ValueError:
             raise
         except Exception:
-            raise ValueError("PDF를 읽지 못했어요. 손상되지 않은 텍스트 PDF인지 확인해 주세요.") from None
+            raise ValueError(t("PDF를 읽지 못했어요. 손상되지 않은 텍스트 PDF인지 확인해 주세요.",
+                               "Could not read the PDF. Check that it is an undamaged text PDF.")) from None
     elif suffix in {".html", ".htm"}:
         pages = [(1, _checked(html_text(content), "HTML"))]
     elif suffix == ".hwpx":
@@ -88,9 +96,10 @@ def extract(name: str, content: bytes) -> list[tuple[int, str]]:
         try:
             text = content.decode("utf-8-sig")
         except UnicodeError:
-            raise ValueError("TXT와 Markdown은 UTF-8 파일로 저장해 주세요.") from None
+            raise ValueError(t("TXT와 Markdown은 UTF-8 파일로 저장해 주세요.", "Save TXT and Markdown files as UTF-8.")) from None
         if "\x00" in text or not text.strip() or len(text) > MAX_TEXT:
-            raise ValueError("읽을 수 있는 텍스트가 없거나 50만 자 제한을 넘었어요.")
+            raise ValueError(t("읽을 수 있는 텍스트가 없거나 50만 자 제한을 넘었어요.",
+                               "No readable text was found, or it exceeds the 500,000 character limit."))
         pages = [(1, text)]
     return pages
 
@@ -108,9 +117,9 @@ _SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", "objec
 def _checked(text: str, kind: str) -> str:
     text = text.strip("\n")
     if "\x00" in text or not text.strip():
-        raise ValueError(f"{kind} 문서에서 읽을 수 있는 본문 텍스트를 찾지 못했어요.")
+        raise ValueError(t(f"{kind} 문서에서 읽을 수 있는 본문 텍스트를 찾지 못했어요.", f"No readable body text was found in the {kind} document."))
     if len(text) > MAX_TEXT:
-        raise ValueError("문서는 추출된 텍스트 50만 자까지 지원해요.")
+        raise ValueError(t("문서는 추출된 텍스트 50만 자까지 지원해요.", "Documents can have at most 500,000 characters of extracted text."))
     return text
 
 
@@ -141,7 +150,7 @@ class _HTMLText(HTMLParser):
         if not self.skip:
             self.size += len(data)
             if self.size > MAX_TEXT * 4:
-                raise ValueError("문서는 추출된 텍스트 50만 자까지 지원해요.")
+                raise ValueError(t("문서는 추출된 텍스트 50만 자까지 지원해요.", "Documents can have at most 500,000 characters of extracted text."))
             self.parts.append(data)
 
 
@@ -156,7 +165,8 @@ def _decode_html(content: bytes) -> str:
             return content.decode(declared.group(1).decode("ascii"))
         except (LookupError, UnicodeError):
             pass
-    raise ValueError("HTML 문서의 글자 인코딩을 확인하지 못했어요. UTF-8로 저장해 주세요.")
+    raise ValueError(t("HTML 문서의 글자 인코딩을 확인하지 못했어요. UTF-8로 저장해 주세요.",
+                       "Could not detect the HTML document's character encoding. Save it as UTF-8."))
 
 
 def html_text(content: bytes) -> str:
@@ -176,27 +186,30 @@ def hwpx_text(content: bytes) -> str:
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
-        raise ValueError("HWPX 파일을 열지 못했어요. 한글에서 HWPX로 다시 저장해 주세요.") from None
+        raise ValueError(t("HWPX 파일을 열지 못했어요. 한글에서 HWPX로 다시 저장해 주세요.",
+                           "Could not open the HWPX file. Save it again as HWPX in Hangul.")) from None
     with archive:
         sections = sorted((info for info in archive.infolist() if re.fullmatch(r"Contents/section(\d+)\.xml", info.filename)),
                           key=lambda info: int(re.search(r"\d+", info.filename).group()))
         if not sections:
-            raise ValueError("HWPX 본문(Contents/section*.xml)을 찾지 못했어요. HWP(한글 97) 파일은 아직 지원하지 않아요.")
+            raise ValueError(t("HWPX 본문(Contents/section*.xml)을 찾지 못했어요. HWP(한글 97) 파일은 아직 지원하지 않아요.",
+                               "The HWPX body (Contents/section*.xml) was not found. HWP (Hangul 97) files are not supported yet."))
         if len(sections) > 200 or sum(info.file_size for info in sections) > 40 * 1024 * 1024:
-            raise ValueError("HWPX 본문이 처리 크기 제한을 넘었어요.")
+            raise ValueError(t("HWPX 본문이 처리 크기 제한을 넘었어요.", "The HWPX body exceeded the processing size limit."))
         paragraphs = []
         for info in sections:
             with archive.open(info) as stream:
                 data = stream.read(40 * 1024 * 1024 + 1)
             if len(data) > 40 * 1024 * 1024:
-                raise ValueError("HWPX 본문이 처리 크기 제한을 넘었어요.")
+                raise ValueError(t("HWPX 본문이 처리 크기 제한을 넘었어요.", "The HWPX body exceeded the processing size limit."))
             # OWPML never needs a DTD; refusing one rules out entity expansion.
             if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-                raise ValueError("HWPX 본문 형식을 확인하지 못했어요.")
+                raise ValueError(t("HWPX 본문 형식을 확인하지 못했어요.", "Could not recognize the HWPX body format."))
             try:
                 root = ElementTree.fromstring(data)
             except ElementTree.ParseError:
-                raise ValueError("HWPX 본문을 읽지 못했어요. 손상되지 않은 파일인지 확인해 주세요.") from None
+                raise ValueError(t("HWPX 본문을 읽지 못했어요. 손상되지 않은 파일인지 확인해 주세요.",
+                                   "Could not read the HWPX body. Check that the file is not damaged.")) from None
             for paragraph in root.iter():
                 if _local(paragraph.tag) != "p":
                     continue
@@ -272,7 +285,8 @@ def semantic_state(row, model: str) -> str:
 def _check_collection_name(name) -> str:
     if (not isinstance(name, str) or not 1 <= len(name) <= 60 or name.strip() != name
             or any(ord(c) < 32 for c in name) or "/" in name or "\\" in name):
-        raise ValueError("컬렉션 이름은 앞뒤 공백 없이 1~60자로 정해 주세요. / 와 \\ 는 쓸 수 없어요.")
+        raise ValueError(t("컬렉션 이름은 앞뒤 공백 없이 1~60자로 정해 주세요. / 와 \\ 는 쓸 수 없어요.",
+                           "Collection names must be 1-60 characters with no leading or trailing spaces, and cannot contain / or \\."))
     return name
 
 
@@ -281,11 +295,11 @@ class DocumentStore:
     def connection(self):
         root = config.OMM_HOME / "documents"
         if root.is_symlink() or config.OMM_HOME.is_symlink():
-            raise ValueError("문서 저장 폴더의 연결 경로를 확인해 주세요.")
+            raise ValueError(t("문서 저장 폴더의 연결 경로를 확인해 주세요.", "Check the link (symlink) on the document storage folder."))
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = root / "library.sqlite3"
         if any(p.is_symlink() for p in (path, root / "library.sqlite3-journal", root / "library.sqlite3-wal", root / "library.sqlite3-shm")):
-            raise ValueError("문서 저장 파일의 연결 경로를 확인해 주세요.")
+            raise ValueError(t("문서 저장 파일의 연결 경로를 확인해 주세요.", "Check the link (symlink) on the document storage file."))
         db = sqlite3.connect(path, timeout=10)
         db.row_factory = sqlite3.Row
         try:
@@ -361,7 +375,7 @@ class DocumentStore:
 
     def set_embedding_model(self, model: str, base_url: str | None = None, keep_alive: str | None = None) -> dict:
         if not isinstance(model, str) or not _MODEL_NAME.fullmatch(model):
-            raise ValueError("임베딩 모델 이름을 확인해 주세요. 예: bge-m3")
+            raise ValueError(t("임베딩 모델 이름을 확인해 주세요. 예: bge-m3", "Check the embedding model name, e.g. bge-m3."))
         if keep_alive is not None:
             keep_alive = str(document_embeddings.keep_alive_value(keep_alive))
         if base_url is not None:
@@ -369,7 +383,8 @@ class DocumentStore:
             try:
                 base_url = require_loopback_base_url(base_url)
             except ValueError:
-                raise ValueError("임베딩 서버 주소는 이 컴퓨터의 Ollama 주소(예: http://127.0.0.1:11434)만 쓸 수 있어요.") from None
+                raise ValueError(t("임베딩 서버 주소는 이 컴퓨터의 Ollama 주소(예: http://127.0.0.1:11434)만 쓸 수 있어요.",
+                                   "The embedding server must be Ollama on this computer, e.g. http://127.0.0.1:11434.")) from None
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT OR REPLACE INTO meta VALUES('embedding_model', ?)", (model,))
@@ -401,7 +416,8 @@ class DocumentStore:
             return db.execute("SELECT * FROM collections WHERE id=?", (DEFAULT_COLLECTION,)).fetchone()
         row = db.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
         if row is None:
-            raise ValueError(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.")
+            raise ValueError(t(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.",
+                               f"Collection '{name}' was not found. Check the name with `omm rag collection list`."))
         return row
 
     def collections(self):
@@ -415,7 +431,7 @@ class DocumentStore:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM collections WHERE name=?", (name,)).fetchone():
-                raise ValueError(f"'{name}' 컬렉션이 이미 있어요.")
+                raise ValueError(t(f"'{name}' 컬렉션이 이미 있어요.", f"Collection '{name}' already exists."))
             key = str(uuid.uuid4())
             db.execute("INSERT INTO collections VALUES(?,?,?)", (key, name, datetime.now(timezone.utc).isoformat()))
         return {"id": key, "name": name}
@@ -425,7 +441,8 @@ class DocumentStore:
             db.execute("BEGIN IMMEDIATE")
             row = self._collection(db, name)
             if row["id"] == DEFAULT_COLLECTION:
-                raise ValueError("기본 컬렉션은 지울 수 없어요. 안의 문서는 하나씩 지울 수 있어요.")
+                raise ValueError(t("기본 컬렉션은 지울 수 없어요. 안의 문서는 하나씩 지울 수 있어요.",
+                                   "The default collection cannot be deleted. Its documents can be removed one by one."))
             ids = [r[0] for r in db.execute("SELECT id FROM documents WHERE collection_id=?", (row["id"],))]
             for key in ids:
                 self._remove(db, key)
@@ -466,7 +483,7 @@ class DocumentStore:
             else:
                 result["embedding"]["available"] = available
                 if not available:
-                    result["embedding"]["notice"] = f"Ollama에 {settings['model']} 모델이 없어요. " + document_embeddings.pull_hint(settings["model"])
+                    result["embedding"]["notice"] = t(f"Ollama에 {settings['model']} 모델이 없어요. ", f"Ollama does not have the {settings['model']} model. ") + document_embeddings.pull_hint(settings["model"])
         return result
 
     @staticmethod
@@ -476,12 +493,13 @@ class DocumentStore:
         if old and old["sha256"] == digest and index_current(old):
             return old, True
         if old and not replace:
-            raise ValueError("같은 이름의 문서가 있어요. 교체를 선택해 주세요.")
+            raise ValueError(t("같은 이름의 문서가 있어요. 교체를 선택해 주세요.", "A document with the same name exists. Choose to replace it."))
         if not old and db.execute("SELECT COUNT(*) FROM documents").fetchone()[0] >= MAX_DOCUMENTS:
-            raise ValueError("문서는 100개까지 등록할 수 있어요.")
+            raise ValueError(t("문서는 100개까지 등록할 수 있어요.", "At most 100 documents can be registered."))
         total = db.execute("SELECT COALESCE(SUM(LENGTH(text)),0) FROM chunks WHERE document_id != ?", (old["id"] if old else "",)).fetchone()[0]
         if total + sum(len(row[3]) for row in pieces) > 2_000_000:
-            raise ValueError("전체 문서의 검색 텍스트는 200만 자까지 지원해요. 기존 문서를 정리해 주세요.")
+            raise ValueError(t("전체 문서의 검색 텍스트는 200만 자까지 지원해요. 기존 문서를 정리해 주세요.",
+                               "All documents together can have at most 2,000,000 characters of search text. Remove some documents."))
         return old, False
 
     def import_document(self, name: str, content: bytes, *, replace=False, collection=None, progress=None):
@@ -492,7 +510,7 @@ class DocumentStore:
         batch, so a caller can show that a long CPU embedding is moving.
         """
         if not isinstance(name, str) or not 1 <= len(name) <= 180 or Path(name).name != name or any(ord(c) < 32 for c in name) or "\\" in name:
-            raise ValueError("문서 파일 이름을 확인해 주세요.")
+            raise ValueError(t("문서 파일 이름을 확인해 주세요.", "Check the document file name."))
         if progress is not None:
             progress("extract", 0, 0)
         pages = extract(name, content)
@@ -531,7 +549,8 @@ class DocumentStore:
                                [(key, row[0], row[1], document_embeddings.pack(vector)) for row, vector in zip(pieces, vectors)])
             self._changed(db)
         if notice:
-            notice = f"단어 검색 색인만 만들었어요. {notice} 그 뒤 `omm rag reindex`로 의미 색인을 만들 수 있어요."
+            notice = t(f"단어 검색 색인만 만들었어요. {notice} 그 뒤 `omm rag reindex`로 의미 색인을 만들 수 있어요.",
+                       f"Built the word search index only. {notice} Then `omm rag reindex` builds the semantic index.")
         return {"id": key, **base, "chunks": len(pieces), "sha256": digest, "semantic": bool(vectors), "semantic_notice": notice}
 
     def _reindex_one(self, key, settings, progress=None):
@@ -539,7 +558,7 @@ class DocumentStore:
         with self.connection() as db:
             row = db.execute("SELECT sha256, chunking FROM documents WHERE id=?", (key,)).fetchone()
             if row is None:
-                return "문서가 바뀌었어요. 목록을 새로고침해 주세요."
+                return t("문서가 바뀌었어요. 목록을 새로고침해 주세요.", "The document changed. Refresh the list.")
             pieces = [dict(r) for r in db.execute("SELECT page, start, text FROM chunks WHERE document_id=? ORDER BY page, start", (key,))]
         vectors, notice = self._embed([p["text"] for p in pieces], settings, _stage(progress, "embed"))
         if vectors is None:
@@ -548,7 +567,7 @@ class DocumentStore:
             db.execute("BEGIN IMMEDIATE")
             now = db.execute("SELECT sha256, chunking FROM documents WHERE id=?", (key,)).fetchone()
             if now is None or tuple(now) != tuple(row):
-                return "색인하는 동안 문서가 바뀌었어요. 다시 실행해 주세요."
+                return t("색인하는 동안 문서가 바뀌었어요. 다시 실행해 주세요.", "The document changed while indexing. Run it again.")
             db.execute("DELETE FROM vectors WHERE document_id=?", (key,))
             db.executemany("INSERT OR REPLACE INTO vectors VALUES(?,?,?,?)",
                            [(key, p["page"], p["start"], document_embeddings.pack(v)) for p, v in zip(pieces, vectors)])
@@ -594,7 +613,7 @@ class DocumentStore:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM documents WHERE id=?", (key,)).fetchone():
-                raise ValueError("문서를 찾을 수 없어요. 목록을 새로고침해 주세요.")
+                raise ValueError(t("문서를 찾을 수 없어요. 목록을 새로고침해 주세요.", "The document was not found. Refresh the list."))
             self._remove(db, key)
             self._changed(db)
         return {"removed": True, "id": key}
@@ -604,7 +623,8 @@ class DocumentStore:
             target = self._collection(db, collection)
             row = db.execute("SELECT id FROM documents WHERE collection_id=? AND name=?", (target["id"], name)).fetchone()
         if row is None:
-            raise ValueError(f"'{target['name']}' 컬렉션에 '{name}' 문서가 없어요.")
+            raise ValueError(t(f"'{target['name']}' 컬렉션에 '{name}' 문서가 없어요.",
+                               f"Collection '{target['name']}' has no document named '{name}'."))
         return {**self.delete(row["id"]), "name": name, "collection": target["name"]}
 
     # -- search ------------------------------------------------------------
@@ -622,7 +642,7 @@ class DocumentStore:
         optional plain-language notice explaining a fallback.
         """
         if type(limit) is not int or not 1 <= limit <= 10:
-            raise ValueError("검색 결과 수는 1~10개로 정해 주세요.")
+            raise ValueError(t("검색 결과 수는 1~10개로 정해 주세요.", "The number of results must be 1-10."))
         query = set(terms(question))
         with self.connection() as db:
             revision = db.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
@@ -634,18 +654,22 @@ class DocumentStore:
                 ids = sorted(key for key, row in known.items() if scope is None or row["collection_id"] == scope["id"])
                 if not ids:
                     return {"revision": revision, "sources": [], "method": LEXICAL, "embedding_model": None,
-                            "notice": "검색할 문서가 없어요. 먼저 문서를 등록해 주세요."}
+                            "notice": t("검색할 문서가 없어요. 먼저 문서를 등록해 주세요.",
+                                       "There are no documents to search. Register documents first.")}
             else:
                 if not ids or len(ids) > 20 or len(set(ids)) != len(ids):
-                    raise ValueError("질문할 문서를 1~20개 선택해 주세요.")
+                    raise ValueError(t("질문할 문서를 1~20개 선택해 주세요.", "Select 1-20 documents to ask about."))
                 if not set(ids) <= set(known):
-                    raise ValueError("선택한 문서가 바뀌었어요. 문서 목록을 새로고침해 주세요.")
+                    raise ValueError(t("선택한 문서가 바뀌었어요. 문서 목록을 새로고침해 주세요.", "The selected documents changed. Refresh the document list."))
                 if scope is not None and any(known[key]["collection_id"] != scope["id"] for key in ids):
-                    raise ValueError(f"선택한 문서 중 '{scope['name']}' 컬렉션에 없는 문서가 있어요.")
+                    raise ValueError(t(f"선택한 문서 중 '{scope['name']}' 컬렉션에 없는 문서가 있어요.",
+                                       f"Some selected documents are not in collection '{scope['name']}'."))
             stale = sorted(known[key]["name"] for key in ids if not index_current(known[key]))
             if stale:
-                raise ValueError(f"검색 색인 방식이 바뀌어 다시 등록해야 하는 문서가 있어요: {', '.join(stale)}. "
-                                 "원본 파일을 '같은 이름의 문서 교체'로 다시 등록하면 새 방식으로 색인돼요.")
+                raise ValueError(t(f"검색 색인 방식이 바뀌어 다시 등록해야 하는 문서가 있어요: {', '.join(stale)}. "
+                                   "원본 파일을 '같은 이름의 문서 교체'로 다시 등록하면 새 방식으로 색인돼요.",
+                                   f"The search index format changed; these documents must be registered again: {', '.join(stale)}. "
+                                   "Register the original files again, replacing the same name, to index them the new way."))
             placeholders = ",".join("?" for _ in ids)
             rows = [dict(r) for r in db.execute(
                 f"SELECT c.*, d.name, d.sha256, col.name AS collection FROM chunks c JOIN documents d ON d.id=c.document_id "
@@ -659,19 +683,22 @@ class DocumentStore:
         lexical = _lexical_ranking(query, rows) if query else []
         method, notice, semantic = LEXICAL, None, []
         if not ready:
-            notice = "의미 검색 색인이 없어서 단어 검색만 했어요. `omm rag reindex`로 의미 색인을 만들 수 있어요." if rows else None
+            notice = t("의미 검색 색인이 없어서 단어 검색만 했어요. `omm rag reindex`로 의미 색인을 만들 수 있어요.",
+                       "No semantic index yet, so only word search was used. `omm rag reindex` builds it.") if rows else None
         else:
             try:
                 question_vector = _embedder(settings["model"], settings["base_url"]).embed(
                     [question], keep_alive=_keep_alive(settings))[0]
             except document_embeddings.EmbeddingUnavailable as error:
-                notice = f"{error} 그래서 단어 검색만 했어요."
+                notice = t(f"{error} 그래서 단어 검색만 했어요.", f"{error} So only word search was used.")
             else:
                 method = HYBRID
                 semantic = _semantic_ranking(question_vector, rows, vectors)
                 if len(ready) < len(ids):
-                    notice = (f"{len(ids) - len(ready)}개 문서는 의미 색인이 없거나 임베딩 모델이 바뀌어 단어 검색만 했어요. "
-                              "`omm rag reindex`로 다시 색인해 주세요.")
+                    notice = t(f"{len(ids) - len(ready)}개 문서는 의미 색인이 없거나 임베딩 모델이 바뀌어 단어 검색만 했어요. "
+                               "`omm rag reindex`로 다시 색인해 주세요.",
+                               f"{len(ids) - len(ready)} document(s) have no semantic index or a different embedding model, "
+                               "so only word search was used for them. Run `omm rag reindex`.")
         ordered = _fuse(lexical, semantic) if method == HYBRID else [(score, row, "lexical", None) for score, row in lexical]
         sources = []
         for score, row, match, similarity in ordered:
@@ -688,7 +715,7 @@ class DocumentStore:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             if revision != db.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]:
-                raise ValueError("답변 중 문서가 변경됐어요. 최신 문서로 다시 질문해 주세요.")
+                raise ValueError(t("답변 중 문서가 변경됐어요. 최신 문서로 다시 질문해 주세요.", "Documents changed while answering. Ask again with the latest documents."))
             db.execute("INSERT INTO answers VALUES(?,?,?,?)", (answer["id"], revision, answer["created_at"], json.dumps(answer, ensure_ascii=False)))
             db.execute("DELETE FROM answers WHERE id NOT IN (SELECT id FROM answers ORDER BY created_at DESC LIMIT 30)")
         return answer
@@ -790,7 +817,7 @@ def import_request(request):
     try:
         content = base64.b64decode(request["content"], validate=True)
     except (ValueError, TypeError):
-        raise ValueError("파일 전송 내용을 확인하지 못했어요.") from None
+        raise ValueError(t("파일 전송 내용을 확인하지 못했어요.", "Could not read the uploaded file content.")) from None
     return DocumentStore().import_document(request["filename"], content, replace=request.get("replace") is True)
 
 
@@ -810,12 +837,12 @@ def import_paths(collection, paths, *, replace=False, progress=None):
         if problem is None:
             try:
                 if path.stat().st_size > MAX_UPLOAD:
-                    raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
+                    raise ValueError(t("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.", "Documents that are empty or larger than 6 MiB cannot be registered."))
                 results.append({"path": str(path), **store.import_document(path.name, path.read_bytes(), replace=replace, collection=collection,
                                                                           progress=_named(progress, path.name))})
                 continue
             except (ValueError, OSError) as error:
-                problem = str(error) if isinstance(error, ValueError) else "파일을 읽지 못했어요. 권한을 확인해 주세요."
+                problem = str(error) if isinstance(error, ValueError) else t("파일을 읽지 못했어요. 권한을 확인해 주세요.", "Could not read the file. Check permissions.")
         results.append({"path": str(path), "name": path.name, "error": problem})
     return {"collection": collection, "results": results, "skipped": skipped}
 
@@ -829,7 +856,7 @@ def collect_files(paths):
     for raw in paths:
         path = Path(raw)
         if path.is_symlink():
-            files.append((path, "연결 경로(symlink)는 등록하지 않아요."))
+            files.append((path, t("연결 경로(symlink)는 등록하지 않아요.", "Symlinks are not registered.")))
         elif path.is_dir():
             for item in sorted(path.rglob("*")):
                 if item.is_symlink() or not item.is_file():
@@ -841,5 +868,5 @@ def collect_files(paths):
         elif path.is_file():
             files.append((path, None))
         else:
-            files.append((path, "파일이나 폴더를 찾지 못했어요."))
+            files.append((path, t("파일이나 폴더를 찾지 못했어요.", "File or folder not found.")))
     return files, skipped
