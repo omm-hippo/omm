@@ -226,6 +226,32 @@ def test_not_installed_is_clear(home, monkeypatch):
     assert not rag_connect.config_path("codex").exists()
 
 
+def test_pi_entries_declare_tools_directly(home):
+    # pi's default "codemode" exposure hides the tools behind a script that small local models never write.
+    from omm import rag_remote
+    remote = rag_remote.Remote(url="https://head.local:52440", token="t")
+    assert rag_connect.server_entry("pi")["exposure"] == "direct"
+    assert rag_connect.remote_entry("pi", remote)["exposure"] == "direct"
+    for harness in ("claude-code", "codex", "cursor"):
+        assert "exposure" not in rag_connect.server_entry(harness)
+        assert "exposure" not in rag_connect.remote_entry(harness, remote)
+
+
+def test_pi_entry_from_older_omm_upgrades_and_still_restores(home, monkeypatch):
+    path = rag_connect.config_path("pi")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(SEEDS["pi"])
+    current = rag_connect.server_entry
+    monkeypatch.setattr(rag_connect, "server_entry", lambda harness: {
+        k: v for k, v in current(harness).items() if k != "exposure"})
+    assert rag_connect.connect("pi")["state"] == "added"
+    monkeypatch.setattr(rag_connect, "server_entry", current)
+    assert rag_connect.connect("pi")["state"] == "updated"
+    assert _entry("pi", path)["exposure"] == "direct"
+    assert rag_connect.disconnect("pi")["state"] == "restored"
+    assert path.read_bytes() == SEEDS["pi"]
+
+
 def test_env_overrides_and_frozen_command(home, monkeypatch, tmp_path):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-dir"))

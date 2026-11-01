@@ -811,7 +811,8 @@ def test_agent_local_asks_only_for_what_is_missing(isolated_omm_home, monkeypatc
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_stdout_is_tty", lambda: True)
     monkeypatch.setattr(agent_connection, "installed_models", lambda *a, **k: ["qwen3:8b"])
-    monkeypatch.setattr(agent_connection, "connect", lambda *a, **k: connected.append((a, k)))
+    monkeypatch.setattr(agent_connection, "connect", lambda *a, **k: connected.append((a, k)) or {
+        "runtime_model": "qwen3:8b-omm32k", "runtime_context": 32768})
     asked: list = []
     answers = iter(["qwen3:8b"])
     # Building a real questionary.select needs a console on Windows CI.
