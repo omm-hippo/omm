@@ -36,7 +36,7 @@ child = subprocess.Popen(
     [sys.executable, "-c", "import time; time.sleep(60)"],
     stdout=sys.stdout.fileno(), stderr=sys.stderr.fileno(),
 )
-pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
 time.sleep(60)
 """
 
@@ -95,7 +95,7 @@ def test_run_ollama_cli_times_out_even_if_a_child_keeps_the_output(tmp_path):
         _call_with_deadline(call, seconds=20)
     finally:
         if pid_file.exists():
-            _stop(int(pid_file.read_text()))
+            _stop(int(pid_file.read_text(encoding="utf-8")))
 
 
 def test_run_ollama_cli_decodes_output_as_utf8_with_replacement():
