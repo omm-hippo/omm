@@ -797,7 +797,7 @@ def _stub_ollama_env(monkeypatch, tmp_path, run_ollama):
     monkeypatch.setattr(linker, "ollama_models_dir", lambda: models_dir)
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama" if name == "ollama" else None)
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
     return models_dir
 
 
@@ -885,7 +885,7 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     with pytest.raises(linker.InsufficientLinkSpaceError, match="transaction files were removed"):
         linker._fallback_to_native_create(source, "model", models_dir)
@@ -919,7 +919,7 @@ def test_failed_native_import_does_not_claim_it_removed_files_it_could_not_find(
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     with pytest.raises(linker.InsufficientLinkSpaceError) as excinfo:
         linker._fallback_to_native_create(source, "model", models_dir)
@@ -963,7 +963,7 @@ def test_failed_native_ollama_replacement_restores_previous_registration(
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     with pytest.raises(linker.LinkError):
         linker._fallback_to_native_create(source, "model", models_dir)
@@ -1011,7 +1011,7 @@ def test_successful_native_ollama_replacement_reclaims_only_unreferenced_old_blo
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     linker._fallback_to_native_create(source, "model", models_dir)
 
@@ -1090,7 +1090,7 @@ def test_successful_native_ollama_blob_is_reclaimed_on_unlink(
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     linker._fallback_to_native_create(source, "model", models_dir)
     linker.unlink_ollama("model", models_dir=models_dir)
@@ -1165,7 +1165,7 @@ def test_link_ollama_reclaims_manifest_left_by_native_fallback(
     monkeypatch.setattr(
         linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
     )
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
     linker._fallback_to_native_create(source, "model", models_dir)
 
     # Now Ollama is compatible again, so a later install takes the normal
@@ -1201,6 +1201,36 @@ def test_link_ollama_skips_show_call_when_version_already_cached_compatible(
     assert result is False  # no tokenizer.chat_template in the stubbed metadata
     assert [c[1:] for c in calls] == [["--version"]]  # no "show" call - cache hit
     assert (models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest").exists()
+
+
+def test_link_ollama_with_stopped_daemon_still_hits_the_compatible_cache(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """With the daemon stopped, `ollama --version` prints only warnings. That
+    used to miss the cache, so every link re-ran `ollama show` - which starts
+    the Windows tray app and hung `omm link` (2026-11-04)."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(
+                stdout="Warning: could not connect to a running Ollama instance\n"
+                "Warning: client version is 9.9.9\n"
+            )
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    cache_path = tmp_path / ".omm" / "ollama_manifest_compat.json"
+    monkeypatch.setattr(config, "OMM_HOME", tmp_path / ".omm")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text('{"ollama_version": "ollama version is 9.9.9", "compatible": true}', encoding="utf-8")
+
+    linker.link_ollama(source, "model")
+
+    assert [c[1:] for c in calls] == [["--version"]]  # no "show" call - cache hit
 
 
 def test_link_ollama_records_compatible_after_successful_show_probe(
@@ -1265,9 +1295,10 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
 
     assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert len(create_calls) == 1
+    # UTF-8 decoding with replacement now lives inside _run_ollama_cli itself
+    # (see test_run_ollama_cli_decodes_output_as_utf8_with_replacement).
     assert subprocess_options
-    assert all(options["encoding"] == "utf-8" for options in subprocess_options)
-    assert all(options["errors"] == "replace" for options in subprocess_options)
+    assert all("timeout" in options for options in subprocess_options)
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["layers"][0]["digest"] == "sha256:native"
     # The rejected hand-written model/config blobs were removed before the
@@ -1571,7 +1602,7 @@ def test_link_ollama_explicit_models_dir_never_calls_ollama_cli(
     def run_ollama(cmd, **kwargs):
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
-    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    monkeypatch.setattr(linker, "_run_ollama_cli", run_ollama)
 
     result = linker.link_ollama(source, "model", models_dir=models_dir)
 
@@ -1615,3 +1646,18 @@ def test_link_already_current_rejects_malformed_model_digest(tmp_path, monkeypat
     monkeypatch.setattr(linker, "_owned_manifest", lambda *a, **k: True)
 
     assert linker._ollama_link_already_current(manifest, source, tmp_path / "blobs") is False
+
+
+def test_ollama_runtime_tag_serves_leaves_omm_own_tag_to_the_normal_relink(tmp_path):
+    """When the recorded runtime tag *is* omm's `ollama_name` (an omm install,
+    or an import whose Ollama tag already had that name), `omm link` must
+    keep rewriting/repairing it as before rather than skipping it."""
+    source = tmp_path / "model.gguf"
+    source.write_bytes(b"weights")
+    entry = {
+        "sha256": linker.sha256_file(source),
+        "ollama_name": "model",
+        "ollama_runtime_name": "model:latest",
+    }
+
+    assert linker.ollama_runtime_tag_serves(entry, source, models_dir=tmp_path / "ollama") is False
