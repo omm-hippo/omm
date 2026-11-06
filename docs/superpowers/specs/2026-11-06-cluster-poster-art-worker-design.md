@@ -50,7 +50,9 @@ turned on late, crash, or be switched off without breaking the site.
   `FLUX.2-klein-4B` is ungated, Apache-2.0, and supported by mflux (`flux2-klein-4b`).
 - klein-4B, `quantize=8`, 1024×768, 4 steps, on Node1 with its GPU 87-96 % busy:
   **30 s to draw** (7.6 s/step), 35.6 s for a fresh process including model load, 99 s the
-  first time ever (cold disk). **Peak memory footprint 13.8 GB.** The HF snapshot is 7.4 GB.
+  first time ever (cold disk). **Peak memory footprint 13.8 GB.** The files mflux needs (`model_index.json`, `scheduler/`,
+  `text_encoder/`, `tokenizer/`, `transformer/`, `vae/`) are about 15 GB; the repo also has a
+  7.2 GB single-file copy and sample images that are not needed.
   Picture quality is fine. Garbled fake lettering appeared because the test prompt said
   "poster"; real site prompts already carry "no text, no letters, no numbers, no logos".
 - The first download stalled for 15 minutes with two `.incomplete` blobs frozen; restarting
@@ -123,7 +125,9 @@ omm cluster poster disable                      # stop it and remove its token, 
   added and nothing in the user's own `~/.cache/huggingface` is touched. Model
   `black-forest-labs/FLUX.2-klein-4B` pinned to revision
   `e7b7dc27f91deacad38e78976d1f2b499d76a294`, mflux model name `flux2-klein-4b`,
-  `quantize=8`, 4 steps.
+  `quantize=8`, 4 steps. Downloaded with `allow_patterns` limited to the six entries above, then
+  loaded from that local snapshot path (`model_path=`) with `HF_HUB_OFFLINE=1`, so the drawer
+  itself never goes online and the pinned revision is what runs.
 - State for status: `OMM_HOME/cluster/poster/state.json` written by the worker (phase,
   model loaded or not, last job id / outcome / seconds / time). No token, no prompt.
 - Service: LaunchAgent `com.omm.cluster-poster`, hidden subcommand `_cluster-poster-run`,
