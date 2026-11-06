@@ -273,11 +273,16 @@ loopback API (`exo_client.py`, field mapping verified against exo 1.0.71 fixture
 inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` to
 `OMM_HOME/cluster/exo-runtime`, and `exo_service.py` runs that copy as LaunchAgent
 `com.omm.cluster-exo`. The agent sets both `EXO_LIBP2P_NAMESPACE` and
-`EXO_ZENOH_NAMESPACE`, passes `--libp2p-port 52416`, and puts `/usr/sbin` in PATH.
+`EXO_ZENOH_NAMESPACE`, starts exo through a small `/bin/sh` script that moves `--libp2p-port` to
+the next port in 52416-52439 on every start (`OMM_HOME/cluster/exo-port-index`), and puts
+`/usr/sbin` in PATH. exo 1.0.71 makes a new peer id per start, and the other Macs re-dial the old
+id at its old address every 5 s until its mDNS record expires (2500 s); on the same port each
+dial reached the new exo and started an election (API paused) every 5 s for ~35 min after any
+restart, endlessly with a crash-looping Mac. On a new port those dials are refused.
 `firewall.py` loads pf sub-anchor `com.apple/omm-cluster` through root LaunchDaemon
 `com.omm.cluster-pf`. The anchor trusts lo0 and Thunderbolt and blocks exo's API (52415) plus
 every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
-on 0.0.0.0. exo's libp2p port 52416 is deliberately open to the office network: exo dials a
+on 0.0.0.0. exo's libp2p ports 52416-52439 are deliberately open to the office network: exo dials a
 peer's addresses in sorted order and skips the rest while one is pending, so the office-network
 address always goes first, and with it blocked Macs met only by luck. Only a node with the pnet
 key can finish that handshake, and exo derives the key from the cluster name, so

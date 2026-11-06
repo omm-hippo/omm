@@ -539,7 +539,7 @@ def exposure() -> dict | None:
 
     head = current.role == "head"
     # Open on members too (so a handover needs no sudo); nothing listens there.
-    ports = [*firewall.EXO_PORTS, current.gateway_port]
+    ports = [firewall.EXO_PORTS[0], exo_service.libp2p_port(), current.gateway_port]
     listeners = []
     for port in ports:
         rows, _error = engine_security._listener_rows(port)
@@ -551,7 +551,7 @@ def exposure() -> dict | None:
         reason = ("pf blocks exo's API and model ports from other devices; "
                   + (f"the gateway (port {current.gateway_port}) needs an employee token and " if head else
                      f"the gateway port {current.gateway_port} is closed until this Mac becomes head, and ")
-                  + f"exo's peer port {firewall.LIBP2P_PORT} needs the cluster key")
+                  + f"exo's peer ports {firewall.LIBP2P_PORTS.start}-{firewall.LIBP2P_PORTS.stop - 1} need the cluster key")
     elif fw == "unchecked":
         status = "unknown"
         reason = "the cluster firewall rules file is in place, but reading what pf loaded needs sudo; run sudo -v, then this again"
