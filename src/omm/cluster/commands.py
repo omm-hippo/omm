@@ -17,7 +17,7 @@ from typing import Callable
 from datetime import datetime, timezone
 
 from omm.cluster import (appfw, document_search, exo_client, exo_service, firewall, member_service, members, netconfig,
-                         power, preflight, rag_backup, recommend, service, settings, tls, tokens)
+                         poster_service, power, preflight, rag_backup, recommend, service, settings, tls, tokens)
 from omm.cluster import problems as problems_mod
 from omm.cluster.errors import ClusterError, UsageProblem
 from omm.cluster.problems import Problem
@@ -366,7 +366,7 @@ def status() -> dict:
             "gateway_ca_sha256": tls.head_fingerprint() if head else None,
             "kept_models": [dataclasses.asdict(entry) for entry in current.models] if head else [],
             "document_search": documents, "members": member_rows, "problems": problems,
-            "catching_up": behind}
+            "catching_up": behind, "poster": poster_service.status() if current is not None else None}
 
 
 # What a problem omm can fix itself tells the user (the fix is narrow, never a whole init/join).
@@ -757,7 +757,8 @@ def leave(out: Out) -> None:
     current = settings.load()
     # Both agents on either role: a former head's gateway may still be registered.
     steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove, service.uninstall,
-             member_service.uninstall, rag_backup.delete_backup, rag_backup.delete_snapshot]
+             member_service.uninstall, rag_backup.delete_backup, rag_backup.delete_snapshot,
+             poster_service.disable]
     if current is None or current.role == "head":
         steps += [members.clear, members.clear_handover]
     steps += [exo_service.uninstall, preflight.remove_runtime]

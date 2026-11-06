@@ -24,7 +24,7 @@ import tempfile
 import time
 from typing import NamedTuple
 
-from omm.cluster import exo_client, member_auth, member_service, rag_backup, settings
+from omm.cluster import exo_client, member_auth, member_service, poster_service, rag_backup, settings
 from omm.cluster.errors import ClusterError
 from omm.cluster.gateway import GATEWAY_PORT, MEMBER_POLL_ROUTE, MEMBER_SNAPSHOT_ROUTE
 
@@ -297,6 +297,12 @@ def run_member_link() -> int:
             state = "failed"
         log.info("member link: %s", state, extra={"event": "cluster_member_cycle", "state": state})
         if state in _EXIT_STATES:
+            if state in ("updated", "switched"):
+                # The poster worker would keep running the old code until its own restart.
+                try:
+                    poster_service.restart_if_installed()
+                except ClusterError:
+                    log.warning("could not restart the poster art worker", extra={"event": "poster_restart_failed"})
             # launchd (KeepAlive) starts this again on the new code or as the head's gateway.
             return 0
         time.sleep(POLL_SECONDS)
