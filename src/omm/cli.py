@@ -11893,6 +11893,14 @@ def link_models(
         for spec in engines_to_process:
             if not linker.is_engine_installed(spec.key):
                 continue
+            if spec.key == "ollama" and linker.ollama_runtime_tag_serves(entry, dest):
+                # An import kept Ollama's own tag (e.g. bge-m3:latest) and it
+                # still serves this file; publishing `ollama_tag` as well
+                # would add a duplicate name to `ollama list`.
+                new_linked[spec.key] = True
+                changed = True
+                blocked.discard(spec.key)
+                continue
             try:
                 warning = linker.link_engine(
                     spec.key,
