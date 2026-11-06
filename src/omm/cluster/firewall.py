@@ -16,13 +16,15 @@ fails that dial at once and the port stays closed to the network. Real Mac
 minis 2026-10-23: 5 of 5 discoveries in about 10 s with `return`, 2 of 3 with
 `drop` (one never within 40 s).
 
-exo's libp2p port (52416) is open to the office network. exo dials a peer's
+exo's libp2p ports (52416-52439) are open to the office network. exo dials a peer's
 addresses in sorted order and skips the rest while one dial is pending, so
 the office-network address always goes first; with it blocked, three Mac
 minis met only by luck (2 of 6 tries, 2026-10-25), with it open 10 of 10.
 Only a node holding the pnet key can finish that handshake, and the key is
 derived from the 128-bit cluster name (settings.py). The API and the MLX ring
-stay closed, and the ring still runs over Thunderbolt.
+stay closed, and the ring still runs over Thunderbolt. It is a range because
+exo_service moves exo to the next port on every start (see there); 52440 above
+it is the head's gateway.
 
 TCP blocks match only a new connection's SYN (`flags S/SA`). Without that, a
 connection the Mac opened before the rules loaded has no pf state, so its
@@ -48,7 +50,7 @@ from typing import Literal, Sequence
 from omm.cluster.errors import ClusterError
 
 EXO_PORTS: tuple[int, ...] = (52415, 52416)
-LIBP2P_PORT = 52416
+LIBP2P_PORTS = range(52416, 52440)
 PF_ANCHOR = "com.apple/omm-cluster"
 RULES_PATH = Path("/Library/Application Support/omm/cluster-pf.conf")
 DAEMON_LABEL = "com.omm.cluster-pf"
@@ -128,7 +130,7 @@ def render_rules(exo_ports: Sequence[int], tb_ifaces: Sequence[str], *, gateway_
         lines.append(f"pass in quick on {{ {' '.join(tb_ifaces)} }} all")
     if gateway_port is not None:
         lines.append(f"pass in quick proto tcp to port {gateway_port}")
-    lines.append(f"pass in quick proto tcp to port {LIBP2P_PORT}")
+    lines.append(f"pass in quick proto tcp to port {LIBP2P_PORTS.start}:{LIBP2P_PORTS.stop - 1}")
     lines += [
         "block return in quick proto tcp to port $exo_ports flags S/SA",
         "block return in quick proto udp to port $exo_ports",
