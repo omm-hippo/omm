@@ -95,7 +95,8 @@ def _clear_locks() -> None:
 
 def _download_env() -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("HF_")}
-    env.update({"HF_HUB_DOWNLOAD_TIMEOUT": "60", "HF_HUB_DISABLE_TELEMETRY": "1"})
+    # HF_HOME too: huggingface_hub keeps its Xet chunk cache under HF_HOME, not cache_dir.
+    env.update({"HF_HOME": str(_hf_dir()), "HF_HUB_DOWNLOAD_TIMEOUT": "60", "HF_HUB_DISABLE_TELEMETRY": "1"})
     return env
 
 

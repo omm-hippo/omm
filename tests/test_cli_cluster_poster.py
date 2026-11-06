@@ -171,3 +171,18 @@ def test_poster_job_runs_the_hidden_subcommand(isolated_omm_home):
     assert job["ProgramArguments"][-1] == "_cluster-poster-run"
     assert job["KeepAlive"] is True
     assert job["StandardOutPath"].endswith("logs/cluster-poster.log")
+
+
+def test_disable_removes_files_even_when_the_keychain_is_locked(fakes, monkeypatch):
+    runner.invoke(cli.app, ["cluster", "poster", "enable", "--env-file", "-"], input=ENV)
+    (poster_config.poster_dir() / "venv").mkdir(parents=True)
+
+    def locked(**_k):
+        raise poster_config.ClusterError("could not remove the poster worker token from the login keychain")
+
+    monkeypatch.setattr(poster_config, "delete_token", locked)
+    result = runner.invoke(cli.app, ["cluster", "poster", "disable"])
+    assert result.exit_code == 1
+    assert "unlock-keychain" in result.output
+    assert not (poster_config.poster_dir() / "venv").exists() and poster_config.load_settings() is None
+    assert not poster_service.is_installed()

@@ -138,3 +138,17 @@ def test_remove_all_is_idempotent(isolated_omm_home):
     poster_runtime.remove_all()
     assert not (poster_config.poster_dir() / "venv").exists()
     assert not (poster_config.poster_dir() / "hf").exists()
+
+
+def test_download_keeps_hf_caches_inside_the_poster_folder(isolated_omm_home, monkeypatch):
+    monkeypatch.setenv("HF_HOME", "/somewhere/else")
+    snapshot = poster_config.poster_dir() / "hf" / "snap"
+    snapshot.mkdir(parents=True)
+    envs = []
+
+    def popen(argv, **kw):
+        envs.append(kw["env"])
+        return FakeProcess(0, stdout=f"{snapshot}\n")
+
+    poster_runtime.download_model(popen=popen, sleep=lambda _s: None)
+    assert envs[0]["HF_HOME"] == str(poster_config.poster_dir() / "hf")

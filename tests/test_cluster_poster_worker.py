@@ -275,3 +275,27 @@ def test_no_claim_until_model_downloaded(isolated_omm_home, monkeypatch):
     with pytest.raises(_Stop):
         worker.run_worker()
     assert phases == ["downloading the model"]
+
+
+def test_exo_answering_a_request_does_not_hold_the_gate():
+    # exo 1.0.x marks a loaded runner busy with a request as RunnerRunning (dashboard "RUNNING").
+    assert not worker.exo_wants_memory(_state("RunnerRunning"), OWN)
+    for loading in ("RunnerLoading", "RunnerLoaded", "RunnerWarmingUp"):
+        assert worker.exo_wants_memory(_state(loading), OWN), loading
+
+
+def test_repeated_drawer_errors_pause_the_worker(isolated_omm_home):
+    clock = Clock()
+    client = FakeClient([JOB, JOB, JOB, JOB])
+    w = worker.Worker(client, lambda: FakeDrawer(clock, error=DrawerError("boom")), budget_gb=lambda: 40.0,
+                      pressure_critical=lambda: False, exo_state=lambda: (None, OWN), now=clock.now, sleep=clock.sleep)
+    for _ in range(3):
+        w.step()
+    claims = client.calls.count(("claim",))
+    delay = w.step()
+    assert delay == worker.DRAWER_PAUSE_SECONDS[0]
+    assert client.calls.count(("claim",)) == claims  # paused: no claim, no ping
+    assert worker.read_state()["phase"] == "drawer failing (see ~/.omm/logs/cluster-poster.log)"
+    clock.sleep(delay)
+    w.step()
+    assert client.calls.count(("claim",)) == claims + 1  # tries again after the pause

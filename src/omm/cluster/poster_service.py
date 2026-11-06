@@ -110,11 +110,20 @@ def disable() -> None:
     """Stop the worker and remove its token, settings, venv and model. Safe to repeat."""
     if is_installed():
         uninstall()
-    if poster_config.poster_dir().exists():
+    if not poster_config.poster_dir().exists():
+        return
+    # Files before the token: over ssh the keychain is often locked, and the
+    # ~15 GB of venv and model must go even then.
+    poster_config.delete_settings()
+    poster_runtime.remove_all()
+    shutil.rmtree(poster_config.poster_dir(), ignore_errors=True)
+    try:
         poster_config.delete_token()
-        poster_config.delete_settings()
-        poster_runtime.remove_all()
-        shutil.rmtree(poster_config.poster_dir(), ignore_errors=True)
+    except ClusterError:
+        # Recreate the folder so a re-run (after unlocking) still removes the token.
+        poster_config.poster_dir().mkdir(parents=True, exist_ok=True)
+        raise ClusterError("The poster worker is stopped and its files are removed, but its token is still in the "
+                           "login keychain. Run `security unlock-keychain`, then run this again.") from None
 
 
 def status() -> dict:

@@ -31,16 +31,24 @@ PING_SECONDS = 15
 LEASE_SECONDS = 180
 DRAW_MARGIN_SECONDS = 30
 BACKOFF = (3, 6, 12, 24, 48, 60)
+# A Mac whose drawer keeps failing (broken venv, corrupt model, full disk) must
+# not eat the whole queue a job per second: after this many failures in a row
+# it goes quiet for a growing pause, so the site sees it as gone.
+DRAWER_FAILS_BEFORE_PAUSE = 3
+DRAWER_PAUSE_SECONDS = (300, 600, 1200, 1800, 3600)
 _SETUP_RETRY_SECONDS = 60
 _LOG_HINT = "~/.omm/logs/cluster-poster.log"
 
 
-def exo_wants_memory(raw_state: dict | None, own_node_id: str | None) -> bool:
-    """True while exo brings up a model instance that uses this Mac (its runner here is not ready yet).
+# exo 1.0.x runner states while a model instance is being brought up. RunnerReady
+# and RunnerRunning (busy answering a request) are a model already in memory;
+# failed/shut-down/unknown states do not hold the gate, or one stuck placement
+# would keep the worker off forever.
+_EXO_LOADING = frozenset({"RunnerLoading", "RunnerLoaded", "RunnerWarmingUp"})
 
-    A failed or shut-down runner does not count, or one stuck placement would
-    keep the worker off forever.
-    """
+
+def exo_wants_memory(raw_state: dict | None, own_node_id: str | None) -> bool:
+    """True while exo brings up a model instance that uses this Mac (no runner yet, or one still loading)."""
     if not isinstance(raw_state, dict) or not own_node_id:
         return False
     runners = raw_state.get("runners") if isinstance(raw_state.get("runners"), dict) else {}
@@ -53,10 +61,8 @@ def exo_wants_memory(raw_state: dict | None, own_node_id: str | None) -> bool:
         if not isinstance(node_to_runner, dict) or own_node_id not in node_to_runner:
             continue
         runner = runners.get(node_to_runner[own_node_id])
-        kind = next(iter(runner), "") if isinstance(runner, dict) and runner else ""
-        if kind == "RunnerReady" or "Failed" in kind or "Shutdown" in kind:
-            continue
-        return True
+        if not isinstance(runner, dict) or not runner or next(iter(runner)) in _EXO_LOADING:
+            return True
     return False
 
 
@@ -116,6 +122,9 @@ class Worker:
         self._sleep = sleep
         self._backoff = _Backoff()
         self._phase = None
+        self._drawer_failures = 0
+        self._pauses = 0
+        self._paused_until = 0.0
 
     def _set_phase(self, phase: str, **extra) -> None:
         if phase != self._phase or extra:
@@ -124,6 +133,9 @@ class Worker:
 
     def step(self) -> float:
         """One pass of the loop; returns how long to wait before the next."""
+        if self._now() < self._paused_until:
+            self._set_phase(f"drawer failing (see {_LOG_HINT})")
+            return self._paused_until - self._now()
         raw, own = self._exo_state()
         budget = self._budget_gb()
         open_, phase = gate(exo_wants_memory(raw, own), budget, self._pressure_critical())
@@ -149,6 +161,16 @@ class Worker:
             return IDLE_SECONDS
         self.run_job(job, self._now())
         return 0
+
+    def _drawer_failed(self) -> None:
+        self._drawer_failures += 1
+        if self._drawer_failures >= DRAWER_FAILS_BEFORE_PAUSE:
+            pause = DRAWER_PAUSE_SECONDS[min(self._pauses, len(DRAWER_PAUSE_SECONDS) - 1)]
+            self._pauses += 1
+            self._drawer_failures = DRAWER_FAILS_BEFORE_PAUSE - 1  # one more failure pauses again, longer
+            self._paused_until = self._now() + pause
+            log.warning("poster drawer failed %d times in a row; pausing %d s", DRAWER_FAILS_BEFORE_PAUSE, pause,
+                        extra={"event": "poster_drawer_paused"})
 
     def _ping_loop(self, wait) -> None:
         # `wait` is Event.wait: True once the job is over.
@@ -179,12 +201,16 @@ class Worker:
                                                               now=self._now, sleep=self._sleep)
         except DrawerTimeout:
             self._client.fail(job.id, "timeout")
+            self._drawer_failed()
         except (DrawerError, OSError):
             self._client.fail(job.id, "drawer error")
+            self._drawer_failed()
         finally:
             done.set()
             drawer.stop()
             out.unlink(missing_ok=True)
+        if outcome != "failed":
+            self._drawer_failures, self._pauses = 0, 0
         seconds = self._now() - started
         log.info("poster job %s: %s in %.0f s", job.id, outcome, seconds,
                  extra={"event": "poster_job", "job_id": job.id, "outcome": outcome, "seconds": round(seconds, 1)})
