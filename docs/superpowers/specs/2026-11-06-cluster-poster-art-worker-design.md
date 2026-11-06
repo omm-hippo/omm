@@ -65,8 +65,8 @@ turned on late, crash, or be switched off without breaking the site.
 - A Mac that cannot take a job right now (not enough memory, model not downloaded yet) is
   invisible to the site: it sends neither claim nor ping.
 - The token never appears in any output, log, run log, bug report, or command line.
-- `omm cluster status` on a Mac shows whether the service is on, whether the model is
-  loaded, and the last job's outcome.
+- `omm cluster status` on a Mac shows whether the service is on, whether it is drawing
+  now, and the last job's outcome.
 
 ## Non-goals
 
@@ -129,7 +129,7 @@ omm cluster poster disable                      # stop it and remove its token, 
   loaded from that local snapshot path (`model_path=`) with `HF_HUB_OFFLINE=1`, so the drawer
   itself never goes online and the pinned revision is what runs.
 - State for status: `OMM_HOME/cluster/poster/state.json` written by the worker (phase,
-  model loaded or not, last job id / outcome / seconds / time). No token, no prompt.
+  drawing now or not, last job id / outcome / seconds / time). No token, no prompt.
 - Service: LaunchAgent `com.omm.cluster-poster`, hidden subcommand `_cluster-poster-run`,
   wrapper shim `OMM_HOME/bin/omm-cluster-poster`, log `OMM_HOME/logs/cluster-poster.log`,
   `KeepAlive`, `ThrottleInterval` — a copy of `member_service.py`'s pattern.
@@ -144,9 +144,13 @@ omm cluster poster disable                      # stop it and remove its token, 
    request per line on stdin (`prompt`, `width`, `height`, `seed`, `out` path) and answers
    one JSON line on stdout (`ok`, `seconds` or `error`). It writes a JPEG (quality 90) to
    `out`. The prompt only ever travels inside that JSON value.
-   - Unloading the model = ending the drawer process, so the memory really goes back.
-   - The drawer is started for the first job and stopped after **15 minutes** with no job,
-     on any drawer error, or when a job runs out of time.
+   - **One picture per drawer process** (builder ruling, 2026-11-07, measured on Node1): like
+     mflux's own CLI the drawer drops the text encoder (~9 GB) once the prompt is encoded.
+     Peak 13.7 GB per picture, versus 23.1 GB when the whole model stays loaded; but a second
+     prompt would need the encoder back, so the drawer exits after one picture. Cost: about
+     4 s more per picture (30.5 s -> 34.5 s at 992x736 with the GPU busy). The "keep the model
+     loaded for 15 minutes" idea is dropped: memory goes back the moment a picture is done,
+     which also suits the cluster-LLM-first rule.
 
 ### Worker loop
 
@@ -161,7 +165,6 @@ loop:
       network error / 5xx    -> backoff 3,6,12,...,60 s
       [] or null             -> sleep 3 s
       [job]                  -> run_job(job), then claim again at once
-  drawer idle 15 min         -> stop drawer
 ```
 
 `run_job`:
@@ -172,7 +175,7 @@ loop:
 2. Size: take the job's width/height, floor each to a multiple of 16 (mflux FLUX.2 needs
    multiples of 16 — builder verifies; use 64 if mflux demands it), and if
    `width*height > 786432` scale both down by the same factor first. Never round up.
-3. Start the drawer if not running, send the request with a random seed. If the drawing is
+3. Start a drawer for this job, send the request with a random seed. If the drawing is
    not back by `deadline - 30 s`, kill the drawer and send `fail` (`reason: "timeout"`).
 4. Read the JPEG bytes; if over 4 MB re-encode at a lower quality once, else `fail`.
 5. Upload: `POST {SITE_URL}/api/poster-art/jobs/<id>/result`, `Authorization: Bearer
@@ -189,9 +192,8 @@ loop:
 
 ### Memory gate
 
-- Drawer running → the model's memory is already ours: pass, unless macOS memory pressure
-  is critical, in which case stop the drawer and fail the gate.
-- Drawer not running → pass only if `hardware.calculate_memory_budget(...).model_budget_gb`
+- Checked only between jobs (a job in progress always finishes or times out). Pass only if
+  macOS memory pressure is not critical and `hardware.calculate_memory_budget(...).model_budget_gb`
   (the same live-free-RAM budget the memory guard uses) is ≥ **16 GB** (13.8 GB measured
   peak + margin). Checked every loop, so the Mac reappears to the site on its own when
   another account's job ends.
@@ -199,9 +201,8 @@ loop:
   loopback (`GET /state`, read-only, the same data `exo_client` already parses). If exo is
   bringing up a model instance that includes this Mac (an instance for this node that is not
   running yet, or a placement refused for memory), then:
-  - an idle drawer is stopped at once (not after 15 min);
   - the gate fails (no claim, no ping) until exo's instance is running or gone;
-  - a drawing in progress finishes its one job first, then the drawer stops.
+  - a drawing in progress finishes its one job first.
   Exact detection from exo's state is the builder's, verified against `tests/fixtures/exo/`
   and the live rig. exo unreachable (stopped, restarting) = no exo demand, gate as above.
 - The worker never asks the memory guard to unload anything and never writes to exo.
@@ -229,7 +230,8 @@ loop:
 `omm cluster status` (and `--json`) gains one block for **this** Mac:
 
 ```
-Poster art: on — model loaded, last job 3f2a… done in 32 s (4 min ago)
+Poster art: on — drawing a picture
+Poster art: on — ready, last job 3f2a… done in 32 s (4 min ago)
 Poster art: on — waiting for memory (12 GiB free, needs 16)
 Poster art: on — downloading the model
 Poster art: off
