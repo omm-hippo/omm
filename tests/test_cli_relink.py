@@ -311,3 +311,87 @@ def test_link_engine_not_installed_prints_filter_aware_message(isolated_omm_home
     # Prose names the program, not the `--engine` key that selects it.
     assert "Ollama isn't installed" in result.stdout
     assert "0 model(s) relinked" not in result.stdout
+
+
+def _imported_ollama_model(tmp_path, monkeypatch, *, runtime_tag_digest=None):
+    """An `omm import`-adopted model: the hub file, plus Ollama's own tag
+    `bge-m3:latest` whose model layer is the very same file. The registry
+    keeps both the filename-safe `ollama_name` and the real runtime tag."""
+    import hashlib
+
+    filename = "bge-m3-latest.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"embedding weights")
+    sha256 = hashlib.sha256(dest.read_bytes()).hexdigest()
+    store = tmp_path / "ollama-store"
+    (store / "blobs").mkdir(parents=True)
+    linker.os.link(dest, store / "blobs" / f"sha256-{sha256}")
+    runtime_manifest = store / "manifests" / "registry.ollama.ai" / "library" / "bge-m3" / "latest"
+    runtime_manifest.parent.mkdir(parents=True)
+    layer_digest = runtime_tag_digest or sha256
+    runtime_manifest.write_text(
+        '{"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+        f'"digest":"sha256:{layer_digest}"}}]}}',
+        encoding="utf-8",
+    )
+    registry.save_registry(
+        {
+            filename: {
+                "sha256": sha256,
+                "source": "imported",
+                "ollama_name": "bge-m3-latest",
+                "ollama_runtime_name": "bge-m3:latest",
+                "linked": {"ollama": True},
+            }
+        }
+    )
+    monkeypatch.setattr(linker, "ollama_models_dir", lambda: store)
+    monkeypatch.setattr(linker, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "bert"})
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("lmstudio", "jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+    return filename, store / "manifests" / "registry.ollama.ai" / "library"
+
+
+def test_link_keeps_imported_models_own_ollama_tag_instead_of_adding_a_second_one(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """`omm link` after `omm import` used to publish `bge-m3-latest` next to
+    Ollama's own `bge-m3:latest` - two names for one model in `ollama list`."""
+    filename, library = _imported_ollama_model(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli.app, ["link"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "1 model(s) relinked/verified" in result.stdout
+    assert sorted(path.name for path in library.iterdir()) == ["bge-m3"]
+    assert registry.load_registry()[filename]["linked"]["ollama"] is True
+
+
+def test_link_republishes_imported_model_when_its_ollama_tag_is_gone(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    filename, library = _imported_ollama_model(tmp_path, monkeypatch)
+    (library / "bge-m3" / "latest").unlink()
+
+    result = runner.invoke(cli.app, ["link"])
+
+    assert result.exit_code == 0, result.stdout
+    assert (library / "bge-m3-latest" / "latest").is_file()
+    assert registry.load_registry()[filename]["linked"]["ollama"] is True
+
+
+def test_link_republishes_imported_model_when_its_ollama_tag_points_elsewhere(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The user re-pulled `bge-m3:latest` as different weights: that tag no
+    longer serves the hub file, so the normal relink path must run."""
+    _filename, library = _imported_ollama_model(
+        tmp_path, monkeypatch, runtime_tag_digest="f" * 64
+    )
+
+    result = runner.invoke(cli.app, ["link"])
+
+    assert result.exit_code == 0, result.stdout
+    assert (library / "bge-m3-latest" / "latest").is_file()

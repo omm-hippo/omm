@@ -1603,6 +1603,40 @@ def resolve_ollama_runtime_names_batch(
     }
 
 
+def ollama_runtime_tag_serves(
+    entry: dict, gguf_path: Path, *, models_dir: Path | None = None
+) -> bool:
+    """True when the exact Ollama tag recorded for an imported model
+    (`ollama_runtime_name`, e.g. ``bge-m3:latest``) still serves this GGUF.
+
+    `omm import` keeps Ollama's own tag and stores a filename-safe
+    ``ollama_name`` (``bge-m3-latest``) beside it. `omm link` publishes under
+    ``ollama_name``, so without this check every relink of an imported model
+    added a second name for the same weights to `ollama list`. A runtime tag
+    that is just ``ollama_name`` itself stays on the normal relink path,
+    which can also repair it."""
+    runtime = entry.get("ollama_runtime_name")
+    sha256 = entry.get("sha256")
+    if not isinstance(runtime, str) or not runtime.strip() or not isinstance(sha256, str):
+        return False
+    runtime = runtime.strip()
+    link_name = entry.get("ollama_name")
+    if isinstance(link_name, str) and runtime in {link_name, f"{link_name}:latest"}:
+        return False
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+    if runtime not in _ollama_runtime_names_for_digest(sha256, models_dir=models_dir):
+        return False
+    digest = sha256.strip().casefold()
+    blob = models_dir / "blobs" / f"sha256-{digest}"
+    try:
+        if not blob.is_file():
+            return False
+        return blob.samefile(gguf_path) or sha256_file(blob) == digest
+    except OSError:
+        return False
+
+
 def _guess_param_size(filename: str) -> str:
     m = re.search(r"(\d+(?:\.\d+)?)[Bb](?:[-_.]|$)", filename)
     return f"{m.group(1)}B" if m else "unknown"
@@ -1991,26 +2025,57 @@ def _ollama_manifest_compat_cache_path() -> Path:
     return config.OMM_HOME / "ollama_manifest_compat.json"
 
 
+def _run_ollama_cli(args: list, *, timeout: float) -> subprocess.CompletedProcess:
+    """Run the `ollama` CLI with its output captured in temporary files.
+
+    On Windows, `ollama show` / `ollama create` start the Ollama tray app
+    (`ollama app.exe --hide --fast-startup`) when no server answers, and hand
+    that long-lived app the CLI's own stdout/stderr. With pipes,
+    `subprocess.run` then waits for an end-of-file that only comes when the
+    app quits - after a timeout it even waits again with no limit - so `omm
+    link` hung forever and Ctrl+C could not stop it (2026-11-04, live). A file
+    has no end-of-file to wait for: once the CLI itself exits, read it back.
+    Raises OSError / subprocess.TimeoutExpired like `subprocess.run`."""
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        result = subprocess.run(
+            args, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, timeout=timeout
+        )
+
+        def read(handle) -> str:
+            handle.seek(0)
+            return handle.read().decode("utf-8", errors="replace").replace("\r\n", "\n")
+
+        return subprocess.CompletedProcess(args, result.returncode, read(stdout), read(stderr))
+
+
+_OLLAMA_VERSION_LINE = re.compile(r"(?:ollama|client) version is (\S+)")
+
+
 def _ollama_cli_version() -> str | None:
-    """Raw `ollama --version` output, used only as a cache key so the
-    compatibility probe below runs once per Ollama upgrade instead of on
-    every link. Works even with no daemon running (~15-30ms observed,
-    confirmed live) - it's a pure CLI query, not a network round trip."""
+    """`ollama --version` reduced to one stable line, used only as a cache key
+    so the compatibility probe below runs once per Ollama upgrade instead of
+    on every link. Works even with no daemon running (~15-30ms observed,
+    confirmed live) - it's a pure CLI query, not a network round trip.
+
+    With the daemon stopped the CLI prints "Warning: could not connect to a
+    running Ollama instance / Warning: client version is X" instead of
+    "ollama version is X". Keying the cache on that raw text made a stopped
+    daemon look like a new Ollama: every link re-hashed its model and ran
+    the `ollama show` probe, which is what started the tray app above. The
+    server's version wins when both are printed - the daemon is what reads
+    the manifest."""
     exe = find_ollama_executable()
     if exe is None:
         return None
     try:
-        result = subprocess.run(
-            [exe, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3,
-        )
+        result = _run_ollama_cli([exe, "--version"], timeout=3)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return (result.stdout + result.stderr).strip() or None
+    output = (result.stdout + result.stderr).strip()
+    found = _OLLAMA_VERSION_LINE.search(output)
+    if found is None:
+        return output or None
+    return f"ollama version is {found.group(1)}"
 
 
 def _manifest_format_known_good(ollama_version: str) -> bool | None:
@@ -2097,14 +2162,7 @@ def _ollama_accepts_manifest(model_name: str) -> bool | None:
     if exe is None:
         return None
     try:
-        result = subprocess.run(
-            [exe, "show", model_name],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
+        result = _run_ollama_cli([exe, "show", model_name], timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode == 0:
@@ -2264,13 +2322,8 @@ def _fallback_to_native_create_unlocked(
         modelfile = Path(tmp) / "Modelfile"
         modelfile.write_text(f"FROM {gguf_path}\n", encoding="utf-8")
         try:
-            result = subprocess.run(
-                [exe, "create", model_name, "-f", str(modelfile)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=600,
+            result = _run_ollama_cli(
+                [exe, "create", model_name, "-f", str(modelfile)], timeout=600
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             removed = cleanup_transaction()
