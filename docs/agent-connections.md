@@ -2,8 +2,8 @@
 
 Related issue: #502, local Ollama phase. Install Claude Code, Codex CLI or pi
 separately, then install a local Ollama model with tool support and at least
-32K context capacity. 64K+ is recommended. OMM does not install the harness or
-download a model in these commands.
+32K context capacity. OMM does not install the harness or download a model in
+these commands.
 
 ```sh
 omm agent local claude --model YOUR_INSTALLED_MODEL
@@ -16,7 +16,19 @@ with `--base-url http://127.0.0.1:PORT`; only loopback origins are accepted.
 Ollama 0.14.0+ is required. Missing tool metadata or insufficient model context
 stops before settings are changed. Cloud tags and explicit remote-model
 metadata are refused. These metadata checks do not establish correct tool
-calling, effective runtime context, or that every request remains local.
+calling or that every request remains local.
+
+Ollama runs a model with its own default context (4096 tokens on an 8 GB Mac),
+not the context the model supports, and its OpenAI/Anthropic endpoints ignore a
+per-request `num_ctx`. pi's system prompt alone is about 6.4K tokens, so requests
+failed with HTTP 400. `local` therefore creates a derived Ollama model that only
+sets `num_ctx`, named `<model>:<tag>-omm<N>k` (for example `qwen3:8b-omm32k`), and
+routes the harness to it. It shares the base model's weights, so no disk space is
+used. N is the largest of 64K, 32K and 16K that the model supports and that fits,
+together with the model weights and an f16 KV cache estimated from the GGUF
+metadata, in 40% of total RAM. A model that does not fit even with 16K is refused
+before any setting changes. pi's `contextWindow` is set to N. `cloud` deletes the
+derived model; when Ollama is not running then, it prints the `ollama rm` command.
 
 The user routing files are Claude's `~/.claude/settings.json`, Codex's
 `~/.codex/config.toml`, and pi's `~/.pi/agent/{models,settings}.json`. OMM

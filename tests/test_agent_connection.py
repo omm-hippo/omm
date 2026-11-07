@@ -27,8 +27,13 @@ def home(tmp_path, monkeypatch, isolated_omm_home):
 def available(monkeypatch):
     monkeypatch.setattr(agent, "preflight", lambda model, base: {
         "model": model, "base_url": base, "context_length": 65536,
+        "weights_bytes": 0, "kv_bytes_per_token": None,
         "tools_advertised": True, "tool_workflow_verified": False,
     })
+    calls = []
+    monkeypatch.setattr(agent, "_create_runtime_model", lambda *args: calls.append(("create", *args)))
+    monkeypatch.setattr(agent, "_delete_runtime_model", lambda metadata: calls.append(("delete", metadata["runtime_model"])))
+    return calls
 
 
 def seed(harness):
@@ -224,7 +229,7 @@ def test_directory_override_and_moved_backup(home, available, monkeypatch, tmp_p
 @pytest.fixture
 def ollama():
     state = {"version": "0.19.0", "capabilities": ["completion", "tools"],
-             "model_info": {"qwen.context_length": 65536}, "requests": []}
+             "model_info": {"qwen.context_length": 65536}, "models": [], "requests": []}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -236,11 +241,18 @@ def ollama():
             self.wfile.write(body)
         def do_GET(self):
             state["requests"].append(("GET", self.path, None))
-            self.reply({"version": state["version"]})
+            self.reply({"version": state["version"]} if self.path == "/api/version" else {"models": state["models"]})
+        def do_DELETE(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state["requests"].append(("DELETE", self.path, body))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state["requests"].append(("POST", self.path, body))
-            self.reply({k: v for k, v in state.items() if k != "requests"})
+            self.reply({"status": "success"} if self.path == "/api/create" else
+                       {k: v for k, v in state.items() if k not in ("requests", "models")})
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -250,20 +262,123 @@ def ollama():
     thread.join()
 
 
-def test_cli_local_http_to_persisted_settings_and_exact_restore(home, ollama):
+def test_cli_local_http_to_persisted_settings_and_exact_restore(home, ollama, monkeypatch):
     url, state = ollama
+    monkeypatch.setattr(agent, "_total_ram_bytes", lambda: 8 * 2**30)
     [path] = seed("codex")
     original = path.read_bytes()
     runner = CliRunner()
     result = runner.invoke(cli.app, ["agent", "local", "codex", "--model", "local-model", "--base-url", url])
     assert result.exit_code == 0, result.output
-    assert "not verified" in result.output
+    output = " ".join(result.output.split())
+    assert "not verified" in output
+    assert "local-model:latest-omm16k with a 16K-token context" in output
     document = agent._parse(path.read_bytes(), True)
     assert document["model_providers"]["omm-local"]["base_url"] == url + "/v1"
-    assert state["requests"] == [("GET", "/api/version", None), ("POST", "/api/show", {"model": "local-model"})]
+    assert document["model"] == "local-model:latest-omm16k"
+    assert state["requests"] == [
+        ("GET", "/api/version", None), ("POST", "/api/show", {"model": "local-model"}), ("GET", "/api/tags", None),
+        ("POST", "/api/create", {"model": "local-model:latest-omm16k", "from": "local-model",
+                                 "parameters": {"num_ctx": 16384}, "stream": False})]
     result = runner.invoke(cli.app, ["agent", "cloud", "codex"])
     assert result.exit_code == 0, result.output
+    assert "ollama rm" not in result.output
     assert path.read_bytes() == original
+    assert state["requests"][-1] == ("DELETE", "/api/delete", {"model": "local-model:latest-omm16k"})
+
+
+def test_cloud_names_the_leftover_model_when_ollama_is_off(home, ollama, monkeypatch):
+    url, state = ollama
+    agent.connect("pi", "local-model", base_url=url)
+    monkeypatch.setattr(agent.LoopbackJsonClient, "request", lambda *a, **k: (_ for _ in ()).throw(
+        agent.RuntimeAdapterError("server_unavailable", "down")))
+    result = CliRunner().invoke(cli.app, ["agent", "cloud", "pi"])
+    assert result.exit_code == 0, result.output
+    assert "ollama rm local-model:latest-omm16k" in " ".join(result.output.split())
+    assert not agent._journal("pi").exists()
+
+
+def test_failed_model_creation_writes_nothing(home, ollama, monkeypatch):
+    url, state = ollama
+    paths = seed("pi")
+    before = [p.read_bytes() for p in paths]
+    def refuse(*args):
+        raise agent.ConnectionError("Ollama could not create the runtime-context model; no settings changed.")
+    monkeypatch.setattr(agent, "_create_runtime_model", refuse)
+    with pytest.raises(agent.ConnectionError, match="runtime-context"):
+        agent.connect("pi", "local-model", base_url=url)
+    assert [p.read_bytes() for p in paths] == before
+    assert not agent._journal("pi").exists()
+
+
+def test_pi_window_matches_the_runtime_context(home, available):
+    agent.connect("pi", "qwen3:0.6b")
+    models = agent._parse(agent._paths("pi")[0].read_bytes())
+    [entry] = models["providers"]["omm-local"]["models"]
+    assert entry["id"] == "qwen3:0.6b-omm16k"
+    assert entry["contextWindow"] == 16384
+    assert available == [("create", "http://127.0.0.1:11434", "qwen3:0.6b", "qwen3:0.6b-omm16k", 16384)]
+    agent.restore("pi")
+    assert available[-1] == ("delete", "qwen3:0.6b-omm16k")
+
+
+QWEN3_06B = {"general.architecture": "qwen3", "qwen3.block_count": 28, "qwen3.attention.head_count": 16,
+             "qwen3.attention.head_count_kv": 8, "qwen3.attention.key_length": 128,
+             "qwen3.attention.value_length": 128, "qwen3.embedding_length": 1024}
+
+
+def test_kv_estimate_from_gguf_metadata():
+    assert agent._kv_bytes_per_token(QWEN3_06B) == 28 * 8 * 256 * 2
+    llama = {"general.architecture": "llama", "llama.block_count": 32, "llama.attention.head_count": 32,
+             "llama.attention.head_count_kv": 8, "llama.embedding_length": 4096}
+    assert agent._kv_bytes_per_token(llama) == 32 * 8 * 256 * 2
+    per_layer = {**QWEN3_06B, "qwen3.attention.head_count_kv": [8, 0, 8]}
+    assert agent._kv_bytes_per_token(per_layer) == 16 * 256 * 2
+    assert agent._kv_bytes_per_token({"general.architecture": "x"}) is None
+    assert agent._kv_bytes_per_token(None) is None
+
+
+@pytest.mark.parametrize("ram_gib, weights, model_context, expected", [
+    (8, 435 * 2**20, 40960, 16384),     # qwen3-0.6b on an 8 GB Mac: 32K would need 3.7 GB of KV
+    (16, 435 * 2**20, 40960, 32768),    # capped by the model's own context
+    (64, 435 * 2**20, 131072, 65536),
+    (24, 5 * 2**30, 131072, 32768),
+])
+def test_runtime_context_fits_the_memory_share(ram_gib, weights, model_context, expected):
+    metadata = {"context_length": model_context, "weights_bytes": weights,
+                "kv_bytes_per_token": agent._kv_bytes_per_token(QWEN3_06B)}
+    assert agent.runtime_context(metadata, ram_gib * 2**30) == expected
+
+
+def test_runtime_context_refuses_a_model_too_big_for_memory():
+    # An 8B model on an 8 GB Mac nearly froze it during a live test.
+    metadata = {"context_length": 131072, "weights_bytes": 4_900_000_000, "kv_bytes_per_token": 131072}
+    with pytest.raises(agent.ConnectionError, match="smaller model"):
+        agent.runtime_context(metadata, 8 * 2**30)
+
+
+def test_runtime_context_without_layer_metadata_takes_the_smallest():
+    assert agent.runtime_context({"context_length": 65536, "kv_bytes_per_token": None}, 64 * 2**30) == 16384
+
+
+@pytest.mark.parametrize("model, derived", [
+    ("qwen3:8b", "qwen3:8b-omm32k"),
+    ("llama3.2", "llama3.2:latest-omm32k"),
+    ("hf.co/user/repo:Q4_K_M", "hf.co/user/repo:Q4_K_M-omm32k"),
+    ("localhost:5000/repo", "localhost:5000/repo:latest-omm32k"),
+])
+def test_runtime_model_tag(model, derived):
+    assert agent.runtime_model(model, 32768) == derived
+
+
+def test_picker_hides_derived_models(monkeypatch):
+    class Client:
+        def __init__(self, base):
+            pass
+        def request(self, *args, **kwargs):
+            return SimpleNamespace(data={"models": [{"name": "qwen3:8b"}, {"name": "qwen3:8b-omm32k"}]})
+    monkeypatch.setattr(agent, "LoopbackJsonClient", Client)
+    assert agent.installed_models() == ["qwen3:8b"]
 
 
 @pytest.mark.parametrize("update, message", [

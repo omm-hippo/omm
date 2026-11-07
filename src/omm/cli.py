@@ -878,14 +878,16 @@ def agent_local(
     harness = _agent_pick_harness(harness)
     model = _agent_pick_model(model, local=True, base_url=base_url)
     try:
-        agent_connection.connect(harness, model, base_url=base_url)
+        metadata = agent_connection.connect(harness, model, base_url=base_url)
     except (agent_connection.ConnectionError, OSError) as error:
         message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Check permissions."
         err_console.print(f"[error]{escape(message)}[/error]")
         raise typer.Exit(1)
     console.print(f"Saved local routing settings for {escape(harness)}. Start a new harness session.")
-    console.print("Tool calling and context were checked from model metadata; the actual agent workflow is not verified.")
-    console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
+    console.print(f"Ollama runs it as {escape(metadata['runtime_model'])} with a {metadata['runtime_context'] // 1024}K-token "
+                  "context sized to this computer's memory; agent cloud deletes that copy.")
+    console.print("Tool calling was checked from model metadata; the actual agent workflow is not verified.")
+    console.print("Project, managed or shell settings may override this user configuration.")
 
 
 @agent_app.command(name="cluster")
@@ -929,6 +931,9 @@ def agent_cloud(harness: str = typer.Argument(None, help="claude, codex or pi. A
         err_console.print(f"[error]{escape(message)}[/error]")
         raise typer.Exit(1)
     console.print("Original routing restored. Start a new harness session." if restored else "No OMM connection backup exists; settings were left unchanged.")
+    if restored and restored.get("left_model"):
+        console.print(f"Ollama was not reachable, so the runtime-context model is still installed. Remove it with: ollama rm {restored['left_model']}",
+                      markup=False, soft_wrap=True)
 
 
 @agent_app.command(name="status")
@@ -11574,43 +11579,68 @@ def search(
         predictor.load_cached_model(),
         verified=predictor.cached_model_signature_is_valid(config.get("catalog_public_key")),
     )
-    local_matches = search_mod.match_candidates(pool, query)
+    def _collect(q: str) -> tuple[list[dict], bool]:
+        local_matches = search_mod.match_candidates(pool, q, fuzzy=False)
 
-    local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
-    from concurrent.futures import ThreadPoolExecutor
+        local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
+        from concurrent.futures import ThreadPoolExecutor
 
-    query_huggingface = provider in (None, "huggingface")
-    query_modelscope = provider in (None, "modelscope") and not skip_ms
-    with ThreadPoolExecutor(max_workers=max(1, query_huggingface + query_modelscope)) as executor:
-        hf_future = (
-            executor.submit(search_mod.search_huggingface, query)
-            if query_huggingface
-            else None
-        )
-        ms_future = (
-            executor.submit(search_mod.search_modelscope, query)
-            if query_modelscope
-            else None
-        )
-        hf_matches = [
-            c
-            for c in (hf_future.result() if hf_future else [])
-            if c.get("repo_id") not in local_repo_ids
-        ]
-        ms_matches = [
-            c
-            for c in (ms_future.result() if ms_future else [])
-            if c.get("repo_id") not in local_repo_ids
-        ]
+        query_huggingface = provider in (None, "huggingface")
+        query_modelscope = provider in (None, "modelscope") and not skip_ms
+        with ThreadPoolExecutor(max_workers=max(1, query_huggingface + query_modelscope)) as executor:
+            hf_future = (
+                executor.submit(search_mod.search_huggingface, q)
+                if query_huggingface
+                else None
+            )
+            ms_future = (
+                executor.submit(search_mod.search_modelscope, q)
+                if query_modelscope
+                else None
+            )
+            hf_matches = [
+                c
+                for c in (hf_future.result() if hf_future else [])
+                if c.get("repo_id") not in local_repo_ids
+            ]
+            ms_matches = [
+                c
+                for c in (ms_future.result() if ms_future else [])
+                if c.get("repo_id") not in local_repo_ids
+            ]
 
-    combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
-    if provider is not None:
-        if provider == "curated":
-            combined = [c for c in combined if not c.get("provider")]
-        else:
-            combined = [c for c in combined if c.get("provider") == provider]
+        if not (hf_matches or ms_matches):
+            # Look-alike names only when the providers found nothing, so
+            # they never crowd out real results (see match_candidates).
+            local_matches = search_mod.match_candidates(pool, q)
+        combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
+        if provider is not None:
+            if provider == "curated":
+                combined = [c for c in combined if not c.get("provider")]
+            else:
+                combined = [c for c in combined if c.get("provider") == provider]
+        # Nothing remote to retry when only the curated list was searched.
+        return combined, bool(hf_matches or ms_matches) or not (query_huggingface or query_modelscope)
+
+    # The providers search repo names only, so a pasted GGUF file name finds
+    # nothing there; the local fuzzy match can still return loose look-alikes
+    # (anything sharing "Q4_K_M"), which is why the retry keys on the
+    # provider results rather than on an empty list.
+    combined, found_remote = _collect(query)
+    fallback = search_mod.filename_query_fallback(query)
+    if fallback and not found_remote:
+        retried, found_remote = _collect(fallback)
+        combined = retried or combined
     if not combined:
         err_console.print(f"[warning]No models found matching '{query}'.[/warning]")
+    if fallback and not found_remote:
+        err_console.print(
+            "[muted]Search matches repository names, not the .gguf files inside them, and "
+            "uploaders often shorten names in file names. Search for a few words of the "
+            "repository name, or install the file directly: "
+            "omm install org/repo:<file>.gguf[/muted]"
+        )
+    if not combined:
         raise typer.Exit(1)
 
     # Score against whatever's already cached locally, same as install

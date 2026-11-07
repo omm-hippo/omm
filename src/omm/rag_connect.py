@@ -13,7 +13,7 @@ Formats (checked against each harness's documentation, 2026-10):
   ``claude mcp add --scope user`` writes.
 * Codex: ``[mcp_servers.<name>]`` in ``~/.codex/config.toml`` (``$CODEX_HOME``).
 * pi: ``mcpServers`` in ``~/.pi/agent/mcp.json`` (``$PI_CODING_AGENT_DIR``);
-  native MCP since pi 0.99.
+  native MCP since pi 0.99; ``exposure: "direct"`` so the tools are declared.
 * Cursor: ``mcpServers`` in ``~/.cursor/mcp.json``.
 
 ``connect(harness, remote=True)`` registers the cluster head's ``/mcp``
@@ -39,6 +39,10 @@ from omm.agent_connection import _decode, _dump, _encode, _parse, _private_journ
 
 SERVER_NAME = "omm-documents"
 HARNESSES = ("claude-code", "codex", "pi", "cursor")
+# pi's default MCP exposure is "codemode": the model reaches tools only by
+# writing a JavaScript script, which small local models never do. "direct"
+# declares our two tools like built-in ones (pi docs/mcp.md, "Control tool exposure").
+PI_EXPOSURE = "direct"
 # ~/.claude.json also holds Claude Code's project history and grows large.
 MAX_CONFIG_BYTES = 64 * 1024 * 1024
 
@@ -109,6 +113,7 @@ def remote_entry(harness, remote=None) -> dict:
     entry = {"type": "http", "url": url, "headers": headers}
     if harness == "pi":
         entry["description"] = "Search company documents shared with you on the OMM cluster head, with exact quotes and pages."
+        entry["exposure"] = PI_EXPOSURE
     return entry
 
 
@@ -124,6 +129,7 @@ def server_entry(harness) -> dict:
         entry["startup_timeout_sec"] = 30
     if harness == "pi":
         entry["description"] = "Search the user's documents registered in OMM on this computer, with exact quotes and pages."
+        entry["exposure"] = PI_EXPOSURE
     return entry
 
 

@@ -161,7 +161,7 @@ def _trust_ca(document, path: Path, metadata: dict) -> None:
         metadata["ca_env_added"] = str(path)
 
 
-def restore(harness: str) -> bool:
+def restore(harness: str) -> dict | bool:
     """agent_connection.restore, then drop the CA key a cluster connection added outside its field list.
 
     When the settings file was not edited since, restore writes the original

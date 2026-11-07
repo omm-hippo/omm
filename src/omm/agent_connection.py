@@ -14,6 +14,18 @@ from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
 
 HARNESSES = ("claude", "codex", "pi")
 MAX_BYTES = 2 * 1024 * 1024
+# Ollama runs every model with its own small default context (4096 on an 8 GB
+# Mac) whatever the model supports, and its OpenAI/Anthropic endpoints ignore a
+# per-request num_ctx. pi's system prompt alone is about 6.4K tokens, so every
+# request failed with 400. connect therefore creates a derived Ollama model that
+# only sets num_ctx (it shares the base model's weights; nothing is copied),
+# routes the harness to it, and restore deletes it again.
+RUNTIME_CONTEXTS = (65536, 32768, 16384)
+# Share of total RAM the weights plus the f16 KV cache may take, leaving room for
+# compute buffers, the harness and the OS. On an 8 GB Mac an 8B model (5.7 GB
+# loaded) nearly froze the machine; this refuses it and gives qwen3-0.6b 16K.
+MEMORY_SHARE = 0.4
+_DERIVED_TAG = re.compile(r"-omm\d+k$")
 
 
 class ConnectionError(ValueError):
@@ -156,7 +168,99 @@ def preflight(model, base_url):
     if any(data.get(key) for key in ("remote_host", "remote_model", "cloud")):
         raise ConnectionError("This Ollama model points to a remote service. Choose a downloaded local model.")
     return {"model": model, "base_url": client.base_url, "context_length": context,
+            "weights_bytes": _weights_bytes(client, model), "kv_bytes_per_token": _kv_bytes_per_token(info),
             "tools_advertised": True, "tool_workflow_verified": False}
+
+
+def _weights_bytes(client, model):
+    """Size of the model file from /api/tags, or 0 when Ollama does not say."""
+    try:
+        rows = client.request("GET", "/api/tags", timeout=3).data.get("models")
+    except RuntimeAdapterError:
+        return 0
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and model in (row.get("name"), row.get("model")) and type(row.get("size")) is int:
+            return row["size"]
+    return 0
+
+
+def _kv_bytes_per_token(info):
+    """f16 KV cache bytes per token from GGUF metadata, or None when it is missing.
+
+    Sliding-window and hybrid models need less than this; the estimate errs high.
+    """
+    if not isinstance(info, dict) or not isinstance(info.get("general.architecture"), str):
+        return None
+    arch = info["general.architecture"]
+    def number(key):
+        value = info.get(f"{arch}.{key}")
+        return value if type(value) is int and value > 0 else None
+    layers, heads = number("block_count"), number("attention.head_count")
+    width = number("embedding_length")
+    kv_heads = info.get(f"{arch}.attention.head_count_kv")
+    if isinstance(kv_heads, list):  # per-layer counts
+        kv_total = sum(h for h in kv_heads if type(h) is int and h > 0)
+    elif type(kv_heads) is int and kv_heads > 0 and layers:
+        kv_total = kv_heads * layers
+    else:
+        return None
+    head_width = width // heads if width and heads else None
+    key, value = number("attention.key_length") or head_width, number("attention.value_length") or head_width
+    if not kv_total or not key or not value:
+        return None
+    return kv_total * (key + value) * 2
+
+
+def runtime_context(metadata, ram_bytes):
+    """Largest of RUNTIME_CONTEXTS the model supports that fits the memory share."""
+    weights, per_token = metadata.get("weights_bytes") or 0, metadata.get("kv_bytes_per_token")
+    budget = ram_bytes * MEMORY_SHARE - weights
+    for context in RUNTIME_CONTEXTS:
+        if context > metadata["context_length"]:
+            continue
+        if per_token is None:
+            # Without layer metadata nothing can be sized; take the smallest.
+            return RUNTIME_CONTEXTS[-1]
+        if per_token * context <= budget:
+            return context
+    raise ConnectionError(f"This model with a {RUNTIME_CONTEXTS[-1] // 1024}K-token runtime context needs more "
+                          f"than {MEMORY_SHARE:.0%} of this computer's memory. Choose a smaller model with omm recommend.")
+
+
+def runtime_model(model, context):
+    """Derived Ollama tag, e.g. qwen3:8b -> qwen3:8b-omm32k."""
+    name, _, tag = model.rpartition(":") if ":" in model.rsplit("/", 1)[-1] else (model, "", "latest")
+    return f"{name}:{tag}-omm{context // 1024}k"
+
+
+def _total_ram_bytes():
+    import psutil
+    try:
+        return psutil.virtual_memory().total
+    except (OSError, psutil.Error):
+        return 0
+
+
+def _create_runtime_model(base_url, model, derived, context):
+    try:
+        LoopbackJsonClient(base_url).request(
+            "POST", "/api/create", timeout=120,
+            payload={"model": derived, "from": model, "parameters": {"num_ctx": context}, "stream": False})
+    except RuntimeAdapterError as error:
+        raise ConnectionError("Ollama could not create the runtime-context model; no settings changed.") from error
+
+
+def _delete_runtime_model(metadata):
+    """Delete the derived model; returns its tag when that failed (Ollama off), else None."""
+    derived = metadata.get("runtime_model") if isinstance(metadata, dict) else None
+    if not isinstance(derived, str) or not _DERIVED_TAG.search(derived):
+        return None
+    try:
+        LoopbackJsonClient(metadata["base_url"]).request(
+            "DELETE", "/api/delete", payload={"model": derived}, timeout=10, allow_empty=True)
+    except (KeyError, ValueError, RuntimeAdapterError):
+        return derived
+    return None
 
 
 def installed_models(base_url="http://127.0.0.1:11434"):
@@ -168,7 +272,8 @@ def installed_models(base_url="http://127.0.0.1:11434"):
     except (ValueError, RuntimeAdapterError):
         return []
     names = {row.get("name") for row in rows if isinstance(row, dict)} if isinstance(rows, list) else set()
-    return sorted(n for n in names if isinstance(n, str) and n and not n.lower().endswith((":cloud", "-cloud")))
+    return sorted(n for n in names if isinstance(n, str) and n and not n.lower().endswith((":cloud", "-cloud"))
+                  and not _DERIVED_TAG.search(n))
 
 
 def _journal(harness):
@@ -216,9 +321,12 @@ def connect(harness, model, *, base_url="http://127.0.0.1:11434"):
         if journal.exists():
             raise ConnectionError("An OMM connection backup already exists. Restore with agent cloud before switching again.")
         metadata = preflight(model, base_url)
+        context = runtime_context(metadata, _total_ram_bytes())
+        derived = runtime_model(model, context)
+        metadata.update(runtime_model=derived, runtime_context=context)
         paths = _paths(harness)
         entries = []
-        for path, patches in zip(paths, _patches(harness, model, metadata["base_url"], metadata["context_length"])):
+        for path, patches in zip(paths, _patches(harness, derived, metadata["base_url"], context)):
             raw = _read(path)
             document = _parse(raw, path.suffix == ".toml")
             for keys, value in patches:
@@ -235,6 +343,11 @@ def connect(harness, model, *, base_url="http://127.0.0.1:11434"):
         data = {"schema_version": 1, "harness": harness, "phase": "applying",
                 "metadata": metadata, "files": entries}
         _store(journal, data)
+        try:
+            _create_runtime_model(metadata["base_url"], model, derived, context)
+        except ConnectionError:
+            journal.unlink()  # No file was written yet.
+            raise
         try:
             for entry in entries:
                 path = Path(entry["path"])
@@ -276,6 +389,11 @@ def _load(journal, harness):
 
 
 def restore(harness):
+    """False without a backup; otherwise {"left_model": tag or None}.
+
+    left_model names a derived Ollama model that could not be deleted
+    (Ollama not running); the settings are restored either way.
+    """
     _check_harness(harness)
     journal = _journal(harness)
     _private_journal_directory(journal)
@@ -320,7 +438,7 @@ def restore(harness):
             journal.unlink()
         except OSError as error:
             raise ConnectionError("Restoration was interrupted. Backup retained; run agent cloud again.") from error
-    return True
+    return {"left_model": _delete_runtime_model(data.get("metadata"))}
 
 
 def status(harness):
