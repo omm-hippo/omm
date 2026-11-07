@@ -349,6 +349,19 @@ itself meanwhile, so the member link gets its id from exo `GET /node_id`, tries 
 and reports `catching_up` + `event_index`; the head shows progress/ETA (`members.json` `event_rate`)
 instead of advising a re-join. The head warns when its LAN address left `cluster.json`
 `employee_addresses` (DHCP). Spec: `docs/superpowers/specs/2026-10-29-cluster-guided-next-step-design.md`.
+Poster art worker (`omm cluster poster enable|disable`, `poster_*.py`): every cluster Mac can pull
+dshs.dev-style poster jobs over outbound HTTPS only (Supabase RPC claim/ping with the anon key + a
+per-Mac token, image POST to the site; contract in the DSHS repo's
+`docs/superpowers/specs/2026-11-06-poster-mac-art-design.md` §5-3/§7, no site address hard-coded).
+The token lives only in the login keychain (`security -i` on stdin, never argv); public values in
+`OMM_HOME/cluster/poster/settings.json`. LaunchAgent `com.omm.cluster-poster` (`_cluster-poster-run`)
+runs `poster_worker.py`, which spawns `poster_draw.py` in its own venv (`poster/venv`, pinned
+`mflux==0.24.0`, FLUX.2-klein-4B pinned revision in `poster/hf`) for **one picture per process**:
+mflux drops its text encoder after encoding, so the peak is 13.7 GB instead of 23.1 GB kept resident.
+Between jobs a gate sends neither claim nor ping when free memory is under 16 GB, memory pressure is
+critical, or exo is bringing up a cluster model on this Mac (cluster LLM first; exo is read-only).
+`leave` runs `disable`; `omm update` and a member's version follow restart the agent.
+Spec: `docs/superpowers/specs/2026-11-06-cluster-poster-art-worker-design.md`.
 Employee PCs route a harness to the gateway with `omm agent cluster` (`agent_cluster.py`,
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
 list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`

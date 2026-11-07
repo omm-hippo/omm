@@ -334,3 +334,24 @@ def test_run_once_without_any_node_id_stays_no_node(cycle, monkeypatch):
     monkeypatch.setattr(member_link, "local_ipv4s", lambda run=None: ["10.9.9.9"])
     monkeypatch.setattr(member_link.exo_client.ExoClient, "node_id", lambda self, timeout=5: None)
     assert member_link.run_once() == "no_node"
+
+
+@pytest.mark.parametrize("state", ["updated", "switched"])
+def test_member_link_restarts_poster_worker_after_following_the_head(monkeypatch, state):
+    from omm.cluster import poster_service
+
+    restarts = []
+    monkeypatch.setattr(member_link, "run_once", lambda first: state)
+    monkeypatch.setattr(poster_service, "restart_if_installed", lambda **_k: restarts.append(state))
+    assert member_link.run_member_link() == 0
+    assert restarts == [state]
+
+
+def test_member_link_does_not_restart_poster_worker_on_promote(monkeypatch):
+    from omm.cluster import poster_service
+
+    restarts = []
+    monkeypatch.setattr(member_link, "run_once", lambda first: "promoted")
+    monkeypatch.setattr(poster_service, "restart_if_installed", lambda **_k: restarts.append(1))
+    assert member_link.run_member_link() == 0
+    assert restarts == []

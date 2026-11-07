@@ -369,7 +369,8 @@ def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
     assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_models", "document_search",
-                         "problems", "gateway_url", "gateway_ca_sha256", "members", "catching_up"}
+                         "problems", "gateway_url", "gateway_ca_sha256", "members", "catching_up", "poster"}
+    assert data["poster"]["line"] == "Poster art: off"
     assert data["gateway_url"] == "https://192.0.2.10:52440"
     assert data["gateway_ca_sha256"] == tls.head_fingerprint() and len(data["gateway_ca_sha256"]) == 95
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"

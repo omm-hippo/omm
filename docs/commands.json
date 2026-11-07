@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.95",
+  "omm_version": "0.4.109",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -888,6 +888,104 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#load"
+    },
+    {
+      "path": [
+        "cluster",
+        "poster"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Draw poster art jobs from a website on this cluster Mac with mflux (pulls work over HTTPS, opens no port).",
+      "description": "",
+      "usage": "omm cluster poster [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/cluster#poster"
+    },
+    {
+      "path": [
+        "cluster",
+        "poster",
+        "disable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Stop the poster art worker and remove its token, settings and model files.",
+      "description": "",
+      "usage": "omm cluster poster disable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#poster"
+    },
+    {
+      "path": [
+        "cluster",
+        "poster",
+        "enable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Set up and start the poster art worker on this Mac (token goes to the keychain).",
+      "description": "",
+      "usage": "omm cluster poster enable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--env-file"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Read SUPABASE_URL, SUPABASE_ANON_KEY, SITE_URL and TOKEN from this KEY=VALUE file (- reads stdin)",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#poster"
     },
     {
       "path": [

@@ -1352,6 +1352,13 @@ cluster_token_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 cluster_app.add_typer(cluster_token_app)
+cluster_poster_app = typer.Typer(
+    name="poster",
+    help="Draw poster art jobs from a website on this cluster Mac with mflux (pulls work over HTTPS, opens no port).",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+cluster_app.add_typer(cluster_poster_app)
 if platform.system() == "Windows":
     # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
     # Preserve their configured encoding but replace unsupported glyphs rather
@@ -2584,6 +2591,7 @@ _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    "_cluster-poster-run",
 }
 
 
@@ -2765,6 +2773,8 @@ def cluster_status_cmd() -> None:
         from omm.cluster import document_search
 
         console.print(f"Document search: {document_search.summary(report['document_search'])}", markup=False)
+    if report.get("poster") is not None:
+        console.print(report["poster"]["line"], markup=False)
     if report.get("gateway_ca_sha256"):
         # What an employee's `omm rag remote set` must show before they accept it.
         console.print(f"Gateway address: {report['gateway_url']}", markup=False)
@@ -3302,6 +3312,58 @@ def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to
     console.print(f"Revoked the token for {name}.", markup=False)
 
 
+@cluster_poster_app.command(name="enable")
+@global_flags
+def cluster_poster_enable_cmd(
+    env_file: str = typer.Option(None, "--env-file",
+                                 help="Read SUPABASE_URL, SUPABASE_ANON_KEY, SITE_URL and TOKEN from this KEY=VALUE "
+                                      "file (- reads stdin)"),
+) -> None:
+    """Set up and start the poster art worker on this Mac (token goes to the keychain)."""
+    from omm.cluster import poster_service
+
+    if env_file == "-":
+        text = sys.stdin.read()
+    elif env_file:
+        try:
+            text = Path(env_file).expanduser().read_text(encoding="utf-8")
+        except OSError as error:
+            err_console.print(f"Could not read {env_file}: {error.strerror or error}", markup=False)
+            raise typer.Exit(1) from error
+    else:
+        text = _poster_values_from_prompts()
+    _cluster_call(poster_service.enable, text, _cluster_out)
+
+
+def _poster_values_from_prompts() -> str:
+    import questionary
+
+    lines = []
+    for key, question in (("SUPABASE_URL", "Supabase URL (https://...)"), ("SUPABASE_ANON_KEY", "Supabase anon key"),
+                          ("SITE_URL", "Site URL (https://...)")):
+        answer = _ask_text(question)
+        if answer is None:
+            raise typer.Exit(1)
+        lines.append(f"{key}={answer.strip()}")
+    _require_tty("This prompt")
+    token = _add_escape_to_cancel(questionary.password("This Mac's worker token")).ask()
+    if token is None:
+        raise typer.Exit(1)
+    lines.append(f"TOKEN={token.strip()}")
+    return "\n".join(lines) + "\n"
+
+
+@cluster_poster_app.command(name="disable")
+@global_flags
+def cluster_poster_disable_cmd() -> None:
+    """Stop the poster art worker and remove its token, settings and model files."""
+    from omm.cluster import commands as cluster_commands, poster_service
+
+    _cluster_call(cluster_commands.require_macos)
+    _cluster_call(poster_service.disable)
+    console.print("Poster art worker is off; its token, settings and model files were removed.", markup=False)
+
+
 @cluster_app.command(name="handover")
 @global_flags
 def cluster_handover_cmd(
@@ -3396,6 +3458,16 @@ def _cluster_member_run_cmd() -> None:
     raise typer.Exit(member_link.run_member_link())
 
 
+@app.command(name="_cluster-poster-run", hidden=True)
+def _cluster_poster_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster poster enable`
+    registers (cluster/poster_service.py); pulls poster art jobs and draws
+    them until the service is stopped."""
+    from omm.cluster import poster_worker
+
+    raise typer.Exit(poster_worker.run_worker())
+
+
 @app.command(name="_auto-import-run", hidden=True)
 def _auto_import_run_cmd() -> None:
     """Internal. Started by the OS service registered via
@@ -3467,6 +3539,7 @@ _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    "_cluster-poster-run",
     # Cluster Macs are set up over SSH; the wizard's single-key prompt there
     # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
     "cluster",
@@ -3599,6 +3672,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    "_cluster-poster-run",
     # Same reason as in _SKIP_ONBOARDING_SUBCOMMANDS: cluster Macs are set up
     # over SSH, exo owns their models, and the scan printed its "No
     # externally-managed .gguf files" line into `omm cluster join` (or would
@@ -3612,6 +3686,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
     "_cluster-member-run",
+    "_cluster-poster-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -3620,7 +3695,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
     {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
-     "_cluster-gateway-run", "_cluster-member-run"}
+     "_cluster-gateway-run", "_cluster-member-run", "_cluster-poster-run"}
 )
 
 
@@ -5168,14 +5243,22 @@ def update() -> None:
 
 
 def _after_update_on_cluster_head() -> None:
-    """On a cluster head: run the gateway on the new code, and say that the members follow it."""
+    """On any cluster Mac: run the poster worker on the new code. On a head also the gateway, and
+    say that the members follow it."""
     from omm.cluster import settings as cluster_settings
 
     current = cluster_settings.load()
-    if current is None or current.role != "head":
+    if current is None:
         return
-    from omm.cluster import launchd, service
+    from omm.cluster import launchd, poster_service, service
     from omm.cluster.errors import ClusterError
+
+    try:
+        poster_service.restart_if_installed()
+    except ClusterError as error:
+        console.print(f"[muted]Could not restart the poster art worker ({escape(str(error))}).[/muted]")
+    if current.role != "head":
+        return
 
     try:
         launchd.restart_agent(service.LAUNCHD_LABEL)

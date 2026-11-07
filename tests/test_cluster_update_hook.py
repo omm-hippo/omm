@@ -51,3 +51,13 @@ def test_update_on_lone_head_restarts_without_warning(updated):
     settings.save(settings.ClusterSettings("head", NS, 52440, known_nodes=("node1",)))
     result = runner.invoke(cli.app, ["update"])
     assert updated == ["com.omm.cluster-gateway"] and "other Mac(s)" not in result.output
+
+
+def test_update_restarts_poster_worker_on_any_cluster_mac(updated, monkeypatch):
+    from omm.cluster import poster_service
+
+    monkeypatch.setattr(poster_service, "is_installed", lambda: True)
+    settings.save(settings.ClusterSettings("member", NS, 52440, known_nodes=("node1", "node3")))
+    result = runner.invoke(cli.app, ["update"])
+    assert result.exit_code == 0, result.output
+    assert updated == ["com.omm.cluster-poster"]
