@@ -62,6 +62,82 @@ def _claims_fake_provenance(text: str) -> bool:
     )
 
 
+# Who published a GGUF is the strongest safety signal OMM has: the provider
+# SHA-256 check only proves the file is the one the uploader published, and
+# GGUF tampering (malformed tensors aimed at runner parser bugs, hostile chat
+# templates, altered weights) is not detectable by scanning. Official model
+# makers plus the long-standing GGUF quantizers. Per provider, because an org
+# name trusted on one hub may belong to a stranger on the other. Lowercase;
+# matched case-insensitively. Changes go through PR review - see
+# docs/superpowers/specs/2026-11-24-uploader-guard-design.md.
+TRUSTED_UPLOADERS: dict[str, frozenset[str]] = {
+    "huggingface": frozenset({
+        # Model makers
+        "qwen", "meta-llama", "mistralai", "google", "microsoft", "deepseek-ai",
+        "ibm-granite", "liquidai", "nvidia", "allenai", "huggingfacetb",
+        "lgai-exaone", "zai-org", "thudm", "openbmb", "internlm", "tiiuae",
+        "01-ai", "coherelabs", "cohereforai", "stabilityai", "moonshotai",
+        "minimaxai", "tencent", "baidu", "upstage", "openai",
+        # GGUF quantizers
+        "ggml-org", "unsloth", "bartowski", "lmstudio-community", "thebloke",
+        "mradermacher", "second-state", "quantfactory",
+    }),
+    "modelscope": frozenset({
+        "qwen", "zhipuai", "openbmb", "deepseek-ai", "llm-research",
+        "ai-modelscope", "modelscope", "xorbits", "unsloth", "bartowski",
+        "second-state", "lmstudio-community",
+    }),
+}
+
+UPLOADER_GUARD_POLICIES = ("warn", "strict", "off")
+DEFAULT_UPLOADER_GUARD_POLICY = "warn"
+UNVERIFIED_UPLOADER_WARNING = "Unverified uploader"
+
+
+def is_trusted_uploader(candidate: dict) -> bool:
+    """True when the candidate is a curated default or its repo's owner is on
+    TRUSTED_UPLOADERS for its provider. A candidate without a repo id (a
+    direct URL) is never trusted here - callers decide whether to check it."""
+    name = candidate.get("name")
+    if name and name in hub.CURATED_INDEX:
+        return True
+    if str(candidate.get("description") or "").strip().lower() == "curated default":
+        return True
+    repo_id = candidate.get("repo_id")
+    if not isinstance(repo_id, str) or "/" not in repo_id:
+        return False
+    owner = repo_id.split("/", 1)[0].casefold()
+    provider = candidate.get("provider") or "huggingface"
+    return owner in TRUSTED_UPLOADERS.get(provider, frozenset())
+
+
+def normalize_uploader_guard_policy(policy: object) -> str:
+    """A damaged or missing config value falls back to the default, never to
+    'off' - the same rule config.py applies to memory_guard_policy."""
+    if isinstance(policy, str) and policy.casefold() in UPLOADER_GUARD_POLICIES:
+        return policy.casefold()
+    return DEFAULT_UPLOADER_GUARD_POLICY
+
+
+def apply_uploader_guard(candidates: list[dict], policy: str) -> tuple[list[dict], int]:
+    """Apply the uploader guard to a candidate list.
+
+    Returns (candidates, hidden_count). 'strict' drops untrusted rows and
+    counts them; 'warn' keeps every row and marks untrusted ones with
+    `uploader_unverified: True` (copies - the inputs are never mutated);
+    'off' returns the list as-is."""
+    policy = normalize_uploader_guard_policy(policy)
+    if policy == "off":
+        return list(candidates), 0
+    if policy == "strict":
+        kept = [c for c in candidates if is_trusted_uploader(c)]
+        return kept, len(candidates) - len(kept)
+    return [
+        c if is_trusted_uploader(c) else {**c, "uploader_unverified": True}
+        for c in candidates
+    ], 0
+
+
 _PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
 
 

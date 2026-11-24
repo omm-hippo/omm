@@ -38,8 +38,11 @@ def test_search_marks_hardware_unfit_candidates(monkeypatch):
 def test_search_unfit_marker_is_short_per_row_with_one_legend_line(monkeypatch):
     # #364: the full "predicted not to run" sentence used to be repeated, in
     # red, on every non-fitting row. Each row now carries a short tag and the
-    # explanation appears once, below the list.
-    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    # explanation appears once, below the list. The uploader guard is off so
+    # its "(unverified uploader)" tag doesn't trail these fake org/ repos.
+    monkeypatch.setattr(
+        cli, "load_config", lambda: {"model_url": None, "uploader_guard_policy": "off"}
+    )
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
@@ -123,7 +126,9 @@ def test_search_json_unfit_rows_unchanged(monkeypatch):
 
     rows = json.loads(result.stdout)
     assert {row["fits_hardware"] for row in rows} == {True, False}
-    assert set(rows[0]) == {"index", "family", "ref", "description", "fits_hardware"}
+    assert set(rows[0]) == {
+        "index", "family", "ref", "description", "fits_hardware", "trusted_uploader",
+    }
 
 
 def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):

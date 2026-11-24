@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.109",
+  "omm_version": "0.4.110",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -4648,6 +4648,52 @@
         }
       ],
       "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
+        "uploader-guard"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show or change how recommend/search/install treat GGUFs from uploaders outside OMM's trusted list.",
+      "description": "",
+      "usage": "omm setting uploader-guard [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--policy"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "warn (flag unverified uploaders), strict (hide them, ask before install), or off.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#uploader-guard"
     },
     {
       "path": [

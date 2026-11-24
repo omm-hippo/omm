@@ -223,6 +223,7 @@ omm setting upload usage --enable|--disable  # Anonymous daily usage stats (off 
 omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting upload votes --enable|--disable|--ask  # Arena battle vote uploads (asked after each session; the prompt you typed is never sent)
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
+omm setting uploader-guard --policy warn|strict|off  # Flag (warn, default) or hide (strict) GGUFs from uploaders outside the trusted list
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting runtime-profile <name> [--engine ollama|lmstudio] [--restore] [--json]  # Inspect or undo saved settings
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads

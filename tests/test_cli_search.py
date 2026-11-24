@@ -185,6 +185,7 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
             "ref": "tinyllama-1.1b-q4",
             "description": "Curated default",
             "fits_hardware": True,
+            "trusted_uploader": True,
         }
     ]
 
@@ -217,6 +218,7 @@ def test_search_json_before_subcommand(monkeypatch):
             "ref": "tinyllama-1.1b-q4",
             "description": "Curated default",
             "fits_hardware": True,
+            "trusted_uploader": True,
         }
     ]
 

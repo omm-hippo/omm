@@ -136,7 +136,13 @@ def _candidate_text(candidate: dict) -> str:
 
 
 def _warning(candidate: dict) -> str | None:
-    return variant_warning(candidate)
+    warning = variant_warning(candidate)
+    if warning:
+        return warning
+    if candidate.get("uploader_unverified"):
+        # Set by search.apply_uploader_guard under the default "warn" policy.
+        return "Unverified uploader"
+    return None
 
 
 def _description(candidate: dict) -> str:
