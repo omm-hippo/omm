@@ -23,6 +23,13 @@ def test_allowlisted_owner_is_trusted_case_insensitively():
     assert search_mod.is_trusted_uploader({"repo_id": "QWEN/Qwen3-8B-GGUF"})
 
 
+def test_maziyarpanahi_is_trusted_on_huggingface_only():
+    assert search_mod.is_trusted_uploader({"repo_id": "MaziyarPanahi/Qwen3-14B-GGUF"})
+    assert not search_mod.is_trusted_uploader(
+        {"repo_id": "MaziyarPanahi/Qwen3-14B-GGUF", "provider": "modelscope"}
+    )
+
+
 def test_unknown_owner_is_not_trusted():
     assert not search_mod.is_trusted_uploader(UNTRUSTED)
 

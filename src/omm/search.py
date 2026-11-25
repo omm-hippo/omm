@@ -80,7 +80,7 @@ TRUSTED_UPLOADERS: dict[str, frozenset[str]] = {
         "minimaxai", "tencent", "baidu", "upstage", "openai",
         # GGUF quantizers
         "ggml-org", "unsloth", "bartowski", "lmstudio-community", "thebloke",
-        "mradermacher", "second-state", "quantfactory",
+        "mradermacher", "second-state", "quantfactory", "maziyarpanahi",
     }),
     "modelscope": frozenset({
         "qwen", "zhipuai", "openbmb", "deepseek-ai", "llm-research",
