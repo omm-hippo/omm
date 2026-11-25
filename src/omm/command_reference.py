@@ -82,10 +82,34 @@ def _split_help(help_text: str | None) -> tuple[str, str]:
 
 
 def _make_metavar(param: click.Parameter, ctx: click.Context) -> str:
+    make_metavar = getattr(param, "make_metavar", None)
+    if make_metavar is None:
+        # typer >= 0.29 vendors its own click (typer._click) whose parameters
+        # have no make_metavar. Rebuild what typer 0.28 + click 8.5 returned,
+        # so docs/commands.json stays identical across both: an argument's
+        # lowercase name ("models..." when variadic), an option's "<type>".
+        def attr(name: str) -> str:
+            # display_type is a method taking ctx; display_name_raw a property.
+            value = getattr(param, name, None)
+            if callable(value):
+                value = value(ctx)
+            return str(value or "")
+
+        if getattr(param, "param_type_name", "") == "argument":
+            name = attr("display_name_raw") or str(param.name or "")
+            nargs = getattr(param, "nargs", 1)
+            return _plain(f"{name}..." if nargs == -1 or nargs > 1 else name)
+        if getattr(param, "metavar", None):
+            return _plain(str(param.metavar))
+        display = attr("display_type")
+        if getattr(param, "multiple", False):
+            # A repeatable option was shown per value ("<str>"), not as a list.
+            display = re.sub(r"^<list\[(.*)\]>$", r"<\1>", display)
+        return _plain(display)
     try:
-        return _plain(param.make_metavar(ctx))
+        return _plain(make_metavar(ctx))
     except TypeError:  # click < 8.2 takes no context
-        return _plain(param.make_metavar())
+        return _plain(make_metavar())
 
 
 def _json_default(value: Any) -> Any:

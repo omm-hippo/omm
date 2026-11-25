@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import types
 
 import pytest
@@ -170,7 +171,7 @@ def test_poster_job_runs_the_hidden_subcommand(isolated_omm_home):
     job = poster_service._job()
     assert job["ProgramArguments"][-1] == "_cluster-poster-run"
     assert job["KeepAlive"] is True
-    assert job["StandardOutPath"].endswith("logs/cluster-poster.log")
+    assert Path(job["StandardOutPath"]).parts[-2:] == ("logs", "cluster-poster.log")
 
 
 def test_disable_removes_files_even_when_the_keychain_is_locked(fakes, monkeypatch):
