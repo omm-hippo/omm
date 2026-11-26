@@ -15,6 +15,10 @@ import pytest
 from omm.cluster import poster_drawer
 from omm.cluster.poster_drawer import Drawer, DrawerError, DrawerTimeout
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="omm cluster is macOS-only (launchd, pf, POSIX paths and modes)"
+)
+
 FAKE = r'''
 import json, os, sys, time
 mode = os.environ.get("FAKE_MODE", "ok")

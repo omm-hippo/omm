@@ -157,6 +157,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "onboarding_completed": True,
     "theme": "dark",
     "memory_guard_policy": "ask",
+    "uploader_guard_policy": "warn",
     "memory_guard_poll_seconds": 1.0,
     "memory_guard_low_memory_seconds": 3.0,
     # Cumulative bytes reclaimed by `omm import`'s dedup step (a real
@@ -235,6 +236,9 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         merged["arena_vote_send_policy"] = "ask"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
+    if merged.get("uploader_guard_policy") not in {"warn", "strict", "off"}:
+        # A damaged value must fold back to the default, never read as "off".
+        merged["uploader_guard_policy"] = "warn"
     poll_seconds = merged.get("memory_guard_poll_seconds")
     if (
         isinstance(poll_seconds, bool)

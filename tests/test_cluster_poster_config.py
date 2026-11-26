@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 import pytest
 
 from omm.cluster import poster_config
 from omm.cluster.errors import ClusterError
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="omm cluster is macOS-only (launchd, pf, POSIX paths and modes)"
+)
 
 TOKEN = "a" * 43
 ENV = ("# dshs.dev poster art\n"

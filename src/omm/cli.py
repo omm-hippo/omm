@@ -5902,6 +5902,14 @@ def recommend(
         from omm import recommend_facts
 
         artifact = search_mod.with_curated_candidates(artifact)
+        guard_policy = search_mod.normalize_uploader_guard_policy(
+            config.get("uploader_guard_policy")
+        )
+        guarded, hidden_by_guard = search_mod.apply_uploader_guard(
+            artifact["candidates"], guard_policy
+        )
+        artifact = {**artifact, "candidates": guarded}
+        _print_uploader_guard_note(guard_policy, hidden_by_guard)
         if refresh_metadata:
             _refresh_recommendation_facts(artifact, info)
         artifact = recommend_facts.apply(artifact)
@@ -7807,6 +7815,53 @@ def _prepare_install_artifact(
     return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
+def _print_uploader_guard_note(policy: str, hidden: int) -> None:
+    """One stderr line when the uploader guard changed or stopped
+    filtering what recommend/search show. Silent under --json/--quiet."""
+    opts = _global_opts()
+    if opts.json or opts.quiet:
+        return
+    if policy == "off":
+        err_console.print(
+            "[muted]Uploader guard is off: results include models from any uploader "
+            "(omm setting uploader-guard).[/muted]"
+        )
+    elif hidden:
+        noun = "model" if hidden == 1 else "models"
+        err_console.print(
+            f"[muted]Uploader guard (strict) hid {hidden} {noun} from unverified uploaders; "
+            "omm setting uploader-guard --policy warn shows them flagged.[/muted]"
+        )
+
+
+def _check_install_uploader(repo_id: str, provider: str, *, assume_yes: bool) -> None:
+    """Apply the uploader guard to an install by repo id: 'warn' prints one
+    line, 'strict' asks before continuing (--yes skips the prompt), 'off'
+    does nothing. Curated and allowlisted uploaders pass silently."""
+    policy = search_mod.normalize_uploader_guard_policy(
+        load_config().get("uploader_guard_policy")
+    )
+    if policy == "off" or search_mod.is_trusted_uploader(
+        {"repo_id": repo_id, "provider": provider}
+    ):
+        return
+    owner = escape(repo_id.split("/", 1)[0])
+    if policy == "warn":
+        if not _global_opts().quiet:
+            err_console.print(
+                f"[warning]{owner} is not on OMM's trusted uploader list. The checksum "
+                f"check only proves this is the file {owner} published.[/warning]"
+            )
+        return
+    err_console.print(
+        f"[warning]{owner} is not on OMM's trusted uploader list "
+        "(uploader guard: strict).[/warning]"
+    )
+    if not assume_yes and not _ask_confirm("Install anyway?"):
+        err_console.print("[warning]Cancelled.[/warning]")
+        raise typer.Exit(0)
+
+
 @install_state.tracked_install
 def _install_impl(
     resolved,
@@ -7879,6 +7934,9 @@ def _install_impl(
         existing_entry = registry.load_registry().get(filename)
         if isinstance(existing_entry, dict):
             custom_links_to_refresh = existing_entry.get("custom_links")
+
+    if repo_id and not contribute_mode:
+        _check_install_uploader(repo_id, provider, assume_yes=assume_yes)
 
     artifact = predictor.load_cached_model()
     trees = artifact.get("trees") if artifact else None
@@ -10971,6 +11029,39 @@ def configure_memory_guard(
     console.print(table)
 
 
+@setting_app.command(name="uploader-guard")
+@global_flags
+def configure_uploader_guard(
+    policy: str = typer.Option(
+        None,
+        "--policy",
+        help="warn (flag unverified uploaders), strict (hide them, ask before install), or off.",
+    ),
+) -> None:
+    """Show or change how recommend/search/install treat GGUFs from uploaders
+    outside OMM's trusted list."""
+    if policy is not None:
+        normalized = policy.casefold()
+        if normalized not in search_mod.UPLOADER_GUARD_POLICIES:
+            err_console.print("[error]--policy must be warn, strict, or off.[/error]")
+            raise typer.Exit(1)
+        current = config_mod.update_config(uploader_guard_policy=normalized)
+    else:
+        current = load_config()
+    active = search_mod.normalize_uploader_guard_policy(current.get("uploader_guard_policy"))
+    meaning = {
+        "warn": "Show every model; flag uploaders outside the trusted list.",
+        "strict": "Hide untrusted uploaders; ask before installing one by name.",
+        "off": "No uploader checks.",
+    }[active]
+    table = _table(title="Uploader Guard", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Policy", active)
+    table.add_row("Effect", meaning)
+    console.print(table)
+
+
 @setting_app.command(name="version")
 @global_flags
 def configure_version(
@@ -11492,6 +11583,9 @@ def setting_menu(ctx: typer.Context) -> None:
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
+        uploader_guard_policy = search_mod.normalize_uploader_guard_policy(
+            current.get("uploader_guard_policy")
+        )
 
         choice = _ask_select(
             questionary.select(
@@ -11514,6 +11608,10 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
+                    ),
+                    questionary.Choice(
+                        f"Uploader guard (current: {uploader_guard_policy})",
+                        value="uploader-guard",
                     ),
                     questionary.Choice(
                         f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
@@ -11599,6 +11697,22 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
                 if action is not None and action != "back":
                     configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
+            elif choice == "uploader-guard":
+                action = _ask_select(
+                    questionary.select(
+                        f"Uploader guard policy (current: {uploader_guard_policy}):",
+                        choices=[
+                            questionary.Choice("Warn: flag unverified uploaders", value="warn"),
+                            questionary.Choice(
+                                "Strict: hide them, ask before installing one", value="strict"
+                            ),
+                            questionary.Choice("Off: no uploader checks", value="off"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action is not None and action != "back":
+                    configure_uploader_guard(policy=action)
         except typer.Exit:
             # A configure_* helper hit a bad value and already printed the
             # reason to err_console. Keep the menu alive rather than aborting
@@ -11714,6 +11828,9 @@ def search(
     if fallback and not found_remote:
         retried, found_remote = _collect(fallback)
         combined = retried or combined
+    guard_policy = search_mod.normalize_uploader_guard_policy(config.get("uploader_guard_policy"))
+    combined, hidden_by_guard = search_mod.apply_uploader_guard(combined, guard_policy)
+    _print_uploader_guard_note(guard_policy, hidden_by_guard)
     if not combined:
         err_console.print(f"[warning]No models found matching '{query}'.[/warning]")
     if fallback and not found_remote:
@@ -11738,6 +11855,7 @@ def search(
     seen_refs: set[str] = set()
     rows: list[dict] = []
     unfit_shown = False
+    unverified_shown = False
     for family in sorted(groups):
         header_printed = False
         for c in groups[family]:
@@ -11778,20 +11896,30 @@ def search(
                         "ref": ref,
                         "description": desc,
                         "fits_hardware": fits_hardware,
+                        "trusted_uploader": search_mod.is_trusted_uploader(c),
                     }
                 )
             else:
                 if not header_printed:
                     console.print(f"[heading]==> {family}[/heading]")
                     header_printed = True
+                uploader_tag = ""
+                if c.get("uploader_unverified"):
+                    unverified_shown = True
+                    uploader_tag = "  [warning](unverified uploader)[/warning]"
                 if fits_hardware:
-                    console.print(f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  [muted]{desc}[/muted]")
+                    console.print(
+                        f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  "
+                        f"[muted]{desc}[/muted]{uploader_tag}"
+                    )
                 else:
                     # A short muted tag per row plus one legend line below,
                     # instead of a full red sentence repeated on every row
                     # (#364): the warning stays, it just stops shouting.
                     unfit_shown = True
-                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [muted](won't fit)[/muted]")
+                    console.print(
+                        f"  [muted][{len(refs)}][/muted] {ref}  [muted](won't fit)[/muted]{uploader_tag}"
+                    )
         if not json_output and header_printed:
             console.print()
         if limit is not None and len(refs) >= limit:
@@ -11805,6 +11933,11 @@ def search(
             console.print(
                 "[muted](won't fit) = predicted not to run on this hardware; "
                 "--skip-unfit hides these.[/muted]"
+            )
+        if unverified_shown:
+            console.print(
+                "[muted](unverified uploader) = not on OMM's trusted uploader list; "
+                "omm setting uploader-guard --policy strict hides these.[/muted]"
             )
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
@@ -11848,12 +11981,17 @@ def _print_install_suggestions(query: str) -> None:
             suggestions.append(hit)
             existing_labels.add(label)
 
+    suggestions, _hidden = search_mod.apply_uploader_guard(
+        suggestions,
+        search_mod.normalize_uploader_guard_policy(config.get("uploader_guard_policy")),
+    )
     if not suggestions:
         return
 
     err_console.print("[warning]Did you mean one of these?[/warning]")
     for s in suggestions:
-        err_console.print(f"  - {search_mod.install_ref(s)}")
+        tag = "  [muted](unverified uploader)[/muted]" if s.get("uploader_unverified") else ""
+        err_console.print(f"  - {escape(search_mod.install_ref(s))}{tag}")
 
 
 @app.command(name="link")
