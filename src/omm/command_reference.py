@@ -82,6 +82,18 @@ def _split_help(help_text: str | None) -> tuple[str, str]:
 
 
 def _make_metavar(param: click.Parameter, ctx: click.Context) -> str:
+    if not hasattr(param, "make_metavar"):
+        # typer >= 0.29 vendors its own click and drops make_metavar; its
+        # display helpers give the same text the older versions printed.
+        if getattr(param, "param_type_name", "") == "argument":
+            suffix = "..." if getattr(param, "nargs", 1) != 1 else ""
+            return _plain(f"{param.display_name_raw}{suffix}")  # type: ignore[attr-defined]
+        explicit = getattr(param, "metavar", None)
+        if explicit:
+            return _plain(explicit)
+        # Older typer printed a repeatable option as its element type.
+        shown = param.display_type(ctx)  # type: ignore[attr-defined]
+        return _plain(re.sub(r"^<list\[(.*)\]>$", r"<\1>", shown))
     try:
         return _plain(param.make_metavar(ctx))
     except TypeError:  # click < 8.2 takes no context
