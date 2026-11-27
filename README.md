@@ -7,10 +7,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-3.0-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-`omm` is an apt/brew-style package manager for local GGUF models. It keeps one
-model hub, exposes models to supported local AI runners, checks whether a model
-fits the current hardware, and can verify real local generation before you rely
-on it.
+![omm recommends a model for this machine, downloads it with checksum verification, and lists it](docs/assets/demo.gif)
+
+**Every local AI app wants its own copy of the same multi-gigabyte model, and
+none of them tell you which model your machine can actually run.** `omm` is an
+apt/brew-style package manager for local GGUF models: download once, use it in
+every runner, and pick models that fit your hardware.
 
 > [!NOTE]
 > The `main` branch documents the current development version. For the latest
@@ -23,14 +25,20 @@ on it.
 
 ## What omm does
 
-- Installs GGUF models into a central, configurable model hub.
-- Links or imports models across Ollama, LM Studio, Jan, AnythingLLM, Msty,
-  text-generation-webui, and KoboldCpp without silently duplicating large files.
-- Ranks models against live RAM, VRAM, operating-system, and runner state.
-- Verifies load and generation through local Ollama or LM Studio APIs.
-- Keeps benchmark uploads, anonymous usage stats, crash reports, and arena
-  battle votes opt-in, with a separate setting for each. Searches, downloads,
-  and update checks also use the network; see [PRIVACY.md](PRIVACY.md).
+- **One download, every runner.** Links a single hub copy into Ollama, LM Studio,
+  Jan, AnythingLLM, Msty, text-generation-webui, and KoboldCpp instead of
+  duplicating large files.
+- **Recommends what fits.** Ranks models against live RAM, VRAM, OS, and runner
+  state, with predicted speed and memory.
+- **Verified downloads.** Checks HTTPS, size, and SHA-256 before a model is
+  installed.
+- **Proves it runs.** `omm verify` loads the model and generates through the
+  local Ollama or LM Studio API.
+- **Adopts what you already have.** `omm import` finds models other apps
+  downloaded and deduplicates them into the hub.
+- **Opt-in only.** Benchmark uploads, usage stats, crash reports, and arena votes
+  each have their own setting. Searches, downloads, and update checks still use
+  the network; see [PRIVACY.md](PRIVACY.md).
 
 ## Quick start
 
