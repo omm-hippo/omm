@@ -201,16 +201,17 @@ users. It has no runtime npm dependencies; its build and test tools are:
 
 | License | Packages |
 |---|---|
-| MIT | 91 |
-| Apache-2.0 | 42 |
+| MIT | 133 |
+| Apache-2.0 | 43 |
 | MPL-2.0 | 12 |
 | LGPL-3.0-or-later | 10 |
-| MIT OR Apache-2.0 | 4 |
+| MIT OR Apache-2.0 | 5 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
+| BSD-2-Clause | 2 |
+| BSD-3-Clause | 2 |
 | ISC | 2 |
 | 0BSD | 1 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
-| BSD-3-Clause | 1 |
 | CC0-1.0 | 1 |
 
 Not permissive (build-time only, not distributed): `@img/sharp-libvips-darwin-arm64`, `@img/sharp-libvips-darwin-x64`, `@img/sharp-libvips-linux-arm`, `@img/sharp-libvips-linux-arm64`, `@img/sharp-libvips-linux-ppc64`, `@img/sharp-libvips-linux-riscv64`, `@img/sharp-libvips-linux-s390x`, `@img/sharp-libvips-linux-x64`, `@img/sharp-libvips-linuxmusl-arm64`, `@img/sharp-libvips-linuxmusl-x64`, `@img/sharp-wasm32`, `@img/sharp-win32-arm64`, `@img/sharp-win32-ia32`, `@img/sharp-win32-x64`, `lightningcss`, `lightningcss-android-arm64`, `lightningcss-darwin-arm64`, `lightningcss-darwin-x64`, `lightningcss-freebsd-x64`, `lightningcss-linux-arm-gnueabihf`, `lightningcss-linux-arm64-gnu`, `lightningcss-linux-arm64-musl`, `lightningcss-linux-x64-gnu`, `lightningcss-linux-x64-musl`, `lightningcss-win32-arm64-msvc`, `lightningcss-win32-x64-msvc`.
