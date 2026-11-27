@@ -1,15 +1,15 @@
 build==1.6.1
-hatchling==1.32.4
+hatchling==1.33.0
 pyinstaller==6.22.3
-pyinstaller-hooks-contrib==2026.9
+pyinstaller-hooks-contrib==2026.10
 
 # Runtime graph mirrored from pyproject.toml and checked by
 # tests/test_dependency_parity.py for every npm binary target.
-annotated-doc==0.0.5
-certifi==2026.10.23
+annotated-doc==0.0.6
+certifi==2026.11.20
 cffi==2.1.1
-charset-normalizer==3.5.2
-click==8.5.0
+charset-normalizer==3.5.3
+click==8.5.1
 colorama==0.4.6
 # 49+ no longer ships an Intel macOS wheel. Building it against the runner's
 # Homebrew OpenSSL produces a frozen binary with an incompatible libssl. Keep
@@ -21,7 +21,7 @@ filelock==4.2.1
 tomlkit==0.15.2
 pypdf==6.21.4
 idna==3.20
-markdown-it-py==4.2.0
+markdown-it-py==4.3.0
 mdurl==0.1.2
 prompt-toolkit==3.0.53
 psutil==7.2.2
@@ -31,22 +31,22 @@ questionary==2.1.1
 requests==2.34.2
 rich==15.0.0
 shellingham==1.5.4
-typer==0.27.3
+typer==0.29.1
 typing-extensions==4.16.0
 urllib3==2.8.0
-wcwidth==0.9.4
+wcwidth==0.9.5
 
 # Runtime dependencies for the beta daemon GUI, including its templates and forms.
 annotated-types==0.8.0
-anyio==4.15.1
-fastapi==0.162.0
+anyio==4.16.0
+fastapi==0.162.5
 h11==0.16.0
 jinja2==3.1.6
 markupsafe==3.0.4
 opentelemetry-api==1.45.2
-pydantic==2.14.1
-pydantic-core==2.50.1
+pydantic==2.14.4
+pydantic-core==2.50.5
 python-multipart==0.0.32
 starlette==1.7.0
-typing-inspection==0.4.4
+typing-inspection==0.4.5
 uvicorn==0.54.0
